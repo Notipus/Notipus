@@ -258,6 +258,13 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
         if not linkedin_handle:
             return ""
 
+        # Handle case where linkedin is a dict (e.g., {"url": "...", "handle": "..."})
+        if isinstance(linkedin_handle, dict):
+            url = linkedin_handle.get("url") or linkedin_handle.get("handle")
+            if not url:
+                return ""
+            linkedin_handle = url
+
         # If it's already a full URL, return as-is
         if linkedin_handle.startswith("http"):
             return linkedin_handle
@@ -276,7 +283,7 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
         """
         # Try direct location field first
         if data.get("location"):
-            return data["location"]
+            return str(data["location"])
 
         # Try geo object
         geo = data.get("geo", {}) or {}

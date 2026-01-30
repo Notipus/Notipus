@@ -217,9 +217,16 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         if n.actions:
             blocks.append(self._format_actions(n.actions))
 
+        # Use attachments format for colored sidebar
+        # Top-level "color" is invalid for incoming webhooks
+        color = SEVERITY_COLORS.get(n.severity, "#17a2b8")
         return {
-            "blocks": blocks,
-            "color": SEVERITY_COLORS.get(n.severity, "#17a2b8"),
+            "attachments": [
+                {
+                    "color": color,
+                    "blocks": blocks,
+                }
+            ],
         }
 
     def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
