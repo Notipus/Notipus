@@ -13,8 +13,9 @@ from core.services.enrichment import DomainEnrichmentService
 from core.utils.email_domain import extract_domain, is_enrichable_domain
 from plugins import PluginRegistry, PluginType
 from plugins.destinations.base import BaseDestinationPlugin
+from plugins.enrichment.sentiment import SentimentEnrichmentPlugin
 
-from ..models.rich_notification import RichNotification
+from ..models.rich_notification import RichNotification, SentimentInfo
 from .database_lookup import DatabaseLookupService
 from .notification_builder import NotificationBuilder
 
@@ -62,6 +63,14 @@ class EventProcessor:
         "feedback_received",
         "nps_response",
         "support_ticket",
+        "support_ticket_created",
+        "support_ticket_updated",
+        "support_ticket_comment",
+        "support_ticket_resolved",
+        "support_ticket_assigned",
+        "support_ticket_reopened",
+        "support_ticket_priority_changed",
+        "support_ticket_status_changed",
         # System events
         "integration_connected",
         "integration_error",
@@ -79,6 +88,7 @@ class EventProcessor:
         self.db_lookup = DatabaseLookupService()
         self.enrichment_service = DomainEnrichmentService()
         self.email_enrichment_service = get_email_enrichment_service()
+        self.sentiment_plugin = SentimentEnrichmentPlugin()
         self.notification_builder = NotificationBuilder()
 
     def process_event_rich(
@@ -128,9 +138,12 @@ class EventProcessor:
         # Enrich person data (email-based, requires workspace with Hunter.io)
         person = self._enrich_person(customer_data, workspace)
 
+        # Enrich sentiment (for support tickets, when Ollama is available)
+        sentiment = self._enrich_sentiment(enriched_event_data)
+
         # Build target-agnostic notification
         notification = self.notification_builder.build(
-            enriched_event_data, customer_data, company, person
+            enriched_event_data, customer_data, company, person, sentiment
         )
 
         # Store enriched record for dashboard display
@@ -185,8 +198,11 @@ class EventProcessor:
         # Enrich person data (email-based, requires workspace with Hunter.io)
         person = self._enrich_person(customer_data, workspace)
 
+        # Enrich sentiment (for support tickets, when Ollama is available)
+        sentiment = self._enrich_sentiment(enriched_event_data)
+
         notification = self.notification_builder.build(
-            enriched_event_data, customer_data, company, person
+            enriched_event_data, customer_data, company, person, sentiment
         )
 
         # Store enriched record for dashboard display
@@ -360,4 +376,53 @@ class EventProcessor:
         except Exception as e:
             # Don't fail webhook processing if enrichment fails
             logger.warning(f"Failed to enrich person for {customer_email}: {e}")
+            return None
+
+    def _enrich_sentiment(
+        self,
+        event_data: dict[str, Any],
+    ) -> SentimentInfo | None:
+        """Enrich support ticket events with sentiment analysis.
+
+        Uses the Ollama-based sentiment plugin to analyze ticket content.
+        Only runs for support ticket events and gracefully degrades if
+        Ollama is unavailable or disabled.
+
+        Args:
+            event_data: Event data dictionary with metadata.
+
+        Returns:
+            SentimentInfo or None if not applicable/available.
+        """
+        event_type = event_data.get("type", "")
+
+        # Only analyze support ticket events
+        if not event_type.startswith("support_ticket"):
+            return None
+
+        # Get sentiment text from metadata (set by Zendesk source plugin)
+        metadata = event_data.get("metadata", {})
+        sentiment_text = metadata.get("sentiment_text", "")
+
+        if not sentiment_text:
+            return None
+
+        try:
+            result = self.sentiment_plugin.analyze(sentiment_text)
+            if result:
+                logger.info(
+                    f"Enriched sentiment for {event_type}: "
+                    f"{result.sentiment} ({result.urgency} urgency)"
+                )
+                return SentimentInfo(
+                    sentiment=result.sentiment,
+                    score=result.score,
+                    urgency=result.urgency,
+                    topics=result.topics,
+                    summary=result.summary,
+                )
+            return None
+        except Exception as e:
+            # Don't fail webhook processing if sentiment analysis fails
+            logger.debug(f"Sentiment analysis skipped: {e}")
             return None

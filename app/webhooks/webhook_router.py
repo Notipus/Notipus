@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.models import Integration, Workspace
 from django.conf import settings
@@ -13,6 +13,7 @@ from .exceptions import WebhookError, WebhookSignatureError
 from .services.event_consolidation import event_consolidation_service
 from .services.pending_event_queue import pending_event_queue
 from .services.rate_limiter import RateLimitException, rate_limiter
+from .services.thread_mapping import thread_mapping_service
 from .services.webhook_storage import webhook_storage_service
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ def _log_webhook_payload(
             "X-Shopify-Hmac-SHA256",
             "Stripe-Signature",
             "X-Chargify-Webhook-Signature-Hmac-Sha-256",
+            "X-Zendesk-Webhook-Signature",
         ]
         for header in signature_headers:
             if header in request.headers:
@@ -117,7 +119,7 @@ def create_error_response(error: Exception, status_code: int = 500) -> dict:
     }
 
 
-def _handle_rate_limiting(workspace: Workspace) -> Optional[JsonResponse]:
+def _handle_rate_limiting(workspace: Workspace) -> JsonResponse | None:
     """
     Handle rate limiting for workspace.
     Returns response if rate limited, None otherwise.
@@ -155,7 +157,7 @@ def _handle_rate_limiting(workspace: Workspace) -> Optional[JsonResponse]:
 
 def _validate_and_parse_webhook(
     request: HttpRequest, provider: Any
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Validate and parse webhook. Returns None for test webhooks."""
     if not provider.validate_webhook(request):
         raise WebhookSignatureError()
@@ -165,7 +167,7 @@ def _validate_and_parse_webhook(
 
 
 def _add_rate_limit_headers(
-    response: JsonResponse, rate_limit_info: Optional[Dict[str, Any]]
+    response: JsonResponse, rate_limit_info: dict[str, Any] | None
 ) -> None:
     """Add rate limit headers to response if rate_limit_info is provided."""
     if rate_limit_info:
@@ -174,7 +176,7 @@ def _add_rate_limit_headers(
             response[header_name] = header_value
 
 
-def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
+def _get_slack_webhook_url(workspace: Workspace | None) -> str | None:
     """Get Slack webhook URL for a workspace."""
     if not workspace:
         return None
@@ -197,11 +199,89 @@ def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
         return None
 
 
+def _get_slack_credentials(workspace: Workspace | None) -> dict[str, Any] | None:
+    """Get Slack credentials for a workspace (webhook URL, bot token, channel).
+
+    For threading support, we need the bot_token and channel_id.
+    Falls back to webhook-only if bot token isn't available.
+
+    Args:
+        workspace: Workspace model instance.
+
+    Returns:
+        Dict with 'webhook_url' and optionally 'bot_token' and 'channel',
+        or None if not configured.
+    """
+    if not workspace:
+        return None
+
+    try:
+        slack_integration = Integration.objects.get(
+            workspace=workspace,
+            integration_type="slack_notifications",
+            is_active=True,
+        )
+        oauth_credentials = slack_integration.oauth_credentials or {}
+        incoming_webhook = oauth_credentials.get("incoming_webhook", {})
+
+        credentials: dict[str, Any] = {}
+
+        # Get webhook URL
+        webhook_url = incoming_webhook.get("url")
+        if webhook_url:
+            credentials["webhook_url"] = webhook_url
+
+        # Get bot token for API-based sending (enables threading)
+        bot_token = oauth_credentials.get("access_token")
+        if bot_token:
+            credentials["bot_token"] = bot_token
+
+        # Get channel ID (from webhook or explicit setting)
+        channel_id = incoming_webhook.get("channel_id")
+        if channel_id:
+            credentials["channel"] = channel_id
+
+        return credentials if credentials else None
+
+    except Integration.DoesNotExist:
+        logger.warning(
+            f"No active Slack integration found for workspace {workspace.uuid}"
+        )
+        return None
+
+
+def _get_thread_info(
+    workspace: Workspace,
+    event_data: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    """Get thread info for Zendesk ticket events.
+
+    Args:
+        workspace: Workspace model instance.
+        event_data: Event data dictionary.
+
+    Returns:
+        Tuple of (entity_type, entity_id) for thread lookup, or (None, None).
+    """
+    event_type = event_data.get("type", "")
+    if not event_type.startswith("support_ticket"):
+        return None, None
+
+    provider = event_data.get("provider", "")
+    metadata = event_data.get("metadata", {})
+    ticket_id = metadata.get("ticket_id") or event_data.get("external_id")
+
+    if provider == "zendesk" and ticket_id:
+        return f"{provider}_ticket", str(ticket_id)
+
+    return None, None
+
+
 def _process_webhook_data(
-    event_data: Dict[str, Any],
+    event_data: dict[str, Any],
     provider: Any,
     provider_name: str,
-    workspace: Optional[Workspace] = None,
+    workspace: Workspace | None = None,
 ) -> JsonResponse:
     """Process webhook data and return success response.
 
@@ -280,10 +360,10 @@ def _process_webhook_data(
 
 
 def _process_immediately(
-    event_data: Dict[str, Any],
-    customer_data: Dict[str, Any],
+    event_data: dict[str, Any],
+    customer_data: dict[str, Any],
     provider_name: str,
-    workspace: Optional[Workspace] = None,
+    workspace: Workspace | None = None,
 ) -> JsonResponse:
     """Process webhook immediately (for events without idempotency_key).
 
@@ -322,10 +402,10 @@ def _process_immediately(
         event_data, customer_data, target="slack", workspace=workspace
     )
 
-    # Send to Slack using workspace-specific integration
-    slack_webhook_url = _get_slack_webhook_url(workspace)
+    # Get Slack credentials (webhook URL and optionally bot_token for threading)
+    slack_credentials = _get_slack_credentials(workspace)
 
-    if slack_webhook_url:
+    if slack_credentials:
         registry = PluginRegistry.instance()
         slack_plugin = registry.get(PluginType.DESTINATION, "slack")
         if slack_plugin is None or not isinstance(slack_plugin, BaseDestinationPlugin):
@@ -336,8 +416,44 @@ def _process_immediately(
                 ),
                 status=200,
             )
+
+        # Check for thread mapping (for Zendesk ticket updates)
+        options: dict[str, Any] = {}
+        entity_type, entity_id = _get_thread_info(workspace, event_data)
+
+        if entity_type and entity_id and workspace:
+            # Look up existing thread
+            thread_info = thread_mapping_service.get_thread_ts(
+                workspace, entity_type, entity_id
+            )
+            if thread_info:
+                options["thread_ts"] = thread_info.thread_ts
+                options["channel"] = thread_info.channel_id
+                logger.debug(
+                    f"Found existing thread for {entity_type}:{entity_id}: "
+                    f"{thread_info.thread_ts}"
+                )
+
         try:
-            slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
+            result = slack_plugin.send(formatted, slack_credentials, options)
+
+            # Store thread mapping for new threads (Zendesk tickets)
+            if (
+                entity_type
+                and entity_id
+                and workspace
+                and result.get("thread_ts")
+                and not options.get("thread_ts")  # Only store if this is a new thread
+            ):
+                channel_id = result.get("channel") or slack_credentials.get("channel")
+                if channel_id:
+                    thread_mapping_service.store_thread_ts(
+                        workspace=workspace,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        channel_id=channel_id,
+                        thread_ts=result["thread_ts"],
+                    )
         except Exception as e:
             logger.error(
                 f"Failed to send Slack notification for workspace "
@@ -345,7 +461,7 @@ def _process_immediately(
             )
     else:
         logger.warning(
-            f"No Slack webhook URL configured for workspace "
+            f"No Slack credentials configured for workspace "
             f"{workspace.uuid if workspace else 'unknown'}, "
             f"skipping notification"
         )
@@ -383,7 +499,7 @@ def _process_webhook(
     request: HttpRequest,
     provider: Any,
     provider_name: str,
-    workspace: Workspace = None,
+    workspace: Workspace | None = None,
 ) -> JsonResponse:
     """
     Common webhook processing logic with standardized error handling
@@ -558,6 +674,54 @@ def customer_stripe_webhook(
 
     except Exception as e:
         logger.error(f"Error in customer Stripe webhook: {str(e)}", exc_info=True)
+        error_response = create_error_response(e, 500)
+        return JsonResponse(error_response, status=500)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def customer_zendesk_webhook(
+    request: HttpRequest, organization_uuid: str
+) -> JsonResponse:
+    """Handle customer-specific Zendesk webhook requests with rate limiting"""
+    # Log raw webhook payload before any processing
+    _log_webhook_payload(request, "zendesk", organization_uuid)
+
+    logger.info(
+        f"Processing customer Zendesk webhook for workspace {organization_uuid}",
+        extra={
+            "content_type": request.content_type,
+            "workspace_uuid": organization_uuid,
+        },
+    )
+
+    try:
+        # Get workspace for rate limiting
+        workspace = get_object_or_404(Workspace, uuid=organization_uuid)
+
+        # Get workspace's Zendesk integration
+        integration = get_object_or_404(
+            Integration,
+            workspace=workspace,
+            integration_type="zendesk",
+            is_active=True,
+        )
+
+        from plugins.sources.zendesk import ZendeskSourcePlugin
+
+        # Get Zendesk subdomain from integration settings
+        integration_settings = integration.settings or {}
+        zendesk_subdomain = integration_settings.get("zendesk_subdomain", "")
+
+        provider = ZendeskSourcePlugin(
+            webhook_secret=integration.webhook_secret,
+            zendesk_subdomain=zendesk_subdomain,
+        )
+
+        return _process_webhook(request, provider, "customer_zendesk", workspace)
+
+    except Exception as e:
+        logger.error(f"Error in customer Zendesk webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
         return JsonResponse(error_response, status=500)
 

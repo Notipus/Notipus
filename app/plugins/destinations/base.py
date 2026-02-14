@@ -26,6 +26,10 @@ class BaseDestinationPlugin(BasePlugin):
     - format(): Convert RichNotification to platform-specific format
     - send(): Deliver the formatted notification
 
+    Note: The send() method returns a dict with {"success": bool, ...} to support
+    additional response metadata like thread_ts for Slack threading. This replaced
+    the previous bool return type.
+
     Example:
         class MyDestinationPlugin(BaseDestinationPlugin):
             @classmethod
@@ -42,9 +46,9 @@ class BaseDestinationPlugin(BasePlugin):
                 # Format for the platform
                 return {"text": notification.headline}
 
-            def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
-                # Send to the platform
-                return True
+            def send(self, formatted: Any, credentials: dict[str, Any]) -> dict:
+                # Send to the platform and return result
+                return {"success": True, "message_id": "..."}
     """
 
     @classmethod
@@ -72,15 +76,22 @@ class BaseDestinationPlugin(BasePlugin):
         pass
 
     @abstractmethod
-    def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
+    def send(
+        self,
+        formatted: Any,
+        credentials: dict[str, Any],
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Send a formatted notification to the destination.
 
         Args:
             formatted: Platform-specific formatted notification.
             credentials: Destination-specific credentials (webhook_url, api_key, etc.).
+            options: Optional send options (e.g., thread_ts for threading).
 
         Returns:
-            True if the notification was sent successfully, False otherwise.
+            Result dict with at minimum {"success": bool}.
+            May include additional fields like thread_ts, channel, message_ts.
 
         Raises:
             ValueError: If required credentials are missing.
@@ -89,8 +100,11 @@ class BaseDestinationPlugin(BasePlugin):
         pass
 
     def format_and_send(
-        self, notification: RichNotification, credentials: dict[str, Any]
-    ) -> bool:
+        self,
+        notification: RichNotification,
+        credentials: dict[str, Any],
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Format and send a notification in one call.
 
         Convenience method that combines format() and send().
@@ -98,9 +112,10 @@ class BaseDestinationPlugin(BasePlugin):
         Args:
             notification: RichNotification to send.
             credentials: Destination-specific credentials.
+            options: Optional send options (e.g., thread_ts for threading).
 
         Returns:
-            True if the notification was sent successfully.
+            Result dict with at minimum {"success": bool}.
         """
         formatted = self.format(notification)
-        return self.send(formatted, credentials)
+        return self.send(formatted, credentials, options)

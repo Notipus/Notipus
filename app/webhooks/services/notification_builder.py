@@ -4,6 +4,7 @@ This module provides the NotificationBuilder class that transforms raw event
 and customer data into RichNotification objects ready for formatting.
 """
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -17,6 +18,8 @@ from webhooks.models.rich_notification import (
     PaymentInfo,
     PersonInfo,
     RichNotification,
+    SentimentInfo,
+    TicketInfo,
 )
 
 from .insight_detector import InsightDetector
@@ -28,6 +31,7 @@ PROVIDER_DISPLAY: dict[str, str] = {
     "chargify": "Chargify",
     "stripe": "Stripe",
     "stripe_customer": "Stripe",
+    "zendesk": "Zendesk",
 }
 
 # Event type to notification type mapping
@@ -58,6 +62,14 @@ EVENT_TYPE_MAP: dict[str, NotificationType] = {
     "feedback_received": NotificationType.FEEDBACK_RECEIVED,
     "nps_response": NotificationType.NPS_RESPONSE,
     "support_ticket": NotificationType.SUPPORT_TICKET,
+    "support_ticket_created": NotificationType.SUPPORT_TICKET_CREATED,
+    "support_ticket_updated": NotificationType.SUPPORT_TICKET_UPDATED,
+    "support_ticket_comment": NotificationType.SUPPORT_TICKET_COMMENT,
+    "support_ticket_resolved": NotificationType.SUPPORT_TICKET_RESOLVED,
+    "support_ticket_assigned": NotificationType.SUPPORT_TICKET_ASSIGNED,
+    "support_ticket_reopened": NotificationType.SUPPORT_TICKET_REOPENED,
+    "support_ticket_priority_changed": NotificationType.SUPPORT_TICKET_PRIORITY_CHANGED,
+    "support_ticket_status_changed": NotificationType.SUPPORT_TICKET_STATUS_CHANGED,
     # System events
     "integration_connected": NotificationType.INTEGRATION_CONNECTED,
     "integration_error": NotificationType.INTEGRATION_ERROR,
@@ -98,6 +110,14 @@ EVENT_SEVERITY_MAP: dict[str, NotificationSeverity] = {
     "feedback_received": NotificationSeverity.INFO,
     "nps_response": NotificationSeverity.INFO,
     "support_ticket": NotificationSeverity.INFO,
+    "support_ticket_created": NotificationSeverity.INFO,
+    "support_ticket_updated": NotificationSeverity.INFO,
+    "support_ticket_comment": NotificationSeverity.INFO,
+    "support_ticket_resolved": NotificationSeverity.SUCCESS,
+    "support_ticket_assigned": NotificationSeverity.INFO,
+    "support_ticket_reopened": NotificationSeverity.WARNING,
+    "support_ticket_priority_changed": NotificationSeverity.INFO,
+    "support_ticket_status_changed": NotificationSeverity.INFO,
     # System events
     "integration_connected": NotificationSeverity.SUCCESS,
     "integration_error": NotificationSeverity.ERROR,
@@ -138,6 +158,14 @@ EVENT_ICON_MAP: dict[str, str] = {
     "feedback_received": "feedback",
     "nps_response": "star",
     "support_ticket": "support",
+    "support_ticket_created": "support",
+    "support_ticket_updated": "support",
+    "support_ticket_comment": "feedback",
+    "support_ticket_resolved": "check",
+    "support_ticket_assigned": "user",
+    "support_ticket_reopened": "warning",
+    "support_ticket_priority_changed": "warning",
+    "support_ticket_status_changed": "info",
     # System events
     "integration_connected": "check",
     "integration_error": "error",
@@ -168,6 +196,7 @@ class NotificationBuilder:
         customer_data: dict[str, Any],
         company: Company | None = None,
         person: Person | None = None,
+        sentiment: SentimentInfo | None = None,
     ) -> RichNotification:
         """Build a RichNotification from event and customer data.
 
@@ -176,6 +205,7 @@ class NotificationBuilder:
             customer_data: Customer data dictionary.
             company: Optional enriched Company model.
             person: Optional enriched Person model (from Hunter.io).
+            sentiment: Optional sentiment analysis results (from Ollama).
 
         Returns:
             RichNotification ready for formatting.
@@ -199,6 +229,7 @@ class NotificationBuilder:
         # Build sub-models
         customer_info = self._build_customer_info(customer_data)
         payment_info = self._build_payment_info(event_data)
+        ticket_info = self._build_ticket_info(event_data)
         company_info = self._build_company_info(company) if company else None
         person_info = self._build_person_info(person) if person else None
 
@@ -217,6 +248,12 @@ class NotificationBuilder:
         severity = EVENT_SEVERITY_MAP.get(event_type, NotificationSeverity.INFO)
         headline_icon = EVENT_ICON_MAP.get(event_type, "info")
 
+        # Adjust severity based on ticket priority for support events
+        if ticket_info and ticket_info.priority == "urgent":
+            severity = NotificationSeverity.ERROR
+        elif ticket_info and ticket_info.priority == "high":
+            severity = NotificationSeverity.WARNING
+
         # Detect recurring status
         is_recurring, billing_interval = self._detect_recurring(event_data)
 
@@ -233,6 +270,8 @@ class NotificationBuilder:
             customer=customer_info,
             insight=insight,
             payment=payment_info,
+            ticket=ticket_info,
+            sentiment=sentiment,
             company=company_info,
             person=person_info,
             actions=actions,
@@ -319,6 +358,51 @@ class NotificationBuilder:
             order_number=metadata.get("order_number"),
             line_items=metadata.get("line_items", []),
             failure_reason=metadata.get("failure_reason"),
+        )
+
+    def _build_ticket_info(self, event_data: dict[str, Any]) -> TicketInfo | None:
+        """Build TicketInfo from event data.
+
+        Args:
+            event_data: Event data dictionary.
+
+        Returns:
+            TicketInfo or None if not a support ticket event.
+        """
+        event_type = event_data.get("type", "")
+        if not event_type.startswith("support_ticket"):
+            return None
+
+        metadata = event_data.get("metadata", {})
+
+        # Extract requester info
+        requester = metadata.get("requester", {})
+        requester_email = (
+            requester.get("email") if isinstance(requester, dict) else None
+        )
+        requester_name = requester.get("name") if isinstance(requester, dict) else None
+
+        # Extract assignee info
+        assignee = metadata.get("assignee", {})
+        assignee_name = assignee.get("name") if isinstance(assignee, dict) else None
+
+        # Extract tags
+        tags = metadata.get("tags", [])
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",")]
+
+        return TicketInfo(
+            ticket_id=metadata.get("ticket_id", event_data.get("external_id", "")),
+            subject=metadata.get("subject", ""),
+            status=metadata.get("ticket_status", "open"),
+            priority=metadata.get("priority"),
+            requester_email=requester_email,
+            requester_name=requester_name,
+            assignee_name=assignee_name,
+            description=metadata.get("description"),
+            channel=metadata.get("channel"),
+            tags=tags,
+            latest_comment=metadata.get("latest_comment"),
         )
 
     def _build_company_info(self, company: Company) -> CompanyInfo:
@@ -507,6 +591,69 @@ class NotificationBuilder:
                 return f"Order #{order_number} delivered"
             return "Shipment delivered"
 
+        # Support ticket headlines - extract common metadata once
+        elif event_type.startswith("support_ticket"):
+            metadata = event_data.get("metadata", {})
+            subject = metadata.get("subject", "")
+
+            if event_type == "support_ticket_created":
+                priority = metadata.get("priority", "").lower()
+                if priority == "urgent":
+                    return (
+                        f"Urgent ticket: {subject}"
+                        if subject
+                        else "Urgent support ticket"
+                    )
+                elif priority == "high":
+                    return (
+                        f"High priority: {subject}"
+                        if subject
+                        else "High priority ticket"
+                    )
+                return f"New ticket: {subject}" if subject else "New support ticket"
+
+            elif event_type == "support_ticket_comment":
+                return f"Reply on: {subject}" if subject else "New ticket reply"
+
+            elif event_type == "support_ticket_resolved":
+                return f"Resolved: {subject}" if subject else "Ticket resolved"
+
+            elif event_type == "support_ticket_assigned":
+                assignee = metadata.get("assignee", {})
+                assignee_name = (
+                    assignee.get("name") if isinstance(assignee, dict) else ""
+                )
+                if assignee_name:
+                    return (
+                        f"Assigned to {assignee_name}: {subject}"
+                        if subject
+                        else f"Ticket assigned to {assignee_name}"
+                    )
+                return f"Ticket assigned: {subject}" if subject else "Ticket assigned"
+
+            elif event_type == "support_ticket_reopened":
+                return f"Reopened: {subject}" if subject else "Ticket reopened"
+
+            elif event_type == "support_ticket_priority_changed":
+                priority = metadata.get("priority", "")
+                if priority:
+                    return (
+                        f"Priority changed to {priority}: {subject}"
+                        if subject
+                        else f"Priority: {priority}"
+                    )
+                return f"Priority changed: {subject}" if subject else "Priority changed"
+
+            else:  # support_ticket_updated, support_ticket_status_changed
+                status = metadata.get("ticket_status", "")
+                if status:
+                    return (
+                        f"{status.title()}: {subject}"
+                        if subject
+                        else f"Ticket {status}"
+                    )
+                return f"Updated: {subject}" if subject else "Ticket updated"
+
         else:
             title = event_type.replace("_", " ").title()
             return title
@@ -527,46 +674,12 @@ class NotificationBuilder:
         Returns:
             List of ActionButton objects.
         """
-        event_type = event_data.get("type", "")
-        provider = event_data.get("provider", "")
-        metadata = event_data.get("metadata", {})
-
         actions: list[ActionButton] = []
 
         # Provider-specific dashboard link
-        if provider == "stripe":
-            customer_id = metadata.get("stripe_customer_id")
-            if customer_id:
-                actions.append(
-                    ActionButton(
-                        text="View in Stripe",
-                        url=f"https://dashboard.stripe.com/customers/{customer_id}",
-                        style="primary",
-                    )
-                )
-
-        elif provider == "chargify":
-            subscription_id = metadata.get("subscription_id")
-            if subscription_id:
-                actions.append(
-                    ActionButton(
-                        text="View in Chargify",
-                        url=f"https://app.chargify.com/subscriptions/{subscription_id}",
-                        style="primary",
-                    )
-                )
-
-        elif provider == "shopify":
-            order_id = metadata.get("order_id")
-            shop_domain = metadata.get("shop_domain")
-            if order_id and shop_domain:
-                actions.append(
-                    ActionButton(
-                        text="View Order",
-                        url=f"https://{shop_domain}/admin/orders/{order_id}",
-                        style="primary",
-                    )
-                )
+        provider_action = self._build_provider_action(event_data)
+        if provider_action:
+            actions.append(provider_action)
 
         # Add company website link if enriched
         if company and company.domain:
@@ -579,6 +692,7 @@ class NotificationBuilder:
             )
 
         # Add contact customer link for failures
+        event_type = event_data.get("type", "")
         email = customer_data.get("email")
         if event_type == "payment_failure" and email:
             actions.append(
@@ -590,6 +704,80 @@ class NotificationBuilder:
             )
 
         return actions
+
+    def _build_provider_action(self, event_data: dict[str, Any]) -> ActionButton | None:
+        """Build provider-specific action button.
+
+        Args:
+            event_data: Event data dictionary.
+
+        Returns:
+            ActionButton for the provider's dashboard or None.
+        """
+        provider = event_data.get("provider", "")
+        metadata = event_data.get("metadata", {})
+
+        if provider == "stripe":
+            return self._build_stripe_action(metadata)
+        elif provider == "chargify":
+            return self._build_chargify_action(metadata)
+        elif provider == "shopify":
+            return self._build_shopify_action(metadata)
+        elif provider == "zendesk":
+            return self._build_zendesk_action(metadata)
+        return None
+
+    def _build_stripe_action(self, metadata: dict[str, Any]) -> ActionButton | None:
+        """Build Stripe dashboard action button."""
+        customer_id = metadata.get("stripe_customer_id")
+        if not customer_id:
+            return None
+        return ActionButton(
+            text="View in Stripe",
+            url=f"https://dashboard.stripe.com/customers/{customer_id}",
+            style="primary",
+        )
+
+    def _build_chargify_action(self, metadata: dict[str, Any]) -> ActionButton | None:
+        """Build Chargify dashboard action button."""
+        subscription_id = metadata.get("subscription_id")
+        if not subscription_id:
+            return None
+        return ActionButton(
+            text="View in Chargify",
+            url=f"https://app.chargify.com/subscriptions/{subscription_id}",
+            style="primary",
+        )
+
+    def _build_shopify_action(self, metadata: dict[str, Any]) -> ActionButton | None:
+        """Build Shopify order action button."""
+        order_id = metadata.get("order_id")
+        shop_domain = metadata.get("shop_domain")
+        if not (order_id and shop_domain):
+            return None
+        return ActionButton(
+            text="View Order",
+            url=f"https://{shop_domain}/admin/orders/{order_id}",
+            style="primary",
+        )
+
+    def _build_zendesk_action(self, metadata: dict[str, Any]) -> ActionButton | None:
+        """Build Zendesk ticket action button."""
+        ticket_id = metadata.get("ticket_id")
+        zendesk_subdomain = metadata.get("zendesk_subdomain", "").lower()
+
+        if not (ticket_id and zendesk_subdomain):
+            return None
+
+        # Validate subdomain format (alphanumeric and hyphens only)
+        if not re.match(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$", zendesk_subdomain):
+            return None
+
+        return ActionButton(
+            text="View in Zendesk",
+            url=f"https://{zendesk_subdomain}.zendesk.com/agent/tickets/{ticket_id}",
+            style="primary",
+        )
 
     def _detect_recurring(self, event_data: dict[str, Any]) -> tuple[bool, str | None]:
         """Detect if payment is recurring and extract billing interval.

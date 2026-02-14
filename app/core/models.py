@@ -320,6 +320,8 @@ class Integration(models.Model):
         ("stripe_customer", "Stripe Customer Payments"),
         ("shopify", "Shopify Ecommerce"),
         ("chargify", "Chargify / Maxio Advanced Billing"),
+        # Support integrations (workspace-specific)
+        ("zendesk", "Zendesk Support"),
         # Notification integrations (workspace-specific)
         ("slack_notifications", "Slack Notifications"),
         # Enrichment integrations (workspace-specific, user-provided API keys)

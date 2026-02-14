@@ -61,6 +61,14 @@ class NotificationType(Enum):
     FEEDBACK_RECEIVED = "feedback_received"
     NPS_RESPONSE = "nps_response"
     SUPPORT_TICKET = "support_ticket"
+    SUPPORT_TICKET_CREATED = "support_ticket_created"
+    SUPPORT_TICKET_UPDATED = "support_ticket_updated"
+    SUPPORT_TICKET_COMMENT = "support_ticket_comment"
+    SUPPORT_TICKET_RESOLVED = "support_ticket_resolved"
+    SUPPORT_TICKET_ASSIGNED = "support_ticket_assigned"
+    SUPPORT_TICKET_REOPENED = "support_ticket_reopened"
+    SUPPORT_TICKET_PRIORITY_CHANGED = "support_ticket_priority_changed"
+    SUPPORT_TICKET_STATUS_CHANGED = "support_ticket_status_changed"
 
     # System events
     INTEGRATION_CONNECTED = "integration_connected"
@@ -100,6 +108,14 @@ EVENT_CATEGORY_MAP: dict[NotificationType, EventCategory] = {
     NotificationType.FEEDBACK_RECEIVED: EventCategory.SUPPORT,
     NotificationType.NPS_RESPONSE: EventCategory.SUPPORT,
     NotificationType.SUPPORT_TICKET: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_CREATED: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_UPDATED: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_COMMENT: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_RESOLVED: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_ASSIGNED: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_REOPENED: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_PRIORITY_CHANGED: EventCategory.SUPPORT,
+    NotificationType.SUPPORT_TICKET_STATUS_CHANGED: EventCategory.SUPPORT,
     NotificationType.INTEGRATION_CONNECTED: EventCategory.SYSTEM,
     NotificationType.INTEGRATION_ERROR: EventCategory.SYSTEM,
     NotificationType.WEBHOOK_RECEIVED: EventCategory.SYSTEM,
@@ -305,6 +321,56 @@ class InsightInfo:
 
 
 @dataclass
+class TicketInfo:
+    """Support ticket information for ticket-related notifications.
+
+    Attributes:
+        ticket_id: External ticket identifier.
+        subject: Ticket subject/title.
+        status: Current ticket status (new, open, pending, solved, etc.).
+        priority: Ticket priority (low, normal, high, urgent).
+        requester_email: Email of the person who submitted the ticket.
+        requester_name: Name of the person who submitted the ticket.
+        assignee_name: Name of the assigned support agent.
+        description: Ticket description/body text.
+        channel: Channel through which the ticket was created (web, email, etc.).
+        tags: List of tags associated with the ticket.
+        latest_comment: Most recent comment on the ticket.
+    """
+
+    ticket_id: str
+    subject: str
+    status: str
+    priority: str | None = None
+    requester_email: str | None = None
+    requester_name: str | None = None
+    assignee_name: str | None = None
+    description: str | None = None
+    channel: str | None = None
+    tags: list[str] = field(default_factory=list)
+    latest_comment: str | None = None
+
+
+@dataclass
+class SentimentInfo:
+    """Sentiment analysis results for support content.
+
+    Attributes:
+        sentiment: Detected sentiment (positive, negative, neutral).
+        score: Confidence score between 0.0 and 1.0.
+        urgency: Detected urgency level (low, medium, high).
+        topics: List of detected topics/categories.
+        summary: Brief AI-generated summary of the content.
+    """
+
+    sentiment: str  # positive, negative, neutral
+    score: float  # 0.0-1.0 confidence
+    urgency: str  # low, medium, high
+    topics: list[str] = field(default_factory=list)
+    summary: str | None = None
+
+
+@dataclass
 class DetailField:
     """A key-value field for detail sections.
 
@@ -398,6 +464,12 @@ class RichNotification:
     # Payment/Order details (optional - for payment/subscription events)
     payment: PaymentInfo | None = None
 
+    # Support ticket details (optional - for support events)
+    ticket: TicketInfo | None = None
+
+    # Sentiment analysis (optional - for support events with AI analysis)
+    sentiment: SentimentInfo | None = None
+
     # Generic detail sections (optional - for non-payment events or extras)
     detail_sections: list[DetailSection] = field(default_factory=list)
 
@@ -434,6 +506,15 @@ class RichNotification:
             True if this is a payment or subscription event.
         """
         return self.category in (EventCategory.PAYMENT, EventCategory.SUBSCRIPTION)
+
+    @property
+    def is_support_event(self) -> bool:
+        """Check if this is a support-related event.
+
+        Returns:
+            True if this is a support ticket or feedback event.
+        """
+        return self.category == EventCategory.SUPPORT
 
     def get_payment_type_display(self) -> str:
         """Get formatted payment type display.

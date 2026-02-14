@@ -27,6 +27,8 @@ from core.models import Integration, Workspace
 from django.conf import settings
 from django.core.cache import cache
 
+from .thread_mapping import thread_mapping_service
+
 logger = logging.getLogger(__name__)
 
 # Minimum age (in seconds) before an orphaned event is processed on startup.
@@ -556,16 +558,16 @@ class PendingEventQueue:
             logger.error(f"Failed to build notification: {e}", exc_info=True)
             return False  # Retry later
 
-        # Get Slack webhook URL
-        slack_webhook_url = self._get_slack_webhook_url(workspace)
+        # Get Slack credentials (webhook URL and optionally bot_token for threading)
+        slack_credentials = self._get_slack_credentials(workspace)
 
-        if not slack_webhook_url:
+        if not slack_credentials:
             logger.warning(
-                f"No Slack webhook URL configured for workspace "
+                f"No Slack credentials configured for workspace "
                 f"{workspace.uuid if workspace else 'unknown'}, "
                 f"skipping notification"
             )
-            return True  # No webhook = nothing to do, consider success
+            return True  # No credentials = nothing to do, consider success
 
         registry = PluginRegistry.instance()
         slack_plugin = registry.get(PluginType.DESTINATION, "slack")
@@ -574,9 +576,44 @@ class PendingEventQueue:
             logger.error("Slack destination plugin not found or not configured")
             return False  # Retry later
 
+        # Check for thread mapping (for Zendesk ticket updates)
+        options: dict[str, Any] = {}
+        entity_type, entity_id = self._get_thread_info(workspace, event_data)
+
+        if entity_type and entity_id and workspace:
+            # Look up existing thread
+            thread_info = thread_mapping_service.get_thread_ts(
+                workspace, entity_type, entity_id
+            )
+            if thread_info:
+                options["thread_ts"] = thread_info.thread_ts
+                options["channel"] = thread_info.channel_id
+                logger.debug(
+                    f"Found existing thread for {entity_type}:{entity_id}: "
+                    f"{thread_info.thread_ts}"
+                )
+
         try:
-            slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
+            result = slack_plugin.send(formatted, slack_credentials, options)
             logger.info(f"Sent {event_type} notification for customer {customer_id}")
+
+            # Store thread mapping for new threads (Zendesk tickets)
+            if (
+                entity_type
+                and entity_id
+                and workspace
+                and result.get("thread_ts")
+                and not options.get("thread_ts")  # Only store if this is a new thread
+            ):
+                channel_id = result.get("channel") or slack_credentials.get("channel")
+                if channel_id:
+                    thread_mapping_service.store_thread_ts(
+                        workspace=workspace,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        channel_id=channel_id,
+                        thread_ts=result["thread_ts"],
+                    )
 
             # Record the event after successful send
             event_consolidation_service.record_event(
@@ -621,6 +658,85 @@ class PendingEventQueue:
                 f"No active Slack integration found for workspace {workspace.uuid}"
             )
             return None
+
+    def _get_slack_credentials(
+        self, workspace: Workspace | None
+    ) -> dict[str, Any] | None:
+        """Get Slack credentials for a workspace (webhook URL, bot token, channel).
+
+        For threading support, we need the bot_token and channel_id.
+        Falls back to webhook-only if bot token isn't available.
+
+        Args:
+            workspace: Workspace model instance.
+
+        Returns:
+            Dict with 'webhook_url' and optionally 'bot_token' and 'channel',
+            or None if not configured.
+        """
+        if not workspace:
+            return None
+
+        try:
+            slack_integration = Integration.objects.get(
+                workspace=workspace,
+                integration_type="slack_notifications",
+                is_active=True,
+            )
+            oauth_credentials = slack_integration.oauth_credentials or {}
+            incoming_webhook = oauth_credentials.get("incoming_webhook", {})
+
+            credentials: dict[str, Any] = {}
+
+            # Get webhook URL
+            webhook_url = incoming_webhook.get("url")
+            if webhook_url:
+                credentials["webhook_url"] = webhook_url
+
+            # Get bot token for API-based sending (enables threading)
+            bot_token = oauth_credentials.get("access_token")
+            if bot_token:
+                credentials["bot_token"] = bot_token
+
+            # Get channel ID (from webhook or explicit setting)
+            channel_id = incoming_webhook.get("channel_id")
+            if channel_id:
+                credentials["channel"] = channel_id
+
+            return credentials if credentials else None
+
+        except Integration.DoesNotExist:
+            logger.warning(
+                f"No active Slack integration found for workspace {workspace.uuid}"
+            )
+            return None
+
+    def _get_thread_info(
+        self,
+        workspace: Workspace,
+        event_data: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        """Get thread info for Zendesk ticket events.
+
+        Args:
+            workspace: Workspace model instance.
+            event_data: Event data dictionary.
+
+        Returns:
+            Tuple of (entity_type, entity_id) for thread lookup, or (None, None).
+        """
+        event_type = event_data.get("type", "")
+        if not event_type.startswith("support_ticket"):
+            return None, None
+
+        provider = event_data.get("provider", "")
+        metadata = event_data.get("metadata", {})
+        ticket_id = metadata.get("ticket_id") or event_data.get("external_id")
+
+        if provider == "zendesk" and ticket_id:
+            return f"{provider}_ticket", str(ticket_id)
+
+        return None, None
 
     def recover_orphaned_events(self) -> int:
         """Recover and process orphaned events from Redis.

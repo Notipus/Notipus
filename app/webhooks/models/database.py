@@ -1,9 +1,69 @@
+"""Database models for webhook processing.
+
+This module contains Django ORM models for storing webhook-related data
+including payment records, order records, and Slack thread mappings.
+"""
+
+from core.models import Workspace
 from django.db import models
 from django.utils import timezone
 
 
+class SlackThreadMapping(models.Model):
+    """Maps external entities (tickets, orders) to Slack threads.
+
+    This model tracks the relationship between external entities like
+    support tickets and their corresponding Slack message threads,
+    enabling threaded updates for ongoing conversations.
+
+    Attributes:
+        workspace: The workspace this mapping belongs to.
+        entity_type: Type of entity (e.g., "zendesk_ticket", "shopify_order").
+        entity_id: External identifier for the entity.
+        slack_channel_id: Slack channel where the thread exists.
+        slack_thread_ts: Slack thread timestamp (message ID).
+        created_at: When the mapping was created.
+        updated_at: When the mapping was last updated.
+    """
+
+    ENTITY_TYPE_CHOICES = [
+        ("zendesk_ticket", "Zendesk Ticket"),
+        ("shopify_order", "Shopify Order"),
+        ("stripe_subscription", "Stripe Subscription"),
+        ("chargify_subscription", "Chargify Subscription"),
+    ]
+
+    workspace = models.ForeignKey(
+        Workspace,
+        on_delete=models.CASCADE,
+        related_name="thread_mappings",
+    )
+    entity_type = models.CharField(max_length=50, choices=ENTITY_TYPE_CHOICES)
+    entity_id = models.CharField(max_length=255)
+    slack_channel_id = models.CharField(max_length=50)
+    slack_thread_ts = models.CharField(max_length=50)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ["workspace", "entity_type", "entity_id"]
+        indexes = [
+            models.Index(fields=["workspace", "entity_type", "entity_id"]),
+            models.Index(fields=["slack_channel_id", "slack_thread_ts"]),
+            models.Index(fields=["created_at"]),
+        ]
+        verbose_name = "Slack Thread Mapping"
+        verbose_name_plural = "Slack Thread Mappings"
+
+    def __str__(self) -> str:
+        """Return string representation of the mapping."""
+        channel_thread = f"{self.slack_channel_id}/{self.slack_thread_ts}"
+        return f"{self.entity_type}:{self.entity_id} -> {channel_thread}"
+
+
 class PaymentRecord(models.Model):
-    """Store payment records from various providers"""
+    """Store payment records from various providers."""
 
     PROVIDER_CHOICES = [
         ("chargify", "Chargify"),
@@ -54,7 +114,7 @@ class PaymentRecord(models.Model):
 
 
 class OrderRecord(models.Model):
-    """Store order records from e-commerce platforms"""
+    """Store order records from e-commerce platforms."""
 
     PLATFORM_CHOICES = [
         ("shopify", "Shopify"),
@@ -107,7 +167,7 @@ class OrderRecord(models.Model):
 
 
 class CrossReferenceLog(models.Model):
-    """Log cross-reference attempts for debugging and monitoring"""
+    """Log cross-reference attempts for debugging and monitoring."""
 
     LOOKUP_TYPE_CHOICES = [
         ("shopify_to_chargify", "Shopify Order to Chargify Payment"),

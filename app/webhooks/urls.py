@@ -23,6 +23,11 @@ urlpatterns = [
         webhook_router.customer_stripe_webhook,
         name="customer_stripe_webhook",
     ),
+    re_path(
+        r"^customer/(?P<organization_uuid>[0-9a-f-]+)/zendesk/$",
+        webhook_router.customer_zendesk_webhook,
+        name="customer_zendesk_webhook",
+    ),
     # Global billing webhooks (Notipus revenue)
     path(
         "billing/stripe/",

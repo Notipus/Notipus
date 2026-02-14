@@ -566,6 +566,16 @@ PLUGINS: dict = {
 # Auto-discover plugins from app/plugins/ package
 PLUGIN_AUTODISCOVER = True
 
+# Sentiment Analysis Configuration (Optional)
+# When enabled, support ticket content is analyzed for sentiment and urgency
+# using a self-hosted Ollama instance for privacy
+SENTIMENT_ANALYSIS_ENABLED = (
+    os.environ.get("SENTIMENT_ANALYSIS_ENABLED", "False").lower() == "true"
+)
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
+OLLAMA_TIMEOUT = int(os.environ.get("OLLAMA_TIMEOUT", "30"))
+
 
 # Note: Provider factories removed - now handled per-tenant
 

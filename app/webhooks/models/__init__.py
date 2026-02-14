@@ -3,6 +3,12 @@
 Exports notification-related models for webhook processing.
 """
 
+from .database import (
+    CrossReferenceLog,
+    OrderRecord,
+    PaymentRecord,
+    SlackThreadMapping,
+)
 from .rich_notification import (
     EVENT_CATEGORY_MAP,
     ActionButton,
@@ -19,6 +25,7 @@ from .rich_notification import (
 )
 
 __all__ = [
+    # Rich notification models
     "ActionButton",
     "CompanyInfo",
     "CustomerInfo",
@@ -31,4 +38,9 @@ __all__ = [
     "NotificationType",
     "PaymentInfo",
     "RichNotification",
+    # Database models
+    "CrossReferenceLog",
+    "OrderRecord",
+    "PaymentRecord",
+    "SlackThreadMapping",
 ]

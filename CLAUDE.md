@@ -27,6 +27,7 @@ uv run python app/manage.py runserver   # Start dev server
 
 # Generate migrations (uses SQLite to avoid needing PostgreSQL)
 PYTHONPATH=app DJANGO_SETTINGS_MODULE=django_notipus.test_settings uv run python app/manage.py makemigrations core --name migration_name
+PYTHONPATH=app DJANGO_SETTINGS_MODULE=django_notipus.test_settings uv run python app/manage.py showmigrations
 
 # Frontend (Tailwind CSS)
 bun run build                           # Build CSS and fonts
@@ -35,12 +36,16 @@ bun run dev                             # Watch mode
 
 ## Architecture
 
-**Multi-tenant SaaS** for processing payment webhooks (Stripe, Shopify, Chargify) and delivering enriched Slack notifications.
+**Multi-tenant SaaS** for processing payment webhooks (Stripe, Shopify, Chargify, Zendesk) and delivering enriched Slack notifications.
 
 ### Core Flow
 ```
 Webhook → Validation (HMAC) → Parsing → Enrichment (Brandfetch) → Formatting → Slack Delivery
 ```
+
+### Multi-Tenant Webhooks
+- Customer webhooks: `POST /webhook/customer/{org_uuid}/{provider}/`
+- Billing webhooks: `POST /webhook/billing/stripe/`
 
 ### Plugin System (ADR-001)
 
@@ -75,6 +80,12 @@ BasePlugin (abstract)
 - **Integration**: Webhook source/destination configs per workspace
 - **RichNotification**: Processed notifications with company enrichment
 - **Company**: Enriched company data from Brandfetch
+- **WorkspaceMember**: User-workspace relationships
+- **Plan**, **Subscription**: Billing
+
+### Services Layer
+- `app/core/services/` - Business logic (Stripe, Shopify, enrichment)
+- `app/webhooks/services/` - Event processing, notifications, rate limiting
 
 ## Code Standards
 

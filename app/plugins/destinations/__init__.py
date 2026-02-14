@@ -13,7 +13,9 @@ Usage:
 
     # Format and send a notification
     formatted = slack_plugin.format(notification)
-    success = slack_plugin.send(formatted, credentials={"webhook_url": "..."})
+    result = slack_plugin.send(formatted, credentials={"webhook_url": "..."})
+    if result["success"]:
+        thread_ts = result.get("thread_ts")  # For threading support
 """
 
 from plugins.destinations.base import BaseDestinationPlugin
