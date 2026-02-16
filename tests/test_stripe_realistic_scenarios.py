@@ -974,53 +974,125 @@ class TestWebhookCustomerDataExtraction:
             assert customer_data["email"] == "invoice@new.com"
 
 
-class TestParsePlanName:
-    """Test _parse_plan_name() with known Stripe line item description formats."""
+class TestExtractPlanName:
+    """Test plan name extraction from invoice line items.
+
+    Tests structured field lookups (plan/price objects) and fallback
+    to description parsing.
+    """
 
     @pytest.fixture
     def stripe_plugin(self) -> StripeSourcePlugin:
         """Create a Stripe plugin instance."""
         return StripeSourcePlugin()
 
-    def test_quantity_x_plan_format(self, stripe_plugin: StripeSourcePlugin) -> None:
-        """Test '2 screen × Business Plan Monthly (at $26.60 / month)' format."""
-        result = stripe_plugin._parse_plan_name(
-            "2 screen × Business Plan Monthly (at $26.60 / month)"
-        )
-        assert result == "Business Plan Monthly"
+    def test_prefers_plan_nickname(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test that plan.nickname is preferred over description parsing."""
+        item: dict[str, Any] = {
+            "plan": {"nickname": "Business Monthly", "name": "price_123"},
+            "description": "2 screen × Something Else (at $26.60 / month)",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Business Monthly"
 
-    def test_trial_period_format(self, stripe_plugin: StripeSourcePlugin) -> None:
-        """Test 'Trial period for Business Plan Monthly (per screen)' format."""
-        result = stripe_plugin._parse_plan_name(
-            "Trial period for Business Plan Monthly (per screen)"
-        )
-        assert result == "Business Plan Monthly"
+    def test_falls_back_to_plan_name(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test fallback to plan.name when nickname is absent."""
+        item: dict[str, Any] = {
+            "plan": {"name": "Pro Plan"},
+            "description": "Something in description",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Pro Plan"
 
-    def test_plan_with_parenthetical(self, stripe_plugin: StripeSourcePlugin) -> None:
-        """Test 'Business Plan Monthly (per screen)' format."""
-        result = stripe_plugin._parse_plan_name(
-            "Business Plan Monthly (per screen)"
-        )
-        assert result == "Business Plan Monthly"
+    def test_uses_price_nickname(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test price.nickname extraction."""
+        item: dict[str, Any] = {
+            "price": {"nickname": "Enterprise Annual"},
+            "description": "Fallback description",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Enterprise Annual"
 
-    def test_plain_plan_name(self, stripe_plugin: StripeSourcePlugin) -> None:
-        """Test plain plan name without parentheses."""
-        result = stripe_plugin._parse_plan_name("Pro Plan Annual")
-        assert result == "Pro Plan Annual"
-
-    def test_empty_description(self, stripe_plugin: StripeSourcePlugin) -> None:
-        """Test empty description returns None."""
-        assert stripe_plugin._parse_plan_name("") is None
-        assert stripe_plugin._parse_plan_name(None) is None  # type: ignore[arg-type]
-
-    def test_single_item_quantity_format(
+    def test_uses_expanded_product_name(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:
-        """Test '1 user × Starter Plan (at $9.99 / month)' format."""
-        result = stripe_plugin._parse_plan_name(
-            "1 user × Starter Plan (at $9.99 / month)"
+        """Test price.product.name when product is expanded."""
+        item: dict[str, Any] = {
+            "price": {"product": {"name": "Starter Plan"}},
+            "description": "Fallback",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Starter Plan"
+
+    def test_uses_new_api_pricing_field(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test new API pricing.price_details with expanded objects."""
+        item: dict[str, Any] = {
+            "pricing": {
+                "type": "price_details",
+                "price_details": {
+                    "price": {"nickname": "Growth Plan"},
+                },
+            },
+            "description": "Fallback",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Growth Plan"
+
+    def test_falls_back_to_description_quantity_format(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: '2 screen × Plan (at $X / month)'."""
+        item: dict[str, Any] = {
+            "description": "2 screen × Business Plan Monthly (at $26.60 / month)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
         )
-        assert result == "Starter Plan"
+
+    def test_falls_back_to_description_trial_format(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: 'Trial period for Plan (details)'."""
+        item: dict[str, Any] = {
+            "description": "Trial period for Business Plan Monthly (per screen)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
+        )
+
+    def test_falls_back_to_description_simple_format(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: 'Plan (details)'."""
+        item: dict[str, Any] = {
+            "description": "Business Plan Monthly (per screen)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
+        )
+
+    def test_falls_back_to_description_plain_name(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: plain plan name."""
+        item: dict[str, Any] = {"description": "Pro Plan Annual"}
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Pro Plan Annual"
+
+    def test_empty_item_returns_none(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test empty line item returns None."""
+        assert stripe_plugin._extract_plan_name_from_line_item({}) is None
+        assert stripe_plugin._extract_plan_name_from_line_item({"description": ""}) is None
+
+    def test_skips_plan_with_no_name(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test that plan object without nickname/name falls through."""
+        item: dict[str, Any] = {
+            "plan": {"amount": 2660, "interval": "month"},
+            "description": "Business Plan Monthly (per screen)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
+        )
 
 
 class TestInvoiceMetadataExtraction:

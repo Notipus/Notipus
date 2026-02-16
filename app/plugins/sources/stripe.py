@@ -6,7 +6,6 @@ using the official Stripe SDK.
 """
 
 import logging
-import re
 from typing import Any, ClassVar
 
 import stripe
@@ -516,10 +515,90 @@ class StripeSourcePlugin(BaseSourcePlugin):
             if prev_plan and prev_plan.get("amount") is not None:
                 metadata["previous_amount"] = prev_plan["amount"] / 100
 
-    def _parse_plan_name(self, description: str) -> str | None:
-        """Parse plan name from Stripe line item description.
+    def _get_name_from_structured_fields(
+        self, item: dict[str, Any]
+    ) -> str | None:
+        """Try to get plan name from structured Stripe line item fields.
 
-        Known formats:
+        Checks plan/price objects (old API, pre-basil) and the pricing
+        field (new API, 2025-03-31+) for human-readable plan names.
+
+        Args:
+            item: A single line item dict from lines.data[].
+
+        Returns:
+            Plan name string, or None if no structured name found.
+        """
+        # Old API: plan object (pre-basil)
+        plan = item.get("plan")
+        if isinstance(plan, dict):
+            name = plan.get("nickname") or plan.get("name")
+            if name:
+                return name
+
+        # Old API: price object (pre-basil)
+        price = item.get("price")
+        if isinstance(price, dict):
+            name = price.get("nickname")
+            if name:
+                return name
+            product = price.get("product")
+            if isinstance(product, dict) and product.get("name"):
+                return product["name"]
+
+        # New API (2025-03-31+): pricing.price_details (if expanded)
+        pricing = item.get("pricing")
+        if isinstance(pricing, dict):
+            return self._get_name_from_pricing(pricing)
+
+        return None
+
+    def _get_name_from_pricing(self, pricing: dict[str, Any]) -> str | None:
+        """Extract plan name from the new API pricing field.
+
+        Args:
+            pricing: The pricing dict from a line item.
+
+        Returns:
+            Plan name, or None if not found or not expanded.
+        """
+        price_details = pricing.get("price_details")
+        if not isinstance(price_details, dict):
+            return None
+
+        price_obj = price_details.get("price")
+        if isinstance(price_obj, dict) and price_obj.get("nickname"):
+            return price_obj["nickname"]
+
+        product_obj = price_details.get("product")
+        if isinstance(product_obj, dict) and product_obj.get("name"):
+            return product_obj["name"]
+
+        return None
+
+    def _extract_plan_name_from_line_item(
+        self, item: dict[str, Any]
+    ) -> str | None:
+        """Extract plan name from an invoice line item.
+
+        Tries structured fields first (plan/price objects from older API
+        versions, or expanded pricing objects), then falls back to parsing
+        the description string.
+
+        Args:
+            item: A single line item dict from lines.data[].
+
+        Returns:
+            Plan name string, or None if not found.
+        """
+        return self._get_name_from_structured_fields(
+            item
+        ) or self._parse_plan_name_from_description(item.get("description", ""))
+
+    def _parse_plan_name_from_description(self, description: str) -> str | None:
+        """Parse plan name from Stripe's generated line item description.
+
+        Stripe generates descriptions in predictable formats:
         - "2 screen × Business Plan Monthly (at $26.60 / month)"
         - "Trial period for Business Plan Monthly (per screen)"
         - "Business Plan Monthly (per screen)"
@@ -534,54 +613,92 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if not description:
             return None
 
-        # "Trial period for <plan> (...)"
-        match = re.match(r"Trial period for (.+?)(?:\s*\(|$)", description)
-        if match:
-            return match.group(1).strip()
+        text = description.strip()
 
-        # "<quantity> <unit> × <plan> (...)"
-        match = re.match(r"\d+\s+\S+\s*×\s*(.+?)(?:\s*\(|$)", description)
-        if match:
-            return match.group(1).strip()
+        # Strip "Trial period for " prefix
+        trial_prefix = "Trial period for "
+        if text.startswith(trial_prefix):
+            text = text[len(trial_prefix) :]
 
-        # "<plan> (at $X / month)" or "<plan> (per unit)"
-        match = re.match(r"(.+?)(?:\s*\()", description)
-        if match:
-            name = match.group(1).strip()
-            # Avoid returning purely numeric or very short strings
-            if len(name) > 2:
-                return name
+        # Strip "<quantity> <unit> × " prefix (e.g. "2 screen × ")
+        if "×" in text:
+            _, _, text = text.partition("×")
+            text = text.strip()
 
-        # Plain plan name with no parentheses
-        stripped = description.strip()
-        if stripped and len(stripped) > 2:
-            return stripped
+        # Strip trailing parenthetical (e.g. "(at $26.60 / month)")
+        if "(" in text:
+            text, _, _ = text.partition("(")
+            text = text.strip()
 
-        return None
+        return text if len(text) > 2 else None
 
-    def _parse_billing_period(self, description: str) -> str | None:
-        """Parse billing period from Stripe line item description.
+    # Maps Stripe interval names to display billing periods
+    INTERVAL_MAP: ClassVar[dict[str, str]] = {
+        "month": "monthly",
+        "year": "annual",
+        "week": "weekly",
+        "day": "daily",
+    }
 
-        Looks for patterns like "at $X / month" or "at $X / year".
+    def _billing_period_from_days(self, days: int) -> str | None:
+        """Map a number of days to a billing period.
 
         Args:
-            description: Line item description string.
+            days: Number of days in the billing period.
 
         Returns:
-            Billing period string (monthly, annual, weekly), or None.
+            Billing period string, or None if unrecognized.
         """
-        if not description:
-            return None
+        if 25 <= days <= 35:
+            return "monthly"
+        if 85 <= days <= 95:
+            return "quarterly"
+        if 360 <= days <= 370:
+            return "annual"
+        if 5 <= days <= 9:
+            return "weekly"
+        return None
 
-        match = re.search(r"/\s*(month|year|week|day)", description)
-        if match:
-            interval_map = {
-                "month": "monthly",
-                "year": "annual",
-                "week": "weekly",
-                "day": "daily",
-            }
-            return interval_map.get(match.group(1))
+    def _extract_billing_period_from_line_item(
+        self, item: dict[str, Any]
+    ) -> str | None:
+        """Extract billing period from an invoice line item.
+
+        Tries structured fields first (plan.interval), then calculates
+        from the line item period timestamps, then falls back to
+        parsing the description.
+
+        Args:
+            item: A single line item dict from lines.data[].
+
+        Returns:
+            Billing period string (monthly, annual, weekly, daily), or None.
+        """
+        # 1. Old API: plan.interval
+        plan = item.get("plan")
+        if isinstance(plan, dict):
+            interval = plan.get("interval")
+            if interval and interval in self.INTERVAL_MAP:
+                return self.INTERVAL_MAP[interval]
+
+        # 2. Calculate from period start/end timestamps
+        period = item.get("period")
+        if isinstance(period, dict):
+            start = period.get("start")
+            end = period.get("end")
+            if isinstance(start, int) and isinstance(end, int) and end > start:
+                result = self._billing_period_from_days((end - start) // 86400)
+                if result:
+                    return result
+
+        # 3. Fallback: look for "/ month" or "/ year" in description
+        description = item.get("description", "")
+        if description and "/" in description:
+            _, _, after_slash = description.rpartition("/")
+            word = after_slash.strip().rstrip(")").split()[0].lower()
+            if word in self.INTERVAL_MAP:
+                return self.INTERVAL_MAP[word]
+
         return None
 
     def _extract_subscription_id(self, data: dict[str, Any]) -> str | None:
@@ -620,15 +737,15 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return
 
         first_item = line_items[0]
-        description = first_item.get("description", "")
 
-        if description and not metadata.get("plan_name"):
-            plan_name = self._parse_plan_name(description)
+        if not metadata.get("plan_name"):
+            plan_name = self._extract_plan_name_from_line_item(first_item)
             if plan_name:
                 metadata["plan_name"] = plan_name
 
-        if description and metadata.get("billing_period") == "monthly":
-            parsed_period = self._parse_billing_period(description)
+        # Refine billing_period if it was set to the "monthly" default
+        if metadata.get("billing_period") == "monthly":
+            parsed_period = self._extract_billing_period_from_line_item(first_item)
             if parsed_period:
                 metadata["billing_period"] = parsed_period
 
