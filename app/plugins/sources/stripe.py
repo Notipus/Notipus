@@ -515,9 +515,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             if prev_plan and prev_plan.get("amount") is not None:
                 metadata["previous_amount"] = prev_plan["amount"] / 100
 
-    def _get_name_from_structured_fields(
-        self, item: dict[str, Any]
-    ) -> str | None:
+    def _get_name_from_structured_fields(self, item: dict[str, Any]) -> str | None:
         """Try to get plan name from structured Stripe line item fields.
 
         Checks plan/price objects (old API, pre-basil) and the pricing
@@ -576,9 +574,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
         return None
 
-    def _extract_plan_name_from_line_item(
-        self, item: dict[str, Any]
-    ) -> str | None:
+    def _extract_plan_name_from_line_item(self, item: dict[str, Any]) -> str | None:
         """Extract plan name from an invoice line item.
 
         Tries structured fields first (plan/price objects from older API

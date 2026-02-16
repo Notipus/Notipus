@@ -546,9 +546,7 @@ class TestFailedAttemptsWithAttemptCount:
         assert result is not None
         assert "Retry #3" in result.text
 
-    def test_attempt_count_1_with_next_retry(
-        self, detector: InsightDetector
-    ) -> None:
+    def test_attempt_count_1_with_next_retry(self, detector: InsightDetector) -> None:
         """Test attempt_count 1 with next_payment_attempt shows retry date."""
         event: dict = {
             "type": "payment_failure",

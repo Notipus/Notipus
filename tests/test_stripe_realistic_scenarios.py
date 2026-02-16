@@ -1125,8 +1125,7 @@ class TestInvoiceMetadataExtraction:
                 "data": [
                     {
                         "description": (
-                            "2 screen × Business Plan Monthly"
-                            " (at $26.60 / month)"
+                            "2 screen × Business Plan Monthly (at $26.60 / month)"
                         ),
                         "quantity": 2,
                     }
