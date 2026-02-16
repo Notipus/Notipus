@@ -515,18 +515,277 @@ class StripeSourcePlugin(BaseSourcePlugin):
             if prev_plan and prev_plan.get("amount") is not None:
                 metadata["previous_amount"] = prev_plan["amount"] / 100
 
+    def _get_name_from_structured_fields(self, item: dict[str, Any]) -> str | None:
+        """Try to get plan name from structured Stripe line item fields.
+
+        Checks plan/price objects (old API, pre-basil) and the pricing
+        field (new API, 2025-03-31+) for human-readable plan names.
+
+        Args:
+            item: A single line item dict from lines.data[].
+
+        Returns:
+            Plan name string, or None if no structured name found.
+        """
+        # Old API: plan object (pre-basil)
+        plan = item.get("plan")
+        if isinstance(plan, dict):
+            name = plan.get("nickname") or plan.get("name")
+            if name:
+                return name
+
+        # Old API: price object (pre-basil)
+        price = item.get("price")
+        if isinstance(price, dict):
+            name = price.get("nickname")
+            if name:
+                return name
+            product = price.get("product")
+            if isinstance(product, dict) and product.get("name"):
+                return product["name"]
+
+        # New API (2025-03-31+): pricing.price_details (if expanded)
+        pricing = item.get("pricing")
+        if isinstance(pricing, dict):
+            return self._get_name_from_pricing(pricing)
+
+        return None
+
+    def _get_name_from_pricing(self, pricing: dict[str, Any]) -> str | None:
+        """Extract plan name from the new API pricing field.
+
+        Args:
+            pricing: The pricing dict from a line item.
+
+        Returns:
+            Plan name, or None if not found or not expanded.
+        """
+        price_details = pricing.get("price_details")
+        if not isinstance(price_details, dict):
+            return None
+
+        price_obj = price_details.get("price")
+        if isinstance(price_obj, dict) and price_obj.get("nickname"):
+            return price_obj["nickname"]
+
+        product_obj = price_details.get("product")
+        if isinstance(product_obj, dict) and product_obj.get("name"):
+            return product_obj["name"]
+
+        return None
+
+    def _extract_plan_name_from_line_item(self, item: dict[str, Any]) -> str | None:
+        """Extract plan name from an invoice line item.
+
+        Tries structured fields first (plan/price objects from older API
+        versions, or expanded pricing objects), then falls back to parsing
+        the description string.
+
+        Args:
+            item: A single line item dict from lines.data[].
+
+        Returns:
+            Plan name string, or None if not found.
+        """
+        return self._get_name_from_structured_fields(
+            item
+        ) or self._parse_plan_name_from_description(item.get("description", ""))
+
+    def _parse_plan_name_from_description(self, description: str) -> str | None:
+        """Parse plan name from Stripe's generated line item description.
+
+        Stripe generates descriptions in predictable formats:
+        - "2 screen × Business Plan Monthly (at $26.60 / month)"
+        - "Trial period for Business Plan Monthly (per screen)"
+        - "Business Plan Monthly (per screen)"
+        - "Business Plan Monthly"
+
+        Args:
+            description: Line item description string.
+
+        Returns:
+            Extracted plan name, or None if parsing fails.
+        """
+        if not description:
+            return None
+
+        text = description.strip()
+
+        # Strip "Trial period for " prefix
+        trial_prefix = "Trial period for "
+        if text.startswith(trial_prefix):
+            text = text[len(trial_prefix) :]
+
+        # Strip "<quantity> <unit> × " prefix (e.g. "2 screen × ")
+        if "×" in text:
+            _, _, text = text.partition("×")
+            text = text.strip()
+
+        # Strip trailing parenthetical (e.g. "(at $26.60 / month)")
+        if "(" in text:
+            text, _, _ = text.partition("(")
+            text = text.strip()
+
+        return text if len(text) > 2 else None
+
+    # Maps Stripe interval names to display billing periods
+    INTERVAL_MAP: ClassVar[dict[str, str]] = {
+        "month": "monthly",
+        "year": "annual",
+        "week": "weekly",
+        "day": "daily",
+    }
+
+    def _billing_period_from_days(self, days: int) -> str | None:
+        """Map a number of days to a billing period.
+
+        Args:
+            days: Number of days in the billing period.
+
+        Returns:
+            Billing period string, or None if unrecognized.
+        """
+        if 25 <= days <= 35:
+            return "monthly"
+        if 85 <= days <= 95:
+            return "quarterly"
+        if 360 <= days <= 370:
+            return "annual"
+        if 5 <= days <= 9:
+            return "weekly"
+        return None
+
+    def _extract_billing_period_from_line_item(
+        self, item: dict[str, Any]
+    ) -> str | None:
+        """Extract billing period from an invoice line item.
+
+        Tries structured fields first (plan.interval), then calculates
+        from the line item period timestamps, then falls back to
+        parsing the description.
+
+        Args:
+            item: A single line item dict from lines.data[].
+
+        Returns:
+            Billing period string (monthly, annual, weekly, daily), or None.
+        """
+        # 1. Old API: plan.interval
+        plan = item.get("plan")
+        if isinstance(plan, dict):
+            interval = plan.get("interval")
+            if interval and interval in self.INTERVAL_MAP:
+                return self.INTERVAL_MAP[interval]
+
+        # 2. Calculate from period start/end timestamps
+        period = item.get("period")
+        if isinstance(period, dict):
+            start = period.get("start")
+            end = period.get("end")
+            if isinstance(start, int) and isinstance(end, int) and end > start:
+                result = self._billing_period_from_days((end - start) // 86400)
+                if result:
+                    return result
+
+        # 3. Fallback: look for "/ month" or "/ year" in description
+        description = item.get("description", "")
+        if description and "/" in description:
+            _, _, after_slash = description.rpartition("/")
+            word = after_slash.strip().rstrip(")").split()[0].lower()
+            if word in self.INTERVAL_MAP:
+                return self.INTERVAL_MAP[word]
+
+        return None
+
+    def _extract_subscription_id(self, data: dict[str, Any]) -> str | None:
+        """Extract subscription ID from invoice data.
+
+        Checks both the old Stripe API path (data.subscription) and the new
+        API path (data.parent.subscription_details.subscription).
+
+        Args:
+            data: Raw event data.
+
+        Returns:
+            Subscription ID string, or None if not found.
+        """
+        subscription_id = data.get("subscription")
+        if not subscription_id:
+            parent = data.get("parent", {})
+            if isinstance(parent, dict):
+                sub_details = parent.get("subscription_details", {})
+                if isinstance(sub_details, dict):
+                    subscription_id = sub_details.get("subscription")
+        return subscription_id or None
+
+    def _add_line_item_metadata(
+        self, metadata: dict[str, Any], data: dict[str, Any]
+    ) -> None:
+        """Extract plan name, billing period, and quantity from line items.
+
+        Args:
+            metadata: Metadata dictionary to mutate.
+            data: Raw event data containing lines.data array.
+        """
+        lines = data.get("lines", {})
+        line_items = lines.get("data", []) if isinstance(lines, dict) else []
+        if not line_items:
+            return
+
+        first_item = line_items[0]
+
+        if not metadata.get("plan_name"):
+            plan_name = self._extract_plan_name_from_line_item(first_item)
+            if plan_name:
+                metadata["plan_name"] = plan_name
+
+        # Refine billing_period if it was set to the "monthly" default
+        if metadata.get("billing_period") == "monthly":
+            parsed_period = self._extract_billing_period_from_line_item(first_item)
+            if parsed_period:
+                metadata["billing_period"] = parsed_period
+
+        quantity = first_item.get("quantity")
+        if quantity is not None and quantity > 1:
+            metadata["quantity"] = quantity
+
     def _add_invoice_metadata(
         self, metadata: dict[str, Any], data: dict[str, Any]
     ) -> None:
         """Add invoice-related metadata for payment events.
 
+        Extracts subscription ID, plan name, attempt count, next retry date,
+        billing reason, invoice number, and billing period from the raw
+        Stripe invoice payload.
+
         Args:
             metadata: Metadata dictionary to mutate.
             data: Raw event data.
         """
-        subscription_id = data.get("subscription")
+        subscription_id = self._extract_subscription_id(data)
         if subscription_id:
             metadata["subscription_id"] = subscription_id
+
+        billing_reason = data.get("billing_reason")
+        if billing_reason:
+            metadata["billing_reason"] = billing_reason
+            if billing_reason.startswith("subscription_"):
+                if "billing_period" not in metadata:
+                    metadata["billing_period"] = "monthly"
+
+        attempt_count = data.get("attempt_count")
+        if attempt_count is not None:
+            metadata["attempt_count"] = attempt_count
+
+        next_payment_attempt = data.get("next_payment_attempt")
+        if next_payment_attempt is not None:
+            metadata["next_payment_attempt"] = next_payment_attempt
+
+        invoice_number = data.get("number")
+        if invoice_number:
+            metadata["invoice_number"] = invoice_number
+
+        self._add_line_item_metadata(metadata, data)
 
     def parse_webhook(
         self, request: HttpRequest, **kwargs: Any

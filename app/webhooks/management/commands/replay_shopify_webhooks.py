@@ -97,7 +97,7 @@ class Command(BaseCommand):
             )
             if not url:
                 raise CommandError("Slack webhook URL not configured")
-            return url
+            return str(url)
         except Integration.DoesNotExist as e:
             raise CommandError("No active Slack integration found") from e
 
@@ -258,6 +258,19 @@ class Command(BaseCommand):
             topic or "", "payment_success"
         )
 
+        # Extract line items for display in notification
+        line_items = []
+        for item in body.get("line_items", []):
+            line_items.append(
+                {
+                    "name": item.get("name", item.get("title", "Unknown Product")),
+                    "sku": item.get("sku", ""),
+                    "quantity": item.get("quantity", 1),
+                    "price": float(item.get("price", 0)),
+                    "variant_title": item.get("variant_title", ""),
+                }
+            )
+
         event_data = {
             "type": event_type,
             "customer_id": customer_id,
@@ -269,6 +282,7 @@ class Command(BaseCommand):
             "metadata": {
                 "order_number": body.get("order_number"),
                 "financial_status": body.get("financial_status"),
+                "line_items": line_items,
             },
         }
 

@@ -443,6 +443,10 @@ class InsightDetector:
     ) -> InsightInfo | None:
         """Detect multiple failed payment attempts.
 
+        Uses Stripe's attempt_count from metadata when available (covers most
+        production failures). Falls back to payment_history for non-Stripe
+        providers.
+
         Args:
             event_data: Event data dictionary.
             customer_data: Customer data dictionary.
@@ -454,15 +458,38 @@ class InsightDetector:
         if event_type != "payment_failure":
             return None
 
-        # Count recent failures
+        metadata = event_data.get("metadata", {})
+        failure_reason = metadata.get("failure_reason", "")
+
+        # Use Stripe's attempt_count from metadata (most reliable for Stripe)
+        attempt_count = metadata.get("attempt_count")
+        if attempt_count is not None and attempt_count >= 1:
+            next_attempt = metadata.get("next_payment_attempt")
+            if attempt_count >= 2:
+                text = f"Retry #{attempt_count}"
+                if next_attempt:
+                    next_date = datetime.fromtimestamp(
+                        next_attempt, tz=timezone.utc
+                    ).strftime("%b %-d")
+                    text += f" · Next attempt {next_date}"
+                return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
+            # First attempt with next retry scheduled
+            if next_attempt:
+                next_date = datetime.fromtimestamp(
+                    next_attempt, tz=timezone.utc
+                ).strftime("%b %-d")
+                return InsightInfo(
+                    icon=self.ICONS["failed_attempt"],
+                    text=f"Next retry {next_date}",
+                )
+
+        # Fallback: count recent failures from payment_history (non-Stripe)
         payment_history = customer_data.get("payment_history", [])
         recent_failures = sum(
             1
             for p in payment_history[-5:]
             if p.get("status") == "failed" or p.get("type") == "payment_failure"
         )
-
-        failure_reason = event_data.get("metadata", {}).get("failure_reason", "")
 
         if recent_failures >= 2:
             text = f"Attempt #{recent_failures + 1}"

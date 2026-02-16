@@ -4,6 +4,8 @@ This module tests the SlackDestinationPlugin class that converts
 RichNotification objects to Slack Block Kit JSON.
 """
 
+from typing import Any
+
 import pytest
 from plugins.destinations.base import BaseDestinationPlugin
 from plugins.destinations.slack import SlackDestinationPlugin
@@ -17,6 +19,42 @@ from webhooks.models.rich_notification import (
     PaymentInfo,
     RichNotification,
 )
+
+
+def get_blocks(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract blocks from Slack message format.
+
+    Handles both old format (top-level blocks) and new attachments format.
+
+    Args:
+        result: Formatted Slack message dict.
+
+    Returns:
+        List of block dicts.
+    """
+    if "blocks" in result:
+        return result["blocks"]
+    if "attachments" in result and result["attachments"]:
+        return result["attachments"][0].get("blocks", [])
+    return []
+
+
+def get_color(result: dict[str, Any]) -> str | None:
+    """Extract color from Slack message format.
+
+    Handles both old format (top-level color) and new attachments format.
+
+    Args:
+        result: Formatted Slack message dict.
+
+    Returns:
+        Color string or None.
+    """
+    if "color" in result:
+        return result["color"]
+    if "attachments" in result and result["attachments"]:
+        return result["attachments"][0].get("color")
+    return None
 
 
 @pytest.fixture
@@ -129,24 +167,25 @@ class TestSlackDestinationPluginBasicOutput:
     ) -> None:
         """Test that format output has blocks."""
         result = formatter.format(basic_notification)
-        assert "blocks" in result
-        assert isinstance(result["blocks"], list)
-        assert len(result["blocks"]) > 0
+        blocks = get_blocks(result)
+        assert isinstance(blocks, list)
+        assert len(blocks) > 0
 
     def test_format_has_color(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:
         """Test that format output has color."""
         result = formatter.format(basic_notification)
-        assert "color" in result
-        assert result["color"].startswith("#")
+        color = get_color(result)
+        assert color is not None
+        assert color.startswith("#")
 
     def test_success_color(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:
         """Test success severity uses green color."""
         result = formatter.format(basic_notification)
-        assert result["color"] == "#28a745"
+        assert get_color(result) == "#28a745"
 
     def test_error_color(self, formatter: SlackDestinationPlugin) -> None:
         """Test error severity uses red color."""
@@ -160,7 +199,7 @@ class TestSlackDestinationPluginBasicOutput:
             customer=CustomerInfo(email="test@example.com"),
         )
         result = formatter.format(notification)
-        assert result["color"] == "#dc3545"
+        assert get_color(result) == "#dc3545"
 
 
 class TestSlackDestinationPluginHeader:
@@ -171,7 +210,7 @@ class TestSlackDestinationPluginHeader:
     ) -> None:
         """Test header block is present."""
         result = formatter.format(basic_notification)
-        header_block = result["blocks"][0]
+        header_block = get_blocks(result)[0]
 
         assert header_block["type"] == "header"
 
@@ -180,7 +219,7 @@ class TestSlackDestinationPluginHeader:
     ) -> None:
         """Test header contains headline text."""
         result = formatter.format(basic_notification)
-        header_block = result["blocks"][0]
+        header_block = get_blocks(result)[0]
 
         assert "$299.00 from Acme Inc" in header_block["text"]["text"]
 
@@ -189,7 +228,7 @@ class TestSlackDestinationPluginHeader:
     ) -> None:
         """Test header contains emoji."""
         result = formatter.format(basic_notification)
-        header_block = result["blocks"][0]
+        header_block = get_blocks(result)[0]
 
         assert ":moneybag:" in header_block["text"]["text"]
 
@@ -208,7 +247,7 @@ class TestSlackDestinationPluginInsight:
         # Find context block with insight
         insight_blocks = [
             b
-            for b in result["blocks"]
+            for b in get_blocks(result)
             if b["type"] == "context"
             and any("lifetime" in str(e.get("text", "")) for e in b.get("elements", []))
         ]
@@ -223,7 +262,7 @@ class TestSlackDestinationPluginInsight:
         result = formatter.format(notification_with_insight)
 
         # Find the insight block
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "context":
                 for element in block.get("elements", []):
                     if "lifetime" in str(element.get("text", "")):
@@ -239,7 +278,7 @@ class TestSlackDestinationPluginInsight:
         result = formatter.format(basic_notification)
 
         # Count context blocks - should only have provider badge and customer footer
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         assert len(context_blocks) == 2  # Provider badge + customer footer
 
 
@@ -253,7 +292,7 @@ class TestSlackDestinationPluginProviderBadge:
         result = formatter.format(basic_notification)
 
         # Provider badge is a context block
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         assert len(context_blocks) >= 1
 
     def test_provider_badge_contains_provider(
@@ -263,7 +302,7 @@ class TestSlackDestinationPluginProviderBadge:
         result = formatter.format(basic_notification)
 
         # Find the provider badge (first context block after header)
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "context":
                 text = str(block.get("elements", [{}])[0].get("text", ""))
                 if "Stripe" in text:
@@ -277,7 +316,7 @@ class TestSlackDestinationPluginProviderBadge:
         """Test provider badge contains payment type."""
         result = formatter.format(basic_notification)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "context":
                 text = str(block.get("elements", [{}])[0].get("text", ""))
                 if "Recurring" in text:
@@ -296,7 +335,7 @@ class TestSlackDestinationPluginPaymentDetails:
         result = formatter.format(basic_notification)
 
         # Find section with payment details
-        section_blocks = [b for b in result["blocks"] if b["type"] == "section"]
+        section_blocks = [b for b in get_blocks(result) if b["type"] == "section"]
         assert len(section_blocks) >= 1
 
     def test_payment_details_contains_amount(
@@ -305,7 +344,7 @@ class TestSlackDestinationPluginPaymentDetails:
         """Test payment details contains amount."""
         result = formatter.format(basic_notification)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section":
                 text = str(block.get("text", {}).get("text", ""))
                 if "299" in text or "Amount" in text:
@@ -319,7 +358,7 @@ class TestSlackDestinationPluginPaymentDetails:
         """Test payment details contains ARR for monthly subscriptions."""
         result = formatter.format(basic_notification)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section":
                 text = str(block.get("text", {}).get("text", ""))
                 if "ARR" in text:
@@ -341,7 +380,7 @@ class TestSlackDestinationPluginCompanySection:
         # Find section with company info
         company_sections = [
             b
-            for b in result["blocks"]
+            for b in get_blocks(result)
             if b["type"] == "section" and "Acme Corporation" in str(b.get("text", {}))
         ]
         assert len(company_sections) == 1
@@ -354,7 +393,7 @@ class TestSlackDestinationPluginCompanySection:
         """Test company section has logo accessory."""
         result = formatter.format(notification_with_company)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section" and "Acme Corporation" in str(
                 block.get("text", {})
             ):
@@ -372,7 +411,7 @@ class TestSlackDestinationPluginCompanySection:
         """Test company section contains industry."""
         result = formatter.format(notification_with_company)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section":
                 text = str(block.get("text", {}).get("text", ""))
                 if "Technology" in text:
@@ -393,7 +432,7 @@ class TestSlackDestinationPluginCompanySection:
         result = formatter.format(basic_notification)
 
         # Find company section
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section" and "Test Corp" in str(block.get("text", {})):
                 text = str(block.get("text", {}).get("text", ""))
                 # Should have Slack link format, not HTML
@@ -414,7 +453,7 @@ class TestSlackDestinationPluginCompanySection:
         )
         result = formatter.format(basic_notification)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section" and "Html Corp" in str(block.get("text", {})):
                 text = str(block.get("text", {}).get("text", ""))
                 # Should not contain HTML tags
@@ -436,7 +475,7 @@ class TestSlackDestinationPluginCompanySection:
         )
         result = formatter.format(basic_notification)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section" and "Long Corp" in str(block.get("text", {})):
                 text = str(block.get("text", {}).get("text", ""))
                 # Full description should be present (not truncated)
@@ -459,7 +498,7 @@ class TestSlackDestinationPluginCompanyLinks:
         # Find context block with LinkedIn link (Website is no longer shown here)
         links_blocks = [
             b
-            for b in result["blocks"]
+            for b in get_blocks(result)
             if b["type"] == "context"
             and any("LinkedIn" in str(e.get("text", "")) for e in b.get("elements", []))
         ]
@@ -473,7 +512,7 @@ class TestSlackDestinationPluginCompanyLinks:
         """Test company links contains LinkedIn link."""
         result = formatter.format(notification_with_company)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "context":
                 text = str(block.get("elements", [{}])[0].get("text", ""))
                 if "LinkedIn" in text:
@@ -494,7 +533,7 @@ class TestSlackDestinationPluginCompanyLinks:
         result = formatter.format(basic_notification)
 
         # No context block with links should be present (Website no longer shown)
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "context":
                 text = str(block.get("elements", [{}])[0].get("text", ""))
                 # Should not have Website or LinkedIn links
@@ -512,7 +551,7 @@ class TestSlackDestinationPluginCompanyLinks:
         )
         result = formatter.format(basic_notification)
 
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "context":
                 text = str(block.get("elements", [{}])[0].get("text", ""))
                 if "LinkedIn" in text:
@@ -532,7 +571,7 @@ class TestSlackDestinationPluginCompanyLinks:
         result = formatter.format(basic_notification)
 
         # Should not have a links context block (only provider badge + customer footer)
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         for block in context_blocks:
             text = str(block.get("elements", [{}])[0].get("text", ""))
             assert "Website" not in text
@@ -549,7 +588,7 @@ class TestSlackDestinationPluginCustomerFooter:
         result = formatter.format(basic_notification)
 
         # Customer footer is the last context block
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         assert len(context_blocks) >= 1
 
     def test_customer_footer_contains_email(
@@ -559,7 +598,7 @@ class TestSlackDestinationPluginCustomerFooter:
         result = formatter.format(basic_notification)
 
         # Check last context block
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         last_context = context_blocks[-1]
         text = str(last_context.get("elements", [{}])[0].get("text", ""))
 
@@ -571,7 +610,7 @@ class TestSlackDestinationPluginCustomerFooter:
         """Test customer footer contains tenure."""
         result = formatter.format(basic_notification)
 
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         last_context = context_blocks[-1]
         text = str(last_context.get("elements", [{}])[0].get("text", ""))
 
@@ -595,7 +634,7 @@ class TestSlackDestinationPluginCustomerFooter:
         )
         result = formatter.format(notification)
 
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         last_context = context_blocks[-1]
         text = str(last_context.get("elements", [{}])[0].get("text", ""))
 
@@ -613,7 +652,7 @@ class TestSlackDestinationPluginActions:
         """Test actions block is present when notification has actions."""
         result = formatter.format(notification_with_actions)
 
-        actions_blocks = [b for b in result["blocks"] if b["type"] == "actions"]
+        actions_blocks = [b for b in get_blocks(result) if b["type"] == "actions"]
         assert len(actions_blocks) == 1
 
     def test_actions_contain_buttons(
@@ -624,7 +663,7 @@ class TestSlackDestinationPluginActions:
         """Test actions block contains buttons."""
         result = formatter.format(notification_with_actions)
 
-        actions_block = [b for b in result["blocks"] if b["type"] == "actions"][0]
+        actions_block = [b for b in get_blocks(result) if b["type"] == "actions"][0]
         assert len(actions_block["elements"]) == 2
 
     def test_button_has_correct_text(
@@ -635,7 +674,7 @@ class TestSlackDestinationPluginActions:
         """Test buttons have correct text."""
         result = formatter.format(notification_with_actions)
 
-        actions_block = [b for b in result["blocks"] if b["type"] == "actions"][0]
+        actions_block = [b for b in get_blocks(result) if b["type"] == "actions"][0]
         button_texts = [e["text"]["text"] for e in actions_block["elements"]]
 
         assert "View in Stripe" in button_texts
@@ -649,7 +688,7 @@ class TestSlackDestinationPluginActions:
         """Test primary button has style."""
         result = formatter.format(notification_with_actions)
 
-        actions_block = [b for b in result["blocks"] if b["type"] == "actions"][0]
+        actions_block = [b for b in get_blocks(result) if b["type"] == "actions"][0]
         primary_button = [
             e
             for e in actions_block["elements"]
@@ -665,7 +704,7 @@ class TestSlackDestinationPluginActions:
         basic_notification.actions = []
         result = formatter.format(basic_notification)
 
-        actions_blocks = [b for b in result["blocks"] if b["type"] == "actions"]
+        actions_blocks = [b for b in get_blocks(result) if b["type"] == "actions"]
         assert len(actions_blocks) == 0
 
 
@@ -678,7 +717,7 @@ class TestSlackDestinationPluginDivider:
         """Test divider block is present."""
         result = formatter.format(basic_notification)
 
-        divider_blocks = [b for b in result["blocks"] if b["type"] == "divider"]
+        divider_blocks = [b for b in get_blocks(result) if b["type"] == "divider"]
         assert len(divider_blocks) >= 1
 
 
@@ -709,7 +748,7 @@ class TestSlackDestinationPluginEcommerceDetails:
         result = formatter.format(notification)
 
         # Find order details section
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section":
                 text = str(block.get("text", {}).get("text", ""))
                 if "Order #1001" in text:
@@ -748,7 +787,7 @@ class TestSlackDestinationPluginDetailSections:
 
         # Find the detail section
         found_section = False
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section":
                 text = str(block.get("text", {}).get("text", ""))
                 if "Feedback Details" in text:
@@ -787,7 +826,7 @@ class TestSlackDestinationPluginDetailSections:
         result = formatter.format(notification)
 
         # Find section with accessory
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "section" and "Feature Usage" in str(
                 block.get("text", {})
             ):
@@ -828,7 +867,7 @@ class TestSlackDestinationPluginDetailSections:
         # Count detail sections (should have 2)
         section_texts = [
             b.get("text", {}).get("text", "")
-            for b in result["blocks"]
+            for b in get_blocks(result)
             if b["type"] == "section"
         ]
         ticket_found = any("Ticket Info" in t for t in section_texts)
@@ -859,7 +898,7 @@ class TestSlackDestinationPluginNonPaymentEvents:
         result = formatter.format(notification)
 
         # Find provider badge context block
-        for block in result["blocks"]:
+        for block in get_blocks(result):
             if block["type"] == "context":
                 text = str(block.get("elements", [{}])[0].get("text", ""))
                 if "Segment" in text:
@@ -888,11 +927,11 @@ class TestSlackDestinationPluginNonPaymentEvents:
         result = formatter.format(notification)
 
         # Should render without error
-        assert "blocks" in result
-        assert len(result["blocks"]) > 0
+        blocks = get_blocks(result)
+        assert len(blocks) > 0
 
         # Should not have customer footer
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in blocks if b["type"] == "context"]
         for block in context_blocks:
             text = str(block.get("elements", [{}])[0].get("text", ""))
             assert "@" not in text  # No email in footer
@@ -917,10 +956,10 @@ class TestSlackDestinationPluginNonPaymentEvents:
         result = formatter.format(notification)
 
         # Should have error color
-        assert result["color"] == "#dc3545"
+        assert get_color(result) == "#dc3545"
 
         # Customer footer should show at_risk flag
-        context_blocks = [b for b in result["blocks"] if b["type"] == "context"]
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
         customer_footer = context_blocks[-1]
         text = str(customer_footer.get("elements", [{}])[0].get("text", ""))
         assert "At Risk" in text

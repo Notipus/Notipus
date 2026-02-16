@@ -69,7 +69,7 @@ SLACK_ICONS: dict[str, str] = {
     "phone": "phone",
     "globe": "globe_with_meridians",
     # Logistics icons
-    "cart": "shopping_cart",
+    "cart": "shopping_trolley",
     "package": "package",
     "truck": "truck",
 }
@@ -217,9 +217,16 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         if n.actions:
             blocks.append(self._format_actions(n.actions))
 
+        # Use attachments format for colored sidebar
+        # Top-level "color" is invalid for incoming webhooks
+        color = SEVERITY_COLORS.get(n.severity, "#17a2b8")
         return {
-            "blocks": blocks,
-            "color": SEVERITY_COLORS.get(n.severity, "#17a2b8"),
+            "attachments": [
+                {
+                    "color": color,
+                    "blocks": blocks,
+                }
+            ],
         }
 
     def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
@@ -414,7 +421,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             Slack section block dict.
         """
         order_display = payment.order_number or "N/A"
-        lines = [f":shopping_cart: *Order #{order_display}*"]
+        lines = [f":shopping_trolley: *Order #{order_display}*"]
 
         # Amount
         lines.append(f"*Amount:* {payment.currency} {payment.amount:,.2f}")
