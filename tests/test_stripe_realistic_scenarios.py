@@ -992,7 +992,9 @@ class TestExtractPlanName:
             "plan": {"nickname": "Business Monthly", "name": "price_123"},
             "description": "2 screen × Something Else (at $26.60 / month)",
         }
-        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Business Monthly"
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item) == "Business Monthly"
+        )
 
     def test_falls_back_to_plan_name(self, stripe_plugin: StripeSourcePlugin) -> None:
         """Test fallback to plan.name when nickname is absent."""
@@ -1008,7 +1010,9 @@ class TestExtractPlanName:
             "price": {"nickname": "Enterprise Annual"},
             "description": "Fallback description",
         }
-        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Enterprise Annual"
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item) == "Enterprise Annual"
+        )
 
     def test_uses_expanded_product_name(
         self, stripe_plugin: StripeSourcePlugin
@@ -1076,12 +1080,16 @@ class TestExtractPlanName:
     ) -> None:
         """Test description fallback: plain plan name."""
         item: dict[str, Any] = {"description": "Pro Plan Annual"}
-        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Pro Plan Annual"
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item) == "Pro Plan Annual"
+        )
 
     def test_empty_item_returns_none(self, stripe_plugin: StripeSourcePlugin) -> None:
         """Test empty line item returns None."""
         assert stripe_plugin._extract_plan_name_from_line_item({}) is None
-        assert stripe_plugin._extract_plan_name_from_line_item({"description": ""}) is None
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item({"description": ""}) is None
+        )
 
     def test_skips_plan_with_no_name(self, stripe_plugin: StripeSourcePlugin) -> None:
         """Test that plan object without nickname/name falls through."""
@@ -1116,7 +1124,10 @@ class TestInvoiceMetadataExtraction:
             "lines": {
                 "data": [
                     {
-                        "description": "2 screen × Business Plan Monthly (at $26.60 / month)",
+                        "description": (
+                            "2 screen × Business Plan Monthly"
+                            " (at $26.60 / month)"
+                        ),
                         "quantity": 2,
                     }
                 ]
