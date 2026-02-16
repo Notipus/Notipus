@@ -177,12 +177,15 @@ class TestTrialSignupIntegration:
             event_data, customer_data, target="slack"
         )
 
-        # Verify Slack message structure
-        assert "blocks" in slack_message
-        assert "color" in slack_message
+        # Verify Slack message structure (attachments format for colored messages)
+        assert "attachments" in slack_message
+        assert len(slack_message["attachments"]) > 0
+        attachment = slack_message["attachments"][0]
+        assert "blocks" in attachment
+        assert "color" in attachment
 
         # Verify header block exists with trial headline
-        header_block = slack_message["blocks"][0]
+        header_block = attachment["blocks"][0]
         assert header_block["type"] == "header"
 
     def test_non_trial_subscription_generates_new_customer_notification(
@@ -969,6 +972,174 @@ class TestWebhookCustomerDataExtraction:
             # Should NOT have looked up cache since webhook has email
             mock_cache.get.assert_not_called()
             assert customer_data["email"] == "invoice@new.com"
+
+
+class TestParsePlanName:
+    """Test _parse_plan_name() with known Stripe line item description formats."""
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    def test_quantity_x_plan_format(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test '2 screen × Business Plan Monthly (at $26.60 / month)' format."""
+        result = stripe_plugin._parse_plan_name(
+            "2 screen × Business Plan Monthly (at $26.60 / month)"
+        )
+        assert result == "Business Plan Monthly"
+
+    def test_trial_period_format(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test 'Trial period for Business Plan Monthly (per screen)' format."""
+        result = stripe_plugin._parse_plan_name(
+            "Trial period for Business Plan Monthly (per screen)"
+        )
+        assert result == "Business Plan Monthly"
+
+    def test_plan_with_parenthetical(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test 'Business Plan Monthly (per screen)' format."""
+        result = stripe_plugin._parse_plan_name(
+            "Business Plan Monthly (per screen)"
+        )
+        assert result == "Business Plan Monthly"
+
+    def test_plain_plan_name(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test plain plan name without parentheses."""
+        result = stripe_plugin._parse_plan_name("Pro Plan Annual")
+        assert result == "Pro Plan Annual"
+
+    def test_empty_description(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test empty description returns None."""
+        assert stripe_plugin._parse_plan_name("") is None
+        assert stripe_plugin._parse_plan_name(None) is None  # type: ignore[arg-type]
+
+    def test_single_item_quantity_format(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test '1 user × Starter Plan (at $9.99 / month)' format."""
+        result = stripe_plugin._parse_plan_name(
+            "1 user × Starter Plan (at $9.99 / month)"
+        )
+        assert result == "Starter Plan"
+
+
+class TestInvoiceMetadataExtraction:
+    """Test expanded _add_invoice_metadata() with real invoice structures."""
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    def test_extracts_plan_name_from_line_items(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test plan_name is extracted from line item description."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_123",
+            "billing_reason": "subscription_cycle",
+            "attempt_count": 1,
+            "number": "INV-0042",
+            "lines": {
+                "data": [
+                    {
+                        "description": "2 screen × Business Plan Monthly (at $26.60 / month)",
+                        "quantity": 2,
+                    }
+                ]
+            },
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["plan_name"] == "Business Plan Monthly"
+        assert metadata["subscription_id"] == "sub_123"
+        assert metadata["billing_reason"] == "subscription_cycle"
+        assert metadata["attempt_count"] == 1
+        assert metadata["invoice_number"] == "INV-0042"
+        assert metadata["quantity"] == 2
+        assert metadata["billing_period"] == "monthly"
+
+    def test_extracts_subscription_id_from_new_api_path(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test subscription_id extraction from new Stripe API path."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": None,
+            "parent": {
+                "subscription_details": {
+                    "subscription": "sub_new_api_456",
+                }
+            },
+            "billing_reason": "subscription_cycle",
+            "lines": {"data": []},
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["subscription_id"] == "sub_new_api_456"
+        assert metadata["billing_period"] == "monthly"
+
+    def test_extracts_attempt_count_and_next_retry(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test attempt_count and next_payment_attempt for failures."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "attempt_count": 2,
+            "next_payment_attempt": 1740182400,
+            "billing_reason": "subscription_cycle",
+            "lines": {"data": []},
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["attempt_count"] == 2
+        assert metadata["next_payment_attempt"] == 1740182400
+
+    def test_annual_billing_period_from_description(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test billing period parsed as annual from description."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_123",
+            "billing_reason": "subscription_cycle",
+            "lines": {
+                "data": [
+                    {
+                        "description": "Enterprise Plan (at $999.00 / year)",
+                        "quantity": 1,
+                    }
+                ]
+            },
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["plan_name"] == "Enterprise Plan"
+        assert metadata["billing_period"] == "annual"
+
+    def test_no_line_items_still_extracts_other_metadata(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test metadata extraction works even without line items."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_789",
+            "billing_reason": "subscription_create",
+            "number": "INV-0001",
+            "lines": {"data": []},
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["subscription_id"] == "sub_789"
+        assert metadata["billing_reason"] == "subscription_create"
+        assert metadata["invoice_number"] == "INV-0001"
+        assert metadata["billing_period"] == "monthly"
 
 
 class TestPaymentFailureNotFiltered:

@@ -6,6 +6,7 @@ using the official Stripe SDK.
 """
 
 import logging
+import re
 from typing import Any, ClassVar
 
 import stripe
@@ -515,18 +516,163 @@ class StripeSourcePlugin(BaseSourcePlugin):
             if prev_plan and prev_plan.get("amount") is not None:
                 metadata["previous_amount"] = prev_plan["amount"] / 100
 
+    def _parse_plan_name(self, description: str) -> str | None:
+        """Parse plan name from Stripe line item description.
+
+        Known formats:
+        - "2 screen × Business Plan Monthly (at $26.60 / month)"
+        - "Trial period for Business Plan Monthly (per screen)"
+        - "Business Plan Monthly (per screen)"
+        - "Business Plan Monthly"
+
+        Args:
+            description: Line item description string.
+
+        Returns:
+            Extracted plan name, or None if parsing fails.
+        """
+        if not description:
+            return None
+
+        # "Trial period for <plan> (...)"
+        match = re.match(r"Trial period for (.+?)(?:\s*\(|$)", description)
+        if match:
+            return match.group(1).strip()
+
+        # "<quantity> <unit> × <plan> (...)"
+        match = re.match(r"\d+\s+\S+\s*×\s*(.+?)(?:\s*\(|$)", description)
+        if match:
+            return match.group(1).strip()
+
+        # "<plan> (at $X / month)" or "<plan> (per unit)"
+        match = re.match(r"(.+?)(?:\s*\()", description)
+        if match:
+            name = match.group(1).strip()
+            # Avoid returning purely numeric or very short strings
+            if len(name) > 2:
+                return name
+
+        # Plain plan name with no parentheses
+        stripped = description.strip()
+        if stripped and len(stripped) > 2:
+            return stripped
+
+        return None
+
+    def _parse_billing_period(self, description: str) -> str | None:
+        """Parse billing period from Stripe line item description.
+
+        Looks for patterns like "at $X / month" or "at $X / year".
+
+        Args:
+            description: Line item description string.
+
+        Returns:
+            Billing period string (monthly, annual, weekly), or None.
+        """
+        if not description:
+            return None
+
+        match = re.search(r"/\s*(month|year|week|day)", description)
+        if match:
+            interval_map = {
+                "month": "monthly",
+                "year": "annual",
+                "week": "weekly",
+                "day": "daily",
+            }
+            return interval_map.get(match.group(1))
+        return None
+
+    def _extract_subscription_id(self, data: dict[str, Any]) -> str | None:
+        """Extract subscription ID from invoice data.
+
+        Checks both the old Stripe API path (data.subscription) and the new
+        API path (data.parent.subscription_details.subscription).
+
+        Args:
+            data: Raw event data.
+
+        Returns:
+            Subscription ID string, or None if not found.
+        """
+        subscription_id = data.get("subscription")
+        if not subscription_id:
+            parent = data.get("parent", {})
+            if isinstance(parent, dict):
+                sub_details = parent.get("subscription_details", {})
+                if isinstance(sub_details, dict):
+                    subscription_id = sub_details.get("subscription")
+        return subscription_id or None
+
+    def _add_line_item_metadata(
+        self, metadata: dict[str, Any], data: dict[str, Any]
+    ) -> None:
+        """Extract plan name, billing period, and quantity from line items.
+
+        Args:
+            metadata: Metadata dictionary to mutate.
+            data: Raw event data containing lines.data array.
+        """
+        lines = data.get("lines", {})
+        line_items = lines.get("data", []) if isinstance(lines, dict) else []
+        if not line_items:
+            return
+
+        first_item = line_items[0]
+        description = first_item.get("description", "")
+
+        if description and not metadata.get("plan_name"):
+            plan_name = self._parse_plan_name(description)
+            if plan_name:
+                metadata["plan_name"] = plan_name
+
+        if description and metadata.get("billing_period") == "monthly":
+            parsed_period = self._parse_billing_period(description)
+            if parsed_period:
+                metadata["billing_period"] = parsed_period
+
+        quantity = first_item.get("quantity")
+        if quantity is not None and quantity > 1:
+            metadata["quantity"] = quantity
+
     def _add_invoice_metadata(
         self, metadata: dict[str, Any], data: dict[str, Any]
     ) -> None:
         """Add invoice-related metadata for payment events.
 
+        Extracts subscription ID, plan name, attempt count, next retry date,
+        billing reason, invoice number, and billing period from the raw
+        Stripe invoice payload.
+
         Args:
             metadata: Metadata dictionary to mutate.
             data: Raw event data.
         """
-        subscription_id = data.get("subscription")
+        subscription_id = self._extract_subscription_id(data)
         if subscription_id:
             metadata["subscription_id"] = subscription_id
+
+        billing_reason = data.get("billing_reason")
+        if billing_reason:
+            metadata["billing_reason"] = billing_reason
+            if billing_reason.startswith("subscription_"):
+                if "billing_period" not in metadata:
+                    metadata["billing_period"] = "monthly"
+
+        attempt_count = data.get("attempt_count")
+        if attempt_count is not None:
+            metadata["attempt_count"] = attempt_count
+
+        next_payment_attempt = data.get("next_payment_attempt")
+        if next_payment_attempt is not None:
+            metadata["next_payment_attempt"] = next_payment_attempt
+
+        invoice_number = data.get("number")
+        if invoice_number:
+            metadata["invoice_number"] = invoice_number
+
+        self._add_line_item_metadata(metadata, data)
 
     def parse_webhook(
         self, request: HttpRequest, **kwargs: Any

@@ -177,6 +177,70 @@ def test_payment_failure_event() -> None:
     assert notification.type == NotificationType.PAYMENT_FAILURE
 
 
+def test_payment_failure_retry_headline() -> None:
+    """Test payment failure with attempt_count > 1 shows retry in headline.
+
+    Verifies the headline includes '(retry #N)' when attempt_count > 1.
+    """
+    processor = EventProcessor()
+
+    event_data: dict[str, Any] = {
+        "type": "payment_failure",
+        "customer_id": "cust_123",
+        "amount": 53.20,
+        "currency": "USD",
+        "status": "failed",
+        "provider": "stripe",
+        "external_id": "evt_fail456",
+        "metadata": {
+            "attempt_count": 2,
+            "next_payment_attempt": 1740182400,
+        },
+    }
+
+    customer_data: dict[str, Any] = {
+        "company": "Acme Corp",
+        "email": "billing@acme.com",
+    }
+
+    notification = processor.build_rich_notification(event_data, customer_data)
+    assert isinstance(notification, RichNotification)
+    assert "$53.20" in notification.headline
+    assert "retry #2" in notification.headline
+    assert notification.severity == NotificationSeverity.ERROR
+
+
+def test_payment_failure_first_attempt_no_retry_in_headline() -> None:
+    """Test payment failure with attempt_count 1 does NOT show retry in headline.
+
+    First attempts should just show the normal failure headline.
+    """
+    processor = EventProcessor()
+
+    event_data: dict[str, Any] = {
+        "type": "payment_failure",
+        "customer_id": "cust_123",
+        "amount": 53.20,
+        "currency": "USD",
+        "status": "failed",
+        "provider": "stripe",
+        "external_id": "evt_fail789",
+        "metadata": {
+            "attempt_count": 1,
+        },
+    }
+
+    customer_data: dict[str, Any] = {
+        "company": "Acme Corp",
+        "email": "billing@acme.com",
+    }
+
+    notification = processor.build_rich_notification(event_data, customer_data)
+    assert isinstance(notification, RichNotification)
+    assert "$53.20 payment failed" == notification.headline
+    assert "retry" not in notification.headline
+
+
 def test_subscription_created_event() -> None:
     """Test subscription created event processing.
 
@@ -264,9 +328,12 @@ def test_process_event_rich_returns_dict() -> None:
     result = processor.process_event_rich(event_data, customer_data, target="slack")
 
     assert isinstance(result, dict)
-    assert "blocks" in result
-    assert "color" in result
-    assert isinstance(result["blocks"], list)
+    # Slack format uses attachments array for colored messages
+    assert "attachments" in result
+    assert isinstance(result["attachments"], list)
+    assert len(result["attachments"]) > 0
+    assert "blocks" in result["attachments"][0]
+    assert "color" in result["attachments"][0]
 
 
 def test_display_name_fallback_to_email() -> None:

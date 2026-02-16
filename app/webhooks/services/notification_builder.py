@@ -414,7 +414,10 @@ class NotificationBuilder:
             return "Payment received"
 
         elif event_type == "payment_failure":
-            if amount:
+            attempt_count = metadata.get("attempt_count")
+            if amount and attempt_count and attempt_count > 1:
+                return f"${amount:,.2f} payment failed (retry #{attempt_count})"
+            elif amount:
                 return f"${amount:,.2f} payment failed"
             return "Payment failed"
 

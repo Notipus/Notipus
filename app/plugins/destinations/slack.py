@@ -69,7 +69,7 @@ SLACK_ICONS: dict[str, str] = {
     "phone": "phone",
     "globe": "globe_with_meridians",
     # Logistics icons
-    "cart": "shopping_cart",
+    "cart": "shopping_trolley",
     "package": "package",
     "truck": "truck",
 }
@@ -421,7 +421,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             Slack section block dict.
         """
         order_display = payment.order_number or "N/A"
-        lines = [f":shopping_cart: *Order #{order_display}*"]
+        lines = [f":shopping_trolley: *Order #{order_display}*"]
 
         # Amount
         lines.append(f"*Amount:* {payment.currency} {payment.amount:,.2f}")

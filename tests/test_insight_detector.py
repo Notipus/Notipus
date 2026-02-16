@@ -508,3 +508,123 @@ class TestInsightPriority:
         assert result is not None
         # Should be milestone, not growth
         assert "1,000" in result.text or "Crossed" in result.text
+
+
+class TestFailedAttemptsWithAttemptCount:
+    """Test failed attempt detection using Stripe's attempt_count metadata."""
+
+    def test_attempt_count_2_shows_retry(self, detector: InsightDetector) -> None:
+        """Test that attempt_count >= 2 shows 'Retry #N'."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 2,
+                "next_payment_attempt": 1740182400,  # Feb 22 2025
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #2" in result.text
+        assert "Next attempt" in result.text
+        assert result.icon == "warning"
+
+    def test_attempt_count_3_shows_retry(self, detector: InsightDetector) -> None:
+        """Test that attempt_count 3 shows 'Retry #3'."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {"attempt_count": 3},
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #3" in result.text
+
+    def test_attempt_count_1_with_next_retry(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test attempt_count 1 with next_payment_attempt shows retry date."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 1,
+                "next_payment_attempt": 1740182400,
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Next retry" in result.text
+
+    def test_attempt_count_1_no_next_retry_with_reason(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test attempt_count 1 without next retry falls through to failure_reason."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 1,
+                "failure_reason": "Card declined",
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Card declined" in result.text
+
+    def test_attempt_count_takes_priority_over_payment_history(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that attempt_count from metadata takes priority over payment_history."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {"attempt_count": 2},
+        }
+        # Payment history also shows failures but attempt_count should win
+        customer: dict = {
+            "payment_history": [
+                {"status": "failed", "type": "payment_failure"},
+                {"status": "failed", "type": "payment_failure"},
+                {"status": "failed", "type": "payment_failure"},
+            ],
+        }
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        # Should use attempt_count (2), not payment_history count (3+1=4)
+        assert "Retry #2" in result.text
+
+    def test_no_attempt_count_falls_back_to_payment_history(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that without attempt_count, payment_history fallback works."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {},
+        }
+        customer: dict = {
+            "payment_history": [
+                {"status": "failed", "type": "payment_failure"},
+                {"status": "failed", "type": "payment_failure"},
+            ],
+        }
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Attempt #3" in result.text
