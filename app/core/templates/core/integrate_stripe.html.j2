@@ -90,9 +90,24 @@
                         </div>
                         <div class="ml-3">
                             <h4 class="text-sm font-medium text-gray-900">Select events</h4>
-                            <p class="text-sm text-gray-500">
-                                Under "Events from", select <strong>"Your account"</strong>. Then search for and select each event from the list below. Click "Continue".
+                            <p class="text-sm text-gray-500 mb-3">
+                                Under "Events from", select <strong>"Your account"</strong>. Then search for and select each of these events. Click "Continue".
                             </p>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                {% for event in webhook_events %}
+                                    <div class="flex items-center justify-between gap-2 p-2 bg-gray-50 rounded-lg group">
+                                        <div class="flex items-center gap-2 min-w-0">
+                                            <i class="ti ti-check text-green-500 flex-shrink-0"></i>
+                                            <code class="text-sm text-gray-700 truncate">{{ event }}</code>
+                                        </div>
+                                        <button onclick="copyToClipboard('{{ event }}')"
+                                                class="flex-shrink-0 text-gray-400 hover:text-[#635bff] opacity-0 group-hover:opacity-100 transition-opacity duration-150"
+                                                title="Copy event name">
+                                            <i class="ti ti-copy text-sm"></i>
+                                        </button>
+                                    </div>
+                                {% endfor %}
+                            </div>
                         </div>
                     </div>
 
@@ -154,26 +169,7 @@
                 </div>
             </div>
 
-            <!-- Step 2: Events to Enable (for Stripe wizard step 2) -->
-            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                    <i class="ti ti-list-check text-[#635bff]"></i>
-                    Events to Enable
-                    <span class="text-xs font-normal text-gray-500 ml-2">(Step 2 in Stripe)</span>
-                </h3>
-                <p class="text-sm text-gray-600 mb-4">Search for and select each of these events in the Stripe wizard:</p>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {% for event in webhook_events %}
-                        <div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
-                            <i class="ti ti-check text-green-500"></i>
-                            <code class="text-sm text-gray-700">{{ event }}</code>
-                        </div>
-                    {% endfor %}
-                </div>
-            </div>
-
-            <!-- Step 3: Webhook URL (for Stripe wizard step 4) -->
+            <!-- Step 2: Webhook URL (for Stripe wizard step 4) -->
             <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
                 <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
                     <i class="ti ti-webhook text-[#635bff]"></i>
@@ -316,7 +312,7 @@
     <script>
         function copyToClipboard(text) {
             navigator.clipboard.writeText(text).then(function() {
-                NotipusUI.toast('Webhook URL copied to clipboard!', 'success');
+                NotipusUI.toast('Copied to clipboard!', 'success');
             }, function(err) {
                 console.error('Could not copy text: ', err);
                 NotipusUI.toast('Failed to copy to clipboard', 'error');
