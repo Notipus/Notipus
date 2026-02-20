@@ -41,11 +41,13 @@
                     </div>
 
                     <!-- OAuth Buttons -->
-                    <a href="{% provider_login_url 'slack' %}"
-                       class="btn-secondary w-full touch-target">
-                        <i class="fab fa-slack mr-2" aria-hidden="true"></i>
-                        Continue with Slack
-                    </a>
+                    <form method="post" action="{% provider_login_url 'slack' %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-secondary w-full touch-target">
+                            <i class="fab fa-slack mr-2" aria-hidden="true"></i>
+                            Continue with Slack
+                        </button>
+                    </form>
 
                     <!-- Login Link -->
                     <div class="mt-6 text-center">
