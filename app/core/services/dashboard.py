@@ -563,6 +563,11 @@ class IntegrationService:
             workspace=workspace, is_active=True
         )
 
+        # Build lookup dict to avoid repeated .filter().exists() queries
+        integration_lookup: dict[str, Integration] = {
+            i.integration_type: i for i in current_integrations
+        }
+
         # Event Sources - Services that send webhooks TO Notipus
         event_sources: list[dict[str, Any]] = [
             {
@@ -572,9 +577,12 @@ class IntegrationService:
                     "E-commerce events from your Shopify store "
                     "(orders, payments, customers)"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="shopify"
-                ).exists(),
+                "connected": "shopify" in integration_lookup,
+                "webhook_verified_at": (
+                    integration_lookup["shopify"].webhook_verified_at
+                    if "shopify" in integration_lookup
+                    else None
+                ),
                 "category": "E-commerce",
             },
             {
@@ -583,9 +591,12 @@ class IntegrationService:
                 "description": (
                     "Subscription billing events (renewals, cancellations, upgrades)"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="chargify"
-                ).exists(),
+                "connected": "chargify" in integration_lookup,
+                "webhook_verified_at": (
+                    integration_lookup["chargify"].webhook_verified_at
+                    if "chargify" in integration_lookup
+                    else None
+                ),
                 "category": "Billing",
             },
             {
@@ -594,9 +605,12 @@ class IntegrationService:
                 "description": (
                     "Customer payment events (successful payments, failed charges)"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="stripe_customer"
-                ).exists(),
+                "connected": "stripe_customer" in integration_lookup,
+                "webhook_verified_at": (
+                    integration_lookup["stripe_customer"].webhook_verified_at
+                    if "stripe_customer" in integration_lookup
+                    else None
+                ),
                 "category": "Payments",
             },
         ]
@@ -609,9 +623,7 @@ class IntegrationService:
                 "description": (
                     "Real-time notifications sent to your team's Slack workspace"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="slack_notifications"
-                ).exists(),
+                "connected": "slack_notifications" in integration_lookup,
                 "category": "Team Communication",
             },
         ]
@@ -624,9 +636,7 @@ class IntegrationService:
                 "description": (
                     "Enrich customer data with person info (name, job title, LinkedIn)"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="hunter_enrichment"
-                ).exists(),
+                "connected": "hunter_enrichment" in integration_lookup,
                 "category": "Email Enrichment",
             },
         ]

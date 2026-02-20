@@ -96,13 +96,26 @@
 
                                         <!-- Integration Details -->
                                         <div class="flex-1 min-w-0">
-                                            <div class="flex items-center gap-2 mb-1">
+                                            <div class="flex items-center gap-2 flex-wrap mb-1">
                                                 <h3 class="text-base font-semibold text-gray-900">{{ integration.name }}</h3>
                                                 {% if integration.connected %}
                                                     <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
                                                         <i class="ti ti-circle-check text-xs"></i>
                                                         Connected
                                                     </span>
+                                                    {% if integration.webhook_verified_at is defined %}
+                                                        {% if integration.webhook_verified_at %}
+                                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                                                                <i class="ti ti-antenna-bars-5 text-xs"></i>
+                                                                Receiving events
+                                                            </span>
+                                                        {% else %}
+                                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700" title="Waiting for the first webhook event to arrive. Send a test event from your provider to verify the connection.">
+                                                                <i class="ti ti-clock text-xs"></i>
+                                                                Awaiting first event
+                                                            </span>
+                                                        {% endif %}
+                                                    {% endif %}
                                                 {% endif %}
                                             </div>
                                             <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-blue-50 text-blue-700 mb-2">

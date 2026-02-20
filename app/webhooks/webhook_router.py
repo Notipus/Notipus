@@ -384,6 +384,7 @@ def _process_webhook(
     provider: Any,
     provider_name: str,
     workspace: Workspace = None,
+    integration: Integration | None = None,
 ) -> JsonResponse:
     """
     Common webhook processing logic with standardized error handling
@@ -404,6 +405,13 @@ def _process_webhook(
 
         # Validate and parse webhook
         event_data = _validate_and_parse_webhook(request, provider)
+
+        # Stamp first successful webhook verification
+        if integration is not None and integration.webhook_verified_at is None:
+            from django.utils import timezone
+
+            integration.webhook_verified_at = timezone.now()
+            integration.save(update_fields=["webhook_verified_at"])
 
         # Handle test webhooks
         if not event_data:
@@ -473,7 +481,9 @@ def customer_shopify_webhook(
 
         provider = ShopifySourcePlugin(webhook_secret=integration.webhook_secret)
 
-        return _process_webhook(request, provider, "customer_shopify", workspace)
+        return _process_webhook(
+            request, provider, "customer_shopify", workspace, integration
+        )
 
     except Exception as e:
         logger.error(f"Error in customer Shopify webhook: {str(e)}", exc_info=True)
@@ -511,7 +521,9 @@ def customer_chargify_webhook(
 
         provider = ChargifySourcePlugin(webhook_secret=integration.webhook_secret)
 
-        return _process_webhook(request, provider, "customer_chargify", workspace)
+        return _process_webhook(
+            request, provider, "customer_chargify", workspace, integration
+        )
 
     except Exception as e:
         logger.error(
@@ -554,7 +566,9 @@ def customer_stripe_webhook(
 
         provider = StripeSourcePlugin(webhook_secret=integration.webhook_secret)
 
-        return _process_webhook(request, provider, "customer_stripe", workspace)
+        return _process_webhook(
+            request, provider, "customer_stripe", workspace, integration
+        )
 
     except Exception as e:
         logger.error(f"Error in customer Stripe webhook: {str(e)}", exc_info=True)

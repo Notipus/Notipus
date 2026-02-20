@@ -80,6 +80,7 @@ def _handle_chargify_connect(
     if existing_integration:
         # Update existing integration
         existing_integration.webhook_secret = webhook_secret
+        existing_integration.webhook_verified_at = None
         existing_integration.save()
         logger.info(f"Chargify integration updated for workspace {workspace.name}")
         messages.success(request, "Chargify/Maxio integration updated successfully!")

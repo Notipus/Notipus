@@ -319,6 +319,7 @@ def shopify_connect_callback(
                 "enabled_categories": enabled_categories,
             },
             "is_active": True,
+            "webhook_verified_at": None,
         },
     )
 

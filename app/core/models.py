@@ -340,6 +340,7 @@ class Integration(models.Model):
 
     # Status
     is_active = models.BooleanField(default=True)
+    webhook_verified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -386,6 +387,15 @@ class Integration(models.Model):
             Slack bot token or None if not available.
         """
         return self.oauth_credentials.get("access_token")
+
+    @property
+    def is_webhook_verified(self) -> bool:
+        """Check if this integration has received a verified webhook.
+
+        Returns:
+            True if at least one webhook has been successfully validated.
+        """
+        return self.webhook_verified_at is not None
 
 
 class GlobalBillingIntegration(models.Model):
