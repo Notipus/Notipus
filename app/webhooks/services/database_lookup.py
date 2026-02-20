@@ -45,28 +45,32 @@ class DatabaseLookupService:
         days = ttl_days if ttl_days is not None else self.DEFAULT_TTL_DAYS
         self.ttl_seconds = 60 * 60 * 24 * days  # TTL for webhook records
 
-    def _get_webhook_key(self, webhook_type: str, timestamp: str) -> str:
+    def _get_webhook_key(
+        self, webhook_type: str, timestamp: str, workspace_id: str = "global"
+    ) -> str:
         """Generate Redis key for webhook record.
 
         Args:
             webhook_type: Type of webhook (payment, order, etc.).
             timestamp: Timestamp string for uniqueness.
+            workspace_id: Workspace UUID for tenant isolation.
 
         Returns:
             Formatted Redis key string.
         """
-        return f"webhook:{webhook_type}:{timestamp}"
+        return f"webhook:{workspace_id}:{webhook_type}:{timestamp}"
 
-    def _get_activity_key(self, date_str: str) -> str:
+    def _get_activity_key(self, date_str: str, workspace_id: str = "global") -> str:
         """Generate Redis key for daily activity list.
 
         Args:
             date_str: Date string in YYYY-MM-DD format.
+            workspace_id: Workspace UUID for tenant isolation.
 
         Returns:
             Formatted Redis key for activity list.
         """
-        return f"webhook_activity:{date_str}"
+        return f"webhook_activity:{workspace_id}:{date_str}"
 
     def _normalize_status(self, status: str | None) -> str:
         """Normalize status string for consistent display.
@@ -112,13 +116,16 @@ class DatabaseLookupService:
         }
         return type_category_map.get(event_type, "payment")
 
-    def store_payment_record(self, event_data: dict[str, Any]) -> bool:
+    def store_payment_record(
+        self, event_data: dict[str, Any], workspace_id: str = "global"
+    ) -> bool:
         """Store a payment/subscription record in Redis with TTL.
 
         Handles all event types including payments, subscriptions, and checkouts.
 
         Args:
             event_data: Dictionary containing event data.
+            workspace_id: Workspace UUID for tenant isolation.
 
         Returns:
             True if storage was successful, False otherwise.
@@ -168,6 +175,7 @@ class DatabaseLookupService:
                 "metadata": event_data.get("metadata", {}),
                 "processed_at": now.isoformat(),
                 "timestamp": now.timestamp(),
+                "workspace_id": workspace_id,
                 "shopify_order_ref": event_data.get("shopify_order_ref", ""),
                 "chargify_transaction_id": event_data.get(
                     "chargify_transaction_id", ""
@@ -179,32 +187,14 @@ class DatabaseLookupService:
 
             # Store in Redis with TTL
             timestamp_key = now.strftime("%Y%m%d_%H%M%S_%f")
-            webhook_key = self._get_webhook_key(display_type, timestamp_key)
+            webhook_key = self._get_webhook_key(
+                display_type, timestamp_key, workspace_id
+            )
 
             cache.set(webhook_key, json.dumps(webhook_record), timeout=self.ttl_seconds)
 
             # Add to daily activity list
-            date_str = now.strftime("%Y-%m-%d")
-            activity_key = self._get_activity_key(date_str)
-
-            # Get current activity list and append new record
-            current_activity = cache.get(activity_key, [])
-            if isinstance(current_activity, str):
-                current_activity = json.loads(current_activity)
-
-            current_activity.append(webhook_key)
-
-            # Keep only last 100 records per day to prevent memory issues
-            if len(current_activity) > 100:
-                # Remove oldest records from cache
-                old_keys = current_activity[:-100]
-                for old_key in old_keys:
-                    cache.delete(old_key)
-                current_activity = current_activity[-100:]
-
-            cache.set(
-                activity_key, json.dumps(current_activity), timeout=self.ttl_seconds
-            )
+            self._add_to_activity_list(webhook_key, workspace_id)
 
             logger.info(
                 f"Stored {event_type} record in Redis: {provider} {external_id}"
@@ -314,11 +304,14 @@ class DatabaseLookupService:
             "timestamp": now.timestamp(),
         }
 
-    def store_order_record(self, event_data: dict[str, Any]) -> bool:
+    def store_order_record(
+        self, event_data: dict[str, Any], workspace_id: str = "global"
+    ) -> bool:
         """Store an order record in Redis with TTL.
 
         Args:
             event_data: Dictionary containing order event data.
+            workspace_id: Workspace UUID for tenant isolation.
 
         Returns:
             True if storage was successful, False otherwise.
@@ -331,16 +324,17 @@ class DatabaseLookupService:
 
             # Create webhook record
             webhook_record = self._create_order_record(validated_data)
+            webhook_record["workspace_id"] = workspace_id
 
             # Store in Redis with TTL
             now = timezone.now()
             timestamp_key = now.strftime("%Y%m%d_%H%M%S_%f")
-            webhook_key = self._get_webhook_key("order", timestamp_key)
+            webhook_key = self._get_webhook_key("order", timestamp_key, workspace_id)
 
             cache.set(webhook_key, json.dumps(webhook_record), timeout=self.ttl_seconds)
 
             # Add to daily activity list
-            self._add_to_activity_list(webhook_key)
+            self._add_to_activity_list(webhook_key, workspace_id)
 
             logger.info(
                 f"Stored order record in Redis: "
@@ -352,15 +346,18 @@ class DatabaseLookupService:
             logger.error(f"Error storing order record in Redis: {e!s}", exc_info=True)
             return False
 
-    def _add_to_activity_list(self, webhook_key: str) -> None:
+    def _add_to_activity_list(
+        self, webhook_key: str, workspace_id: str = "global"
+    ) -> None:
         """Add webhook key to daily activity list with cleanup.
 
         Args:
             webhook_key: Redis key for the webhook record.
+            workspace_id: Workspace UUID for tenant isolation.
         """
         now = timezone.now()
         date_str = now.strftime("%Y-%m-%d")
-        activity_key = self._get_activity_key(date_str)
+        activity_key = self._get_activity_key(date_str, workspace_id)
 
         # Get current activity list and append new record
         current_activity = cache.get(activity_key, [])
@@ -383,6 +380,7 @@ class DatabaseLookupService:
         self,
         event_data: dict[str, Any],
         notification: RichNotification,
+        workspace_id: str = "global",
     ) -> bool:
         """Store an enriched webhook record in Redis with TTL.
 
@@ -392,6 +390,7 @@ class DatabaseLookupService:
         Args:
             event_data: Dictionary containing event data.
             notification: RichNotification with enriched data.
+            workspace_id: Workspace UUID for tenant isolation.
 
         Returns:
             True if storage was successful, False otherwise.
@@ -441,6 +440,7 @@ class DatabaseLookupService:
                 "metadata": event_data.get("metadata", {}),
                 "processed_at": now.isoformat(),
                 "timestamp": now.timestamp(),
+                "workspace_id": workspace_id,
                 # Enriched fields from RichNotification
                 "headline": notification.headline,
                 "severity": notification.severity.value,
@@ -477,12 +477,14 @@ class DatabaseLookupService:
 
             # Store in Redis with TTL
             timestamp_key = now.strftime("%Y%m%d_%H%M%S_%f")
-            webhook_key = self._get_webhook_key(display_type, timestamp_key)
+            webhook_key = self._get_webhook_key(
+                display_type, timestamp_key, workspace_id
+            )
 
             cache.set(webhook_key, json.dumps(webhook_record), timeout=self.ttl_seconds)
 
             # Add to daily activity list
-            self._add_to_activity_list(webhook_key)
+            self._add_to_activity_list(webhook_key, workspace_id)
 
             logger.info(
                 f"Stored enriched {event_type} record in Redis: "
@@ -497,11 +499,12 @@ class DatabaseLookupService:
             return False
 
     def get_recent_webhook_activity(
-        self, days: int = 7, limit: int = 50
+        self, workspace_id: str, days: int = 7, limit: int = 50
     ) -> list[dict[str, Any]]:
         """Get recent webhook activity from Redis.
 
         Args:
+            workspace_id: Workspace UUID for tenant isolation (required).
             days: Number of days to look back.
             limit: Maximum number of records to return.
 
@@ -515,7 +518,7 @@ class DatabaseLookupService:
             for i in range(days):
                 date = timezone.now() - timedelta(days=i)
                 date_str = date.strftime("%Y-%m-%d")
-                activity_key = self._get_activity_key(date_str)
+                activity_key = self._get_activity_key(date_str, workspace_id)
 
                 # Get webhook keys for this day
                 webhook_keys = cache.get(activity_key, [])

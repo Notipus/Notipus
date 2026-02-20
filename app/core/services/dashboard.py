@@ -111,7 +111,7 @@ class DashboardService:
         try:
             # Fetch more records than needed to allow for deduplication
             recent_activity_raw = self.db_service.get_recent_webhook_activity(
-                days=7, limit=100
+                workspace_id=str(workspace.uuid), days=7, limit=100
             )
             transformed = self._transform_activity_data(recent_activity_raw)
             deduplicated = self._deduplicate_activity(transformed)

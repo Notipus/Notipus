@@ -545,6 +545,11 @@ class DashboardServiceTest(TestCase):
         self.assertIn("usage_data", result)
         self.assertIn("trial_info", result)
 
+        # Verify workspace_id is passed to get_recent_webhook_activity
+        mock_db_instance.get_recent_webhook_activity.assert_called_once_with(
+            workspace_id=str(self.workspace.uuid), days=7, limit=100
+        )
+
     @patch("core.services.dashboard.rate_limiter")
     @patch("core.services.dashboard.DatabaseLookupService")
     def test_get_dashboard_data_no_profile(self, mock_db_service, mock_rate_limiter):
@@ -962,3 +967,52 @@ class DashboardServiceTest(TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["event_count"], 2)
+
+    @patch("core.services.dashboard.rate_limiter")
+    @patch("core.services.dashboard.DatabaseLookupService")
+    def test_recent_activity_passes_workspace_id(
+        self, mock_db_service, mock_rate_limiter
+    ):
+        """Test that _get_recent_activity passes workspace_id to db service."""
+        from core.services.dashboard import DashboardService
+
+        mock_db_instance = Mock()
+        mock_db_instance.get_recent_webhook_activity.return_value = []
+        mock_db_service.return_value = mock_db_instance
+
+        service = DashboardService()
+        service._get_recent_activity(self.workspace)
+
+        mock_db_instance.get_recent_webhook_activity.assert_called_once_with(
+            workspace_id=str(self.workspace.uuid), days=7, limit=100
+        )
+
+    @patch("core.services.dashboard.rate_limiter")
+    @patch("core.services.dashboard.DatabaseLookupService")
+    def test_recent_activity_isolates_workspaces(
+        self, mock_db_service, mock_rate_limiter
+    ):
+        """Test that each workspace queries with its own workspace_id."""
+        from core.services.dashboard import DashboardService
+
+        workspace_b = Workspace.objects.create(
+            name="Other Workspace",
+            shop_domain="other.myshopify.com",
+        )
+
+        mock_db_instance = Mock()
+        mock_db_instance.get_recent_webhook_activity.return_value = []
+        mock_db_service.return_value = mock_db_instance
+
+        service = DashboardService()
+
+        service._get_recent_activity(self.workspace)
+        service._get_recent_activity(workspace_b)
+
+        calls = mock_db_instance.get_recent_webhook_activity.call_args_list
+        self.assertEqual(len(calls), 2)
+
+        # First call uses workspace A's UUID
+        self.assertEqual(calls[0].kwargs["workspace_id"], str(self.workspace.uuid))
+        # Second call uses workspace B's UUID
+        self.assertEqual(calls[1].kwargs["workspace_id"], str(workspace_b.uuid))

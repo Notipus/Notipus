@@ -134,7 +134,7 @@ class EventProcessor:
         )
 
         # Store enriched record for dashboard display
-        self._store_enriched_record(enriched_event_data, notification)
+        self._store_enriched_record(enriched_event_data, notification, workspace)
 
         # Format for target platform using destination plugin
         registry = PluginRegistry.instance()
@@ -190,7 +190,7 @@ class EventProcessor:
         )
 
         # Store enriched record for dashboard display
-        self._store_enriched_record(enriched_event_data, notification)
+        self._store_enriched_record(enriched_event_data, notification, workspace)
 
         return notification
 
@@ -198,12 +198,14 @@ class EventProcessor:
         self,
         event_data: dict[str, Any],
         notification: RichNotification,
+        workspace: "Workspace | None" = None,
     ) -> None:
         """Store enriched event record for dashboard display.
 
         Args:
             event_data: The event data dictionary.
             notification: The built RichNotification.
+            workspace: Optional workspace for tenant-scoped storage.
         """
         # Determine which events should be stored for activity tracking
         storable_event_types = {
@@ -226,8 +228,11 @@ class EventProcessor:
         event_type = event_data.get("type")
 
         if event_type in storable_event_types:
+            workspace_id = str(workspace.uuid) if workspace else "global"
             try:
-                self.db_lookup.store_enriched_record(event_data, notification)
+                self.db_lookup.store_enriched_record(
+                    event_data, notification, workspace_id=workspace_id
+                )
             except Exception as e:
                 # Don't fail event processing if storage fails
                 logger.warning(f"Failed to store enriched record: {e}")
