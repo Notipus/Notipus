@@ -151,9 +151,12 @@
                             <div class="grid grid-cols-1 gap-2">
                                 {% for event in webhook_events %}
                                     <div class="flex items-center gap-2">
-                                        <i class="ti ti-check text-gray-300 flex-shrink-0" id="check-{{ loop.index }}"></i>
+                                        <i class="ti ti-check text-gray-300 flex-shrink-0"
+                                           id="check-{{ loop.index }}"></i>
                                         <div class="flex flex-1 min-w-0">
-                                            <input type="text" value="{{ event }}" readonly
+                                            <input type="text"
+                                                   value="{{ event }}"
+                                                   readonly
                                                    class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg block w-full p-2 font-mono">
                                             <button onclick="copyEvent('{{ event }}', {{ loop.index }})"
                                                     class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 transition-colors"
@@ -231,34 +234,41 @@
                                         This is shown by Stripe after you create the webhook endpoint. Look for "Signing secret" in your new endpoint's details.
                                     </p>
                                 </div>
-                        </div>
-                    </div>
-
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                6
                             </div>
                         </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Complete the connection</h4>
-                            <p class="text-sm text-gray-500">
-                                Click the button below to complete the setup.
-                            </p>
+
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
+                                    6
+                                </div>
+                            </div>
+                            <div class="ml-3">
+                                <h4 class="text-sm font-medium text-gray-900">Complete the connection</h4>
+                                <p class="text-sm text-gray-500">Click the button below to complete the setup.</p>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <div class="flex justify-end mb-8">
-                <button type="submit"
-                        class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#635bff] hover:bg-[#5851db] transition-all duration-200 shadow-lg">
-                    <svg class="mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"></path>
-                    </svg>
-                    {% if existing_integration %}Update{% else %}Connect{% endif %} Stripe
-                </button>
-            </div>
+                <div class="flex justify-end mb-8">
+                    <button type="submit"
+                            class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#635bff] hover:bg-[#5851db] transition-all duration-200 shadow-lg">
+                        <svg class="mr-2 h-5 w-5"
+                             fill="none"
+                             stroke="currentColor"
+                             viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
+                            </path>
+                        </svg>
+                        {% if existing_integration %}
+                            Update
+                        {% else %}
+                            Connect
+                        {% endif %}
+                        Stripe
+                    </button>
+                </div>
             </form>
         </div>
     </div>
