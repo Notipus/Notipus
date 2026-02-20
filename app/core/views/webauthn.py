@@ -5,7 +5,7 @@ This module handles passwordless authentication using WebAuthn/FIDO2.
 
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
@@ -36,7 +36,9 @@ def webauthn_register_begin(request: HttpRequest) -> JsonResponse:
 
     try:
         webauthn_service = WebAuthnService()
-        options = webauthn_service.generate_registration_options(request.user)
+        options = webauthn_service.generate_registration_options(
+            cast(User, request.user)
+        )
         return JsonResponse({"success": True, "options": options})
     except Exception as e:
         logger.error(f"WebAuthn registration begin error: {e}")
@@ -67,7 +69,7 @@ def webauthn_register_complete(request: HttpRequest) -> JsonResponse:
 
         webauthn_service = WebAuthnService()
         success = webauthn_service.verify_registration(
-            request.user, credential_data, credential_name
+            cast(User, request.user), credential_data, credential_name
         )
 
         if success:

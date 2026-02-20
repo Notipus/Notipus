@@ -87,7 +87,7 @@ def _get_slack_token(code: str) -> dict[str, Any] | None:
             },
             timeout=SLACK_API_TIMEOUT,
         )
-        data = response.json()
+        data: dict[str, Any] = response.json()
         if not data.get("ok"):
             error = data.get("error", "unknown")
             logger.warning(f"Slack token exchange failed: {error}")
@@ -116,7 +116,7 @@ def _get_slack_user_info(access_token: str) -> dict[str, Any] | None:
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=SLACK_API_TIMEOUT,
         )
-        data = response.json()
+        data: dict[str, Any] = response.json()
         if not data.get("ok"):
             logger.warning(f"Slack userInfo failed: {data.get('error', 'unknown')}")
             return None

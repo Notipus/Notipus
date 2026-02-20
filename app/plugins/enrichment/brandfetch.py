@@ -5,7 +5,7 @@ brand information including logos, colors, and company details.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import requests
 from django.conf import settings
@@ -183,7 +183,7 @@ class BrandfetchPlugin(BaseEnrichmentPlugin):
             if logo.get("type") == "icon" and logo.get("formats"):
                 for fmt in logo["formats"]:
                     if fmt.get("src"):
-                        return fmt["src"]
+                        return cast(str, fmt["src"])
         return None
 
     def _log_quota_usage(self, headers: Any) -> None:

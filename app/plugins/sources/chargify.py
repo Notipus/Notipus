@@ -11,7 +11,7 @@ import re
 import time
 from collections import OrderedDict
 from datetime import datetime, timezone
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from django.http import HttpRequest
 from plugins.base import PluginCapability, PluginMetadata, PluginType
@@ -406,9 +406,9 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         elif event_type == "payment_success":
             return "success"
         elif event_type == "subscription_state_change":
-            return subscription.get("state", "unknown")
+            return cast(str, subscription.get("state", "unknown"))
         else:
-            return subscription.get("state", "unknown")
+            return cast(str, subscription.get("state", "unknown"))
 
     def _extract_chargify_amount(
         self, transaction: dict[str, Any], subscription: dict[str, Any]
@@ -861,4 +861,4 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         """
         if not event_data or "type" not in event_data:
             raise InvalidDataError("Invalid event type")
-        return event_data["type"]
+        return cast(str, event_data["type"])

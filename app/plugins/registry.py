@@ -8,7 +8,7 @@ and lifecycle management.
 import importlib
 import logging
 import pkgutil
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from django.conf import settings
 
@@ -43,6 +43,9 @@ class PluginRegistry:
     """
 
     _instance: "PluginRegistry | None" = None
+    _plugins: dict[PluginType, dict[str, type[BasePlugin]]]
+    _instances: dict[str, BasePlugin]
+    _initialized: bool
 
     def __new__(cls) -> "PluginRegistry":
         """Create or return the singleton instance."""
@@ -279,7 +282,7 @@ class PluginRegistry:
             True if enabled (default True if not in settings).
         """
         plugin_config = self._get_plugin_config(plugin_type, name)
-        return plugin_config.get("enabled", True)
+        return cast(bool, plugin_config.get("enabled", True))
 
     def is_available(self, plugin_type: PluginType, name: str) -> bool:
         """Check if a plugin is available (has required config).
@@ -308,7 +311,7 @@ class PluginRegistry:
         """
         plugins_config = getattr(settings, "PLUGINS", {})
         type_config = plugins_config.get(plugin_type.value, {})
-        return type_config.get(name, {})
+        return cast(dict[str, Any], type_config.get(name, {}))
 
     def get(
         self, plugin_type: PluginType, name: str, **init_kwargs: Any

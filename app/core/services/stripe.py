@@ -84,10 +84,10 @@ class StripeAPI:
                 "country": account.country,
                 "default_currency": account.default_currency,
             }
-        except stripe.error.AuthenticationError as e:
+        except stripe.AuthenticationError as e:
             logger.warning(f"Invalid Stripe API key: {e!s}")
             return None
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error retrieving account: {e!s}")
             return None
         except Exception as e:
@@ -113,7 +113,7 @@ class StripeAPI:
             # Use Stripe SDK to create customer
             customer = stripe.Customer.create(**customer_data)
             return customer.to_dict()
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating customer: {e!s}")
             return None
         except Exception as e:
@@ -142,7 +142,7 @@ class StripeAPI:
             # Use Stripe SDK to create customer
             customer = stripe.Customer.create(**customer_data)
             return customer.to_dict()
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating customer: {e!s}")
             return None
         except Exception as e:
@@ -175,7 +175,7 @@ class StripeAPI:
                     logger.warning(
                         f"Stripe customer {workspace.stripe_customer_id} was deleted"
                     )
-                except stripe.error.InvalidRequestError:
+                except stripe.InvalidRequestError:
                     logger.warning(
                         f"Stripe customer {workspace.stripe_customer_id} not found"
                     )
@@ -206,7 +206,7 @@ class StripeAPI:
             )
             return customer.to_dict()
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error in get_or_create_customer: {e!s}")
             return None
         except Exception as e:
@@ -288,7 +288,7 @@ class StripeAPI:
                 "status": session.status,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating checkout session: {e!s}")
             return None
         except Exception as e:
@@ -321,7 +321,7 @@ class StripeAPI:
                 "subscription": session.subscription,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error retrieving checkout session: {e!s}")
             return None
         except Exception as e:
@@ -360,7 +360,7 @@ class StripeAPI:
                 "customer": session.customer,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating portal session: {e!s}")
             return None
         except Exception as e:
@@ -385,7 +385,8 @@ class StripeAPI:
 
         features_raw = metadata.get("features", "")
         try:
-            return json.loads(features_raw)
+            result: list[str] = json.loads(features_raw)
+            return result
         except (json.JSONDecodeError, TypeError):
             # Features might be comma-separated string
             return [f.strip() for f in str(features_raw).split(",") if f.strip()]
@@ -466,7 +467,7 @@ class StripeAPI:
             logger.info(f"Retrieved {len(result)} prices from Stripe")
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error listing prices: {e!s}")
             return []
         except Exception as e:
@@ -536,7 +537,7 @@ class StripeAPI:
                     # Prefer metadata.plan_name if available (more reliable)
                     if hasattr(fetched_product, "metadata"):
                         plan_name = fetched_product.metadata.get("plan_name")
-                except stripe.error.StripeError:
+                except stripe.StripeError:
                     product_name = None
             elif product:
                 # Product is expanded as a dict or object
@@ -607,7 +608,7 @@ class StripeAPI:
 
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error getting subscriptions: {e!s}")
             return []
         except Exception as e:
@@ -656,7 +657,7 @@ class StripeAPI:
 
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error getting invoices: {e!s}")
             return []
         except Exception as e:
@@ -698,7 +699,7 @@ class StripeAPI:
                 "lookup_key": price.lookup_key,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error getting price by lookup key: {e!s}")
             return None
         except Exception as e:
@@ -745,7 +746,7 @@ class StripeAPI:
                 "active": product.active,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating product: {e!s}")
             return None
         except Exception as e:
@@ -801,12 +802,14 @@ class StripeAPI:
                 "recurring": {
                     "interval": price.recurring.interval,
                     "interval_count": price.recurring.interval_count,
-                },
+                }
+                if price.recurring
+                else None,
                 "lookup_key": price.lookup_key,
                 "active": price.active,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating price: {e!s}")
             return None
         except Exception as e:
@@ -852,7 +855,7 @@ class StripeAPI:
             logger.info(f"Retrieved {len(result)} products from Stripe")
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error listing products: {e!s}")
             return []
         except Exception as e:
@@ -894,7 +897,7 @@ class StripeAPI:
             logger.info(f"No product found with metadata {key}={value}")
             return None
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error searching products: {e!s}")
             return None
         except Exception as e:
@@ -946,7 +949,7 @@ class StripeAPI:
                 "active": product.active,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error updating product: {e!s}")
             return None
         except Exception as e:
@@ -970,7 +973,7 @@ class StripeAPI:
             stripe.Product.modify(product_id, active=False)
             logger.info(f"Archived Stripe product: {product_id}")
             return True
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Failed to archive product {product_id}: {e!s}")
             return False
         except Exception as e:
@@ -994,7 +997,7 @@ class StripeAPI:
             stripe.Price.modify(price_id, active=False)
             logger.info(f"Archived Stripe price: {price_id}")
             return True
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Failed to archive price {price_id}: {e!s}")
             return False
         except Exception as e:
@@ -1049,7 +1052,7 @@ class StripeAPI:
             logger.info(f"Retrieved {len(result)} prices for product {product_id}")
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Failed to list prices for {product_id}: {e!s}")
             return []
         except Exception as e:

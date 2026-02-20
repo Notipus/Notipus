@@ -62,6 +62,7 @@ def integrate_hunter(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     ).first()
 
     if request.method == "POST":
+        assert workspace is not None
         return _handle_hunter_connect(request, workspace, existing_integration)
 
     # Check if actively connected with API key
@@ -171,6 +172,7 @@ def disconnect_hunter(request: HttpRequest) -> HttpResponseRedirect:
     integration.is_active = False
     integration.save()
 
+    assert workspace is not None
     logger.info(f"Hunter integration disconnected for workspace {workspace.name}")
     messages.success(request, "Hunter.io disconnected successfully!")
     return redirect("core:integrations")

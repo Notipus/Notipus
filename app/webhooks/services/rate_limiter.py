@@ -8,7 +8,7 @@ graceful degradation.
 import logging
 import time
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from django.core.cache import cache
 from django.core.cache.backends.base import InvalidCacheBackendError
@@ -80,7 +80,7 @@ class RedisCircuitBreaker:
                 f"Redis circuit breaker opened after {self.failure_count} failures"
             )
 
-    def call_with_circuit_breaker[T](self, func: Any, *args: Any, **kwargs: Any) -> T:
+    def call_with_circuit_breaker(self, func: Any, *args: Any, **kwargs: Any) -> Any:
         """Execute function with circuit breaker protection.
 
         Args:
@@ -205,8 +205,9 @@ class RateLimiter:
             Cached value or default.
         """
         try:
-            return self.circuit_breaker.call_with_circuit_breaker(
-                cache.get, key, default
+            return cast(
+                int,
+                self.circuit_breaker.call_with_circuit_breaker(cache.get, key, default),
             )
         except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
             logger.warning(f"Cache GET failed for key {key}, using fallback: {e!s}")

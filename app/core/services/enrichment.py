@@ -273,7 +273,8 @@ class DomainEnrichmentService:
         Returns:
             List of plugin info dictionaries.
         """
-        return self.registry.list_plugins(PluginType.ENRICHMENT)
+        result = self.registry.list_plugins(PluginType.ENRICHMENT)
+        return cast("list[dict[str, Any]]", result)
 
     def refresh_enrichment(self, domain: str) -> Company | None:
         """Force refresh enrichment for a domain.

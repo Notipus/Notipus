@@ -8,7 +8,8 @@ import base64
 import hashlib
 import json
 import logging
-from typing import Any
+from datetime import timedelta
+from typing import Any, cast
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -62,13 +63,13 @@ class WebAuthnService:
         # In production, this should be your domain (e.g., "notipus.com")
         # In development, use localhost
         if hasattr(settings, "WEBAUTHN_RP_ID"):
-            return settings.WEBAUTHN_RP_ID
+            return cast(str, settings.WEBAUTHN_RP_ID)
 
         if settings.DEBUG:
             return "localhost"
         else:
             # Extract from ALLOWED_HOSTS in production
-            allowed_hosts = getattr(settings, "ALLOWED_HOSTS", [])
+            allowed_hosts: list[str] = getattr(settings, "ALLOWED_HOSTS", [])
             for host in allowed_hosts:
                 if host not in ["*", "localhost", "127.0.0.1"]:
                     return host
@@ -81,7 +82,7 @@ class WebAuthnService:
             Origin URL string.
         """
         if hasattr(settings, "WEBAUTHN_ORIGIN"):
-            return settings.WEBAUTHN_ORIGIN
+            return cast(str, settings.WEBAUTHN_ORIGIN)
 
         if settings.DEBUG:
             return "http://localhost:8000"
@@ -108,7 +109,7 @@ class WebAuthnService:
             options = generate_registration_options(
                 rp_id=self.rp_id,
                 rp_name=self.rp_name,
-                user_id=str(user.id).encode(),
+                user_id=str(user.pk).encode(),
                 user_name=user.username,
                 user_display_name=user.get_full_name() or user.username,
                 exclude_credentials=existing_credentials,
@@ -130,7 +131,7 @@ class WebAuthnService:
             )
 
             # Convert to JSON-serializable format
-            return json.loads(options_to_json(options))
+            return cast("dict[str, Any]", json.loads(options_to_json(options)))
 
         except Exception as e:
             logger.error(f"Error generating registration options: {e}")
@@ -171,28 +172,26 @@ class WebAuthnService:
                 expected_rp_id=self.rp_id,
             )
 
-            if verification.verified:
-                # Store the credential
-                WebAuthnCredential.objects.create(
-                    user=user,
-                    credential_id=base64.urlsafe_b64encode(
-                        verification.credential_id
-                    ).decode(),
-                    public_key=base64.urlsafe_b64encode(
-                        verification.credential_public_key
-                    ).decode(),
-                    sign_count=verification.sign_count,
-                    name=credential_name,
-                )
+            # verify_registration_response raises on failure,
+            # so reaching here means verification succeeded
+            # Store the credential
+            WebAuthnCredential.objects.create(
+                user=user,
+                credential_id=base64.urlsafe_b64encode(
+                    verification.credential_id
+                ).decode(),
+                public_key=base64.urlsafe_b64encode(
+                    verification.credential_public_key
+                ).decode(),
+                sign_count=verification.sign_count,
+                name=credential_name,
+            )
 
-                # Clean up challenge
-                challenge.delete()
+            # Clean up challenge
+            challenge.delete()
 
-                logger.info(f"WebAuthn credential registered for user {user.username}")
-                return True
-            else:
-                logger.error("WebAuthn registration verification failed")
-                return False
+            logger.info(f"WebAuthn credential registered for user {user.username}")
+            return True
 
         except WebAuthnChallenge.DoesNotExist:
             logger.error("Invalid or expired challenge")
@@ -242,7 +241,7 @@ class WebAuthnService:
             )
 
             # Convert to JSON-serializable format
-            return json.loads(options_to_json(options))
+            return cast("dict[str, Any]", json.loads(options_to_json(options)))
 
         except Exception as e:
             logger.error(f"Error generating authentication options: {e}")
@@ -294,23 +293,21 @@ class WebAuthnService:
                 credential_current_sign_count=stored_credential.sign_count,
             )
 
-            if verification.verified:
-                # Update sign count and last used
-                stored_credential.sign_count = verification.new_sign_count
-                stored_credential.last_used = timezone.now()
-                stored_credential.save()
+            # verify_authentication_response raises on failure,
+            # so reaching here means verification succeeded
+            # Update sign count and last used
+            stored_credential.sign_count = verification.new_sign_count
+            stored_credential.last_used = timezone.now()
+            stored_credential.save()
 
-                # Clean up challenge
-                challenge.delete()
+            # Clean up challenge
+            challenge.delete()
 
-                logger.info(
-                    f"WebAuthn authentication successful for user "
-                    f"{stored_credential.user.username}"
-                )
-                return stored_credential.user
-            else:
-                logger.error("WebAuthn authentication verification failed")
-                return None
+            logger.info(
+                f"WebAuthn authentication successful for user "
+                f"{stored_credential.user.username}"
+            )
+            return cast(User, stored_credential.user)
 
         except WebAuthnChallenge.DoesNotExist:
             logger.error("Invalid or expired challenge")
@@ -372,7 +369,7 @@ class WebAuthnService:
             )
 
             # Convert to JSON-serializable format
-            return json.loads(options_to_json(options))
+            return cast("dict[str, Any]", json.loads(options_to_json(options)))
 
         except Exception as e:
             logger.error(f"Error generating signup registration options: {e}")
@@ -413,37 +410,35 @@ class WebAuthnService:
                 expected_rp_id=self.rp_id,
             )
 
-            if verification.verified:
-                # Create the user account atomically with the WebAuthn credential
-                with transaction.atomic():
-                    # Create user without password (passwordless account)
-                    user = User.objects.create_user(
-                        username=username,
-                        email=email,
-                        password=None,  # No password for passkey-only accounts
-                    )
+            # verify_registration_response raises on failure,
+            # so reaching here means verification succeeded
+            # Create the user account atomically with the WebAuthn credential
+            with transaction.atomic():
+                # Create user without password (passwordless account)
+                user = User.objects.create_user(
+                    username=username,
+                    email=email,
+                    password=None,  # No password for passkey-only accounts
+                )
 
-                    # Store the WebAuthn credential
-                    WebAuthnCredential.objects.create(
-                        user=user,
-                        credential_id=base64.urlsafe_b64encode(
-                            verification.credential_id
-                        ).decode(),
-                        public_key=base64.urlsafe_b64encode(
-                            verification.credential_public_key
-                        ).decode(),
-                        sign_count=verification.sign_count,
-                        name="Signup Passkey",
-                    )
+                # Store the WebAuthn credential
+                WebAuthnCredential.objects.create(
+                    user=user,
+                    credential_id=base64.urlsafe_b64encode(
+                        verification.credential_id
+                    ).decode(),
+                    public_key=base64.urlsafe_b64encode(
+                        verification.credential_public_key
+                    ).decode(),
+                    sign_count=verification.sign_count,
+                    name="Signup Passkey",
+                )
 
-                    # Clean up challenge
-                    challenge.delete()
+                # Clean up challenge
+                challenge.delete()
 
-                logger.info(f"WebAuthn signup completed for user {username}")
-                return user
-            else:
-                logger.error("WebAuthn signup registration verification failed")
-                return None
+            logger.info(f"WebAuthn signup completed for user {username}")
+            return user
 
         except WebAuthnChallenge.DoesNotExist:
             logger.error("Challenge not found for signup registration")
@@ -479,7 +474,7 @@ class WebAuthnService:
         Returns:
             Number of challenges cleaned up.
         """
-        cutoff_time = timezone.now() - timezone.timedelta(hours=hours)
+        cutoff_time = timezone.now() - timedelta(hours=hours)
         count, _ = WebAuthnChallenge.objects.filter(created_at__lt=cutoff_time).delete()
 
         if count > 0:

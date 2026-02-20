@@ -6,7 +6,7 @@ using the official Stripe SDK.
 """
 
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import stripe
 from django.conf import settings
@@ -113,7 +113,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             # Use Stripe's built-in webhook validation
             stripe.Webhook.construct_event(payload, signature, self.webhook_secret)
             return True
-        except stripe.error.SignatureVerificationError as e:
+        except stripe.SignatureVerificationError as e:
             logger.error(f"Stripe webhook signature verification failed: {e!s}")
             return False
         except Exception as e:
@@ -180,9 +180,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
             if request_info:
                 # Handle both object attribute and dict access
                 if hasattr(request_info, "idempotency_key"):
-                    return request_info.idempotency_key
+                    key: str | None = request_info.idempotency_key
+                    return key
                 elif isinstance(request_info, dict):
-                    return request_info.get("idempotency_key")
+                    return cast("str | None", request_info.get("idempotency_key"))
             return None
         except Exception:
             # Don't fail webhook processing if we can't get idempotency key
@@ -206,14 +207,17 @@ class StripeSourcePlugin(BaseSourcePlugin):
         # Check direct plan change
         prev_plan = prev_attrs.get("plan", {})
         if prev_plan and prev_plan.get("amount") is not None:
-            return prev_plan.get("amount")
+            return cast("int | None", prev_plan.get("amount"))
 
         # Check items for multi-item subscriptions
         prev_items = prev_attrs.get("items", {})
         if isinstance(prev_items, dict) and "data" in prev_items:
             items_data = prev_items.get("data", [])
             if items_data:
-                return items_data[0].get("plan", {}).get("amount")
+                return cast(
+                    "int | None",
+                    items_data[0].get("plan", {}).get("amount"),
+                )
 
         return None
 
@@ -282,11 +286,11 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
         if event_type == "payment_failure":
             BillingService.handle_payment_failed(data)
-            return data.get("amount_due", 0)
+            return int(data.get("amount_due", 0))
 
         if event_type == "checkout_completed":
             BillingService.handle_checkout_completed(data)
-            return data.get("amount_total", 0)
+            return int(data.get("amount_total", 0))
 
         if event_type == "trial_ending":
             BillingService.handle_trial_ending(data)
@@ -294,11 +298,11 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
         if event_type == "invoice_paid":
             BillingService.handle_invoice_paid(data)
-            return data.get("amount_paid", 0)
+            return int(data.get("amount_paid", 0))
 
         if event_type == "payment_action_required":
             BillingService.handle_payment_action_required(data)
-            return data.get("amount_due", 0)
+            return int(data.get("amount_due", 0))
 
         return 0
 
@@ -319,7 +323,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if data.get("status") == "trialing":
             return self._flag_as_trial(data)
 
-        return data.get("plan", {}).get("amount", 0)
+        return int(data.get("plan", {}).get("amount", 0))
 
     def _flag_as_trial(self, data: dict[str, Any]) -> int:
         """Flag subscription data as trial and extract trial metadata.
@@ -353,7 +357,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         """
         from webhooks.services.billing import BillingService
 
-        current_amount = data.get("plan", {}).get("amount", 0)
+        current_amount: int = int(data.get("plan", {}).get("amount", 0))
         prev_amount = self._get_previous_plan_amount(data)
         change_direction = self._detect_change_direction(current_amount, prev_amount)
 
@@ -375,7 +379,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         from webhooks.services.billing import BillingService
 
         # Use amount_paid, not amount_due (amount_due is 0 after payment succeeds)
-        amount_cents = data.get("amount_paid", 0)
+        amount_cents: int = int(data.get("amount_paid", 0))
 
         # Detect trial conversion: first real payment after trial.
         # billing_reason "subscription_cycle" indicates recurring payment.
@@ -532,17 +536,17 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if isinstance(plan, dict):
             name = plan.get("nickname") or plan.get("name")
             if name:
-                return name
+                return str(name)
 
         # Old API: price object (pre-basil)
         price = item.get("price")
         if isinstance(price, dict):
             name = price.get("nickname")
             if name:
-                return name
+                return str(name)
             product = price.get("product")
             if isinstance(product, dict) and product.get("name"):
-                return product["name"]
+                return str(product["name"])
 
         # New API (2025-03-31+): pricing.price_details (if expanded)
         pricing = item.get("pricing")
@@ -566,11 +570,11 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
         price_obj = price_details.get("price")
         if isinstance(price_obj, dict) and price_obj.get("nickname"):
-            return price_obj["nickname"]
+            return str(price_obj["nickname"])
 
         product_obj = price_details.get("product")
         if isinstance(product_obj, dict) and product_obj.get("name"):
-            return product_obj["name"]
+            return str(product_obj["name"])
 
         return None
 
@@ -822,7 +826,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             event = stripe.Webhook.construct_event(
                 payload, signature, self.webhook_secret
             )
-        except stripe.error.SignatureVerificationError as e:
+        except stripe.SignatureVerificationError as e:
             raise InvalidDataError(f"Invalid webhook signature: {e!s}") from e
         except Exception as e:
             raise InvalidDataError(f"Webhook parsing error: {e!s}") from e
@@ -835,13 +839,13 @@ class StripeSourcePlugin(BaseSourcePlugin):
         event_type, data = self._extract_stripe_event_info(event)
 
         # Return None for unsupported event types (acknowledged but not processed)
-        if event_type is None:
+        if event_type is None or data is None:
             return None
 
         try:
             # Convert Stripe object to dict for easier processing
             if hasattr(data, "to_dict"):
-                data_dict = data.to_dict()
+                data_dict: dict[str, Any] = data.to_dict()
             else:
                 data_dict = dict(data)
 

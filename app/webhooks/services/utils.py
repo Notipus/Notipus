@@ -4,7 +4,7 @@ This module contains utility functions used across multiple webhook services
 to avoid code duplication.
 """
 
-from typing import Any
+from typing import Any, cast
 
 
 def get_display_name(customer_data: dict[str, Any]) -> str:
@@ -26,7 +26,7 @@ def get_display_name(customer_data: dict[str, Any]) -> str:
     # Try company name first
     company_name = customer_data.get("company_name") or customer_data.get("company")
     if company_name and company_name != "Individual":
-        return company_name
+        return cast(str, company_name)
 
     # Try customer's full name
     first_name = customer_data.get("first_name", "")
@@ -35,12 +35,12 @@ def get_display_name(customer_data: dict[str, Any]) -> str:
         return f"{first_name} {last_name}".strip()
 
     # Use full email address as fallback
-    email = customer_data.get("email", "")
+    email: str = customer_data.get("email", "")
     if email and "@" in email:
         return email
 
     # Use customer ID as fallback (e.g., "cus_TremsiHkK4YcSS")
-    customer_id = customer_data.get("customer_id", "")
+    customer_id: str = customer_data.get("customer_id", "")
     if customer_id:
         return customer_id
 

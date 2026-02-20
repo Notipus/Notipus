@@ -21,7 +21,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 from core.models import Integration, Workspace
 from django.conf import settings
@@ -228,7 +228,7 @@ class PendingEventQueue:
             Redis client or None if unavailable.
         """
         try:
-            client = cache.client.get_client()
+            client = cache.client.get_client()  # type: ignore[attr-defined]
             # Verify it's a real Redis client by checking for concrete type
             # MagicMock will have __class__.__name__ == 'MagicMock'
             client_class = client.__class__.__name__
@@ -615,7 +615,7 @@ class PendingEventQueue:
             incoming_webhook = slack_integration.oauth_credentials.get(
                 "incoming_webhook", {}
             )
-            return incoming_webhook.get("url")
+            return cast("str | None", incoming_webhook.get("url"))
         except Integration.DoesNotExist:
             logger.warning(
                 f"No active Slack integration found for workspace {workspace.uuid}"
@@ -660,7 +660,7 @@ class PendingEventQueue:
             Redis client or None if unavailable.
         """
         try:
-            return cache.client.get_client()
+            return cache.client.get_client()  # type: ignore[attr-defined]
         except (AttributeError, Exception) as e:
             logger.warning(f"Cannot access Redis client for orphan recovery: {e}")
             return None
@@ -757,8 +757,8 @@ class PendingEventQueue:
         if event_timestamp <= 0:
             return True
 
-        age_seconds = time.time() - event_timestamp
-        return age_seconds >= ORPHAN_MIN_AGE_SECONDS
+        age_seconds = time.time() - float(event_timestamp)
+        return bool(age_seconds >= ORPHAN_MIN_AGE_SECONDS)
 
     def _get_workspace_for_recovery(
         self, workspace_id: str, cache_key: str

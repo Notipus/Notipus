@@ -17,7 +17,7 @@ the workspace must provide their own Hunter.io API key.
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from core.models import Integration, Person
 from core.permissions import has_plan_or_higher
@@ -134,7 +134,7 @@ class EmailEnrichmentService:
         Returns:
             True if workspace is on Pro or Enterprise plan.
         """
-        return has_plan_or_higher(workspace, "pro")
+        return cast(bool, has_plan_or_higher(workspace, "pro"))
 
     def _get_hunter_api_key(self, workspace: "Workspace") -> str | None:
         """Get the Hunter.io API key for a workspace.
@@ -151,7 +151,7 @@ class EmailEnrichmentService:
                 integration_type="hunter_enrichment",
                 is_active=True,
             )
-            return integration.integration_settings.get("api_key")
+            return cast("str | None", integration.integration_settings.get("api_key"))
         except Integration.DoesNotExist:
             return None
 
@@ -194,7 +194,7 @@ class EmailEnrichmentService:
             GDPRClaimedError: If person requested data removal.
             RateLimitError: If rate limit exceeded.
         """
-        return self._hunter_plugin.enrich_email(email, api_key)
+        return cast("dict[str, Any]", self._hunter_plugin.enrich_email(email, api_key))
 
     def _update_person(self, email: str, data: dict[str, Any]) -> Person:
         """Update or create a Person record with enrichment data.

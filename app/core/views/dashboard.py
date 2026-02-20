@@ -82,7 +82,7 @@ def _create_stripe_checkout_for_plan(
         customer = stripe_api.get_or_create_customer(workspace)
         if not customer:
             logger.error(
-                f"Failed to get/create Stripe customer for workspace {workspace.id}"
+                f"Failed to get/create Stripe customer for workspace {workspace.pk}"
             )
             return None
 
@@ -92,7 +92,7 @@ def _create_stripe_checkout_for_plan(
             customer_id=customer["id"],
             price_id=plan.stripe_price_id_monthly,
             trial_period_days=trial_days,
-            metadata={"workspace_id": str(workspace.id)},
+            metadata={"workspace_id": str(workspace.pk)},
         )
         return checkout.get("url") if checkout else None
 
@@ -163,7 +163,7 @@ def create_workspace(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
                 # Checkout creation failed - workspace is in trial status so user can
                 # still use the app; they can set up billing later from billing page
                 logger.warning(
-                    f"Stripe checkout creation failed for workspace {workspace.id}, "
+                    f"Stripe checkout creation failed for workspace {workspace.pk}, "
                     f"plan '{selected_plan}'. User will need to set up billing later."
                 )
 

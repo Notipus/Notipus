@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+from typing import Any
 from urllib.parse import urlencode
 
 import requests
@@ -56,9 +57,10 @@ SHOPIFY_EVENT_CATEGORIES: dict[str, dict[str, str | list[str] | bool]] = {
 }
 
 # All available webhook topics (for backward compatibility)
-SHOPIFY_WEBHOOK_TOPICS = [
+SHOPIFY_WEBHOOK_TOPICS: list[str] = [
     topic
     for category in SHOPIFY_EVENT_CATEGORIES.values()
+    if isinstance(category["topics"], list)
     for topic in category["topics"]
 ]
 
@@ -72,10 +74,12 @@ def _get_topics_for_categories(enabled_categories: list[str]) -> list[str]:
     Returns:
         List of webhook topic strings.
     """
-    topics = []
+    topics: list[str] = []
     for category_key in enabled_categories:
         if category_key in SHOPIFY_EVENT_CATEGORIES:
-            topics.extend(SHOPIFY_EVENT_CATEGORIES[category_key]["topics"])
+            category_topics = SHOPIFY_EVENT_CATEGORIES[category_key]["topics"]
+            if isinstance(category_topics, list):
+                topics.extend(category_topics)
     return topics
 
 
@@ -292,6 +296,7 @@ def shopify_connect_callback(
         return redirect("core:integrations")
 
     # Create webhook subscriptions for enabled categories
+    assert workspace is not None
     webhook_result = _create_webhook_subscriptions(
         request, workspace, shop, access_token, enabled_categories
     )
@@ -426,6 +431,7 @@ def update_shopify_events(request: HttpRequest) -> HttpResponseRedirect:
         return redirect("core:integrate_shopify")
 
     # Update webhooks if categories changed
+    assert workspace is not None
     if set(new_categories) != set(old_categories):
         # Create new webhooks first (before deleting old ones) to minimize downtime
         # and avoid losing webhooks if creation fails
@@ -612,7 +618,8 @@ def _exchange_code_for_token(request: HttpRequest, shop: str, code: str) -> dict
         messages.error(request, f"Shopify connection failed: {error_detail}")
         return None
 
-    return token_data
+    result: dict[str, Any] = token_data
+    return result
 
 
 def _create_webhook_subscriptions(

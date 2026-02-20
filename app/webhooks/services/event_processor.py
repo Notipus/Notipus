@@ -5,7 +5,7 @@ formatting them into RichNotification objects with company and person enrichment
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from core.models import Company, Person
 from core.services.email_enrichment import get_email_enrichment_service
@@ -141,7 +141,7 @@ class EventProcessor:
         plugin = registry.get(PluginType.DESTINATION, target)
         if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
             raise ValueError(f"No destination plugin found for target: {target}")
-        return plugin.format(notification)
+        return cast("dict[str, Any]", plugin.format(notification))
 
     def build_rich_notification(
         self,
@@ -185,7 +185,7 @@ class EventProcessor:
         # Enrich person data (email-based, requires workspace with Hunter.io)
         person = self._enrich_person(customer_data, workspace)
 
-        notification = self.notification_builder.build(
+        notification: RichNotification = self.notification_builder.build(
             enriched_event_data, customer_data, company, person
         )
 

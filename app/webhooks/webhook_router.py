@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from core.models import Integration, Workspace
 from django.conf import settings
@@ -161,7 +161,7 @@ def _validate_and_parse_webhook(
         raise WebhookSignatureError()
 
     event_data = provider.parse_webhook(request)
-    return event_data
+    return cast("Dict[str, Any] | None", event_data)
 
 
 def _add_rate_limit_headers(
@@ -189,7 +189,7 @@ def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
         incoming_webhook = slack_integration.oauth_credentials.get(
             "incoming_webhook", {}
         )
-        return incoming_webhook.get("url")
+        return cast("str | None", incoming_webhook.get("url"))
     except Integration.DoesNotExist:
         logger.warning(
             f"No active Slack integration found for workspace {workspace.uuid}"

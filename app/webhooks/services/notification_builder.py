@@ -511,7 +511,7 @@ class NotificationBuilder:
             return "Shipment delivered"
 
         else:
-            title = event_type.replace("_", " ").title()
+            title: str = event_type.replace("_", " ").title()
             return title
 
     def _build_actions(

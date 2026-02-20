@@ -5,11 +5,13 @@ Handles Slack OAuth connection for receiving notifications in Slack channels.
 
 import json
 import logging
+from typing import cast
 
 import requests
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect
 
@@ -309,7 +311,7 @@ def _build_test_message(
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Sent by {request.user.username} "
+                        "text": f"Sent by {cast(User, request.user).username} "
                         f"from {workspace.name}",
                     }
                 ],
@@ -357,7 +359,7 @@ def get_slack_channels(request: HttpRequest) -> JsonResponse:
             params={
                 "types": "public_channel",
                 "exclude_archived": "true",
-                "limit": 200,
+                "limit": "200",
             },
             timeout=DEFAULT_API_TIMEOUT,
         )

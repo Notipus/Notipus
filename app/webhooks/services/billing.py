@@ -6,7 +6,7 @@ and updates workspace subscription status accordingly.
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 from core.models import Workspace
 from core.services.stripe import StripeAPI
@@ -72,7 +72,7 @@ class BillingService:
         # Prefer plan_name from Product metadata (most reliable)
         plan_name = first_item.get("plan_name")
         if plan_name:
-            return plan_name
+            return cast(str, plan_name)
 
         # Fall back to normalizing product name
         product_name = first_item.get("product_name", "")
@@ -80,7 +80,10 @@ class BillingService:
             return None
 
         # Convert "Notipus Pro Plan" or "Pro Plan" to "pro"
-        return product_name.lower().replace("notipus ", "").replace(" plan", "").strip()
+        normalized: str = (
+            product_name.lower().replace("notipus ", "").replace(" plan", "").strip()
+        )
+        return normalized
 
     @staticmethod
     def sync_workspace_from_stripe(customer_id: str) -> bool:
@@ -160,7 +163,7 @@ class BillingService:
         if not customer_id:
             logger.error(f"Missing customer ID in {data_type} data")
             return None
-        return customer_id
+        return cast(str, customer_id)
 
     @staticmethod
     def handle_subscription_created(subscription: dict[str, Any]) -> None:

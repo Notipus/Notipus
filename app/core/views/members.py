@@ -22,6 +22,7 @@ from core.permissions import (
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
 from django.core.mail import send_mail
 from django.db import transaction
 from django.http import HttpRequest, HttpResponse
@@ -104,8 +105,8 @@ def members_list(request: HttpRequest) -> HttpResponse:
     Returns:
         Rendered members list page.
     """
-    workspace = request.workspace
-    current_member = request.workspace_member
+    workspace = request.workspace  # type: ignore[attr-defined]
+    current_member = request.workspace_member  # type: ignore[attr-defined]
 
     # Get all members
     members = WorkspaceMember.objects.filter(
@@ -149,8 +150,8 @@ def invite_member(request: HttpRequest) -> HttpResponse:
     Returns:
         Redirect to members list.
     """
-    workspace = request.workspace
-    current_member = request.workspace_member
+    workspace = request.workspace  # type: ignore[attr-defined]
+    current_member = request.workspace_member  # type: ignore[attr-defined]
 
     email = request.POST.get("email", "").strip().lower()
     role = request.POST.get("role", "user")
@@ -241,8 +242,8 @@ def remove_member(request: HttpRequest, member_id: int) -> HttpResponse:
     Returns:
         Redirect to members list.
     """
-    workspace = request.workspace
-    current_member = request.workspace_member
+    workspace = request.workspace  # type: ignore[attr-defined]
+    current_member = request.workspace_member  # type: ignore[attr-defined]
 
     # Get target member
     target_member = get_object_or_404(
@@ -266,6 +267,7 @@ def remove_member(request: HttpRequest, member_id: int) -> HttpResponse:
     messages.success(
         request, f"{target_member.user.email} has been removed from the workspace."
     )
+    assert isinstance(request.user, User)
     logger.info(
         f"Member {target_member.user.email} removed from workspace "
         f"{workspace.name} by {request.user.email}"
@@ -286,8 +288,8 @@ def change_role(request: HttpRequest, member_id: int) -> HttpResponse:
     Returns:
         Redirect to members list.
     """
-    workspace = request.workspace
-    current_member = request.workspace_member
+    workspace = request.workspace  # type: ignore[attr-defined]
+    current_member = request.workspace_member  # type: ignore[attr-defined]
 
     new_role = request.POST.get("role", "").strip()
 
@@ -321,6 +323,7 @@ def change_role(request: HttpRequest, member_id: int) -> HttpResponse:
         request,
         f"{target_member.user.email}'s role changed from {old_role} to {new_role}.",
     )
+    assert isinstance(request.user, User)
     logger.info(
         f"Member {target_member.user.email} role changed from {old_role} to "
         f"{new_role} in workspace {workspace.name} by {request.user.email}"
@@ -341,7 +344,7 @@ def cancel_invitation(request: HttpRequest, invitation_id: int) -> HttpResponse:
     Returns:
         Redirect to members list.
     """
-    workspace = request.workspace
+    workspace = request.workspace  # type: ignore[attr-defined]
 
     invitation = get_object_or_404(
         WorkspaceInvitation,
@@ -353,6 +356,7 @@ def cancel_invitation(request: HttpRequest, invitation_id: int) -> HttpResponse:
     email = invitation.email
     invitation.delete()
 
+    assert isinstance(request.user, User)
     messages.success(request, f"Invitation to {email} has been cancelled.")
     logger.info(
         f"Invitation to {email} cancelled for workspace {workspace.name} "
@@ -443,6 +447,7 @@ def _process_invitation_acceptance(
     Returns:
         Redirect to dashboard.
     """
+    assert isinstance(request.user, User)
     user = request.user
     workspace = invitation.workspace
 

@@ -165,10 +165,10 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             elif "order" in data and "customer" in data["order"]:
                 customer_id = str(data["order"]["customer"]["id"])
             else:
-                customer_id = data.get("id")
-                if not customer_id:
+                raw_id = data.get("id")
+                if not raw_id:
                     raise InvalidDataError("Missing required fields")
-                customer_id = str(customer_id)
+                customer_id = str(raw_id)
 
             if not customer_id:
                 raise InvalidDataError("Missing required fields")
@@ -382,7 +382,7 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         # Try destination email as fallback identifier
         destination = data.get("destination", {})
         if destination and destination.get("email"):
-            return destination["email"]
+            return str(destination["email"])
 
         # Use order_id as fallback
         order_id = data.get("order_id")

@@ -9,7 +9,7 @@ Roles:
 """
 
 from functools import wraps
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from django.contrib import messages
 from django.http import HttpRequest, HttpResponse
@@ -49,7 +49,7 @@ def get_workspace_for_user(user) -> "Workspace | None":
     return member.workspace if member else None
 
 
-def require_workspace(view_func: Callable) -> Callable:
+def require_workspace(view_func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator to require an active workspace membership.
 
     Redirects to workspace creation if user has no workspace.
@@ -62,21 +62,21 @@ def require_workspace(view_func: Callable) -> Callable:
     """
 
     @wraps(view_func)
-    def wrapper(request: HttpRequest, *args, **kwargs) -> HttpResponse:
+    def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
         member = get_workspace_member(request.user)
         if not member:
             messages.info(request, "Please create or join a workspace first.")
             return redirect("core:create_workspace")
 
         # Add member and workspace to request for convenience
-        request.workspace_member = member
-        request.workspace = member.workspace
-        return view_func(request, *args, **kwargs)
+        request.workspace_member = member  # type: ignore[attr-defined]
+        request.workspace = member.workspace  # type: ignore[attr-defined]
+        return cast(HttpResponse, view_func(request, *args, **kwargs))
 
     return wrapper
 
 
-def require_role(*allowed_roles: str) -> Callable:
+def require_role(*allowed_roles: str) -> Callable[..., Any]:
     """Decorator factory to require specific roles for a view.
 
     Args:
@@ -91,9 +91,9 @@ def require_role(*allowed_roles: str) -> Callable:
             ...
     """
 
-    def decorator(view_func: Callable) -> Callable:
+    def decorator(view_func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(view_func)
-        def wrapper(request: HttpRequest, *args, **kwargs) -> HttpResponse:
+        def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
             member = get_workspace_member(request.user)
             if not member:
                 messages.error(request, "You must be a member of a workspace.")
@@ -106,16 +106,16 @@ def require_role(*allowed_roles: str) -> Callable:
                 return redirect("core:dashboard")
 
             # Add member and workspace to request for convenience
-            request.workspace_member = member
-            request.workspace = member.workspace
-            return view_func(request, *args, **kwargs)
+            request.workspace_member = member  # type: ignore[attr-defined]
+            request.workspace = member.workspace  # type: ignore[attr-defined]
+            return cast(HttpResponse, view_func(request, *args, **kwargs))
 
         return wrapper
 
     return decorator
 
 
-def admin_required(view_func: Callable) -> Callable:
+def admin_required(view_func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator shortcut for views requiring owner or admin role.
 
     This is the most common permission check - owners and admins can:
@@ -130,7 +130,7 @@ def admin_required(view_func: Callable) -> Callable:
     Returns:
         Wrapped view function that checks for owner or admin role.
     """
-    return require_role("owner", "admin")(view_func)
+    return cast(Callable[..., Any], require_role("owner", "admin")(view_func))
 
 
 def can_remove_member(actor: "WorkspaceMember", target: "WorkspaceMember") -> bool:
@@ -255,7 +255,7 @@ def get_remaining_seats(workspace: "Workspace") -> int:
     except Plan.DoesNotExist:
         max_users = 1
 
-    return max(0, max_users - current_count)
+    return int(max(0, max_users - current_count))
 
 
 # Billing tier hierarchy for feature gating

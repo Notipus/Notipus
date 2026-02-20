@@ -6,7 +6,7 @@ corresponding workspace billing state. Use for initial sync or recovery.
 
 import logging
 from argparse import ArgumentParser
-from typing import Any
+from typing import Any, cast
 
 import stripe
 from core.models import Workspace
@@ -49,7 +49,7 @@ class Command(BaseCommand):
         try:
             account = stripe.Account.retrieve()
             self.stdout.write(f"Connected to Stripe account: {account.id}")
-        except stripe.error.AuthenticationError as err:
+        except stripe.AuthenticationError as err:
             raise CommandError(
                 "Failed to connect to Stripe. Check your STRIPE_SECRET_KEY."
             ) from err
@@ -163,9 +163,9 @@ class Command(BaseCommand):
         if isinstance(product, str):
             try:
                 return stripe.Product.retrieve(product).name
-            except stripe.error.StripeError:
+            except stripe.StripeError:
                 return None
-        return self._safe_get(product, "name")
+        return cast("str | None", self._safe_get(product, "name"))
 
     def _normalize_plan_name(self, product_name: str | None) -> str | None:
         """Convert product name to internal plan name."""

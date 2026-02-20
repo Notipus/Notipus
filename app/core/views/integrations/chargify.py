@@ -43,9 +43,11 @@ def integrate_chargify(request: HttpRequest) -> HttpResponse | HttpResponseRedir
     ).first()
 
     if request.method == "POST":
+        assert workspace is not None
         return _handle_chargify_connect(request, workspace, existing_integration)
 
     # Generate webhook URL for this workspace
+    assert workspace is not None
     webhook_url = f"{settings.BASE_URL}/webhook/customer/{workspace.uuid}/chargify/"
 
     context: dict[str, Any] = {
