@@ -32,8 +32,8 @@
 
         <!-- Main content -->
         <div class="max-w-4xl mx-auto py-8 sm:px-6 lg:px-8">
-            {% if existing_integration %}
-                <!-- Already Connected -->
+            {% if existing_integration and existing_integration.is_webhook_verified %}
+                <!-- Verified Connected -->
                 <div class="bg-green-50 border border-green-200 rounded-xl p-6 mb-8">
                     <div class="flex">
                         <div class="flex-shrink-0">
@@ -48,6 +48,26 @@
                             <h3 class="text-sm font-medium text-green-800">Stripe is connected!</h3>
                             <div class="mt-2 text-sm text-green-700">
                                 <p>Your Stripe account is successfully connected. You can update your webhook signing secret below if needed.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% elif existing_integration %}
+                <!-- Awaiting Webhook Verification -->
+                <div class="bg-amber-50 border border-amber-200 rounded-xl p-6 mb-8">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-amber-400"
+                                 fill="currentColor"
+                                 viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.828a1 1 0 101.415-1.414L11 9.586V6z" clip-rule="evenodd">
+                                </path>
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-amber-800">Awaiting webhook verification</h3>
+                            <div class="mt-2 text-sm text-amber-700">
+                                <p>Your Stripe credentials have been saved. Send a test webhook from Stripe to verify the connection.</p>
                             </div>
                         </div>
                     </div>
@@ -201,7 +221,7 @@
                                        value="{{ webhook_url }}"
                                        readonly
                                        class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg focus:ring-[#635bff] focus:border-[#635bff] block w-full p-2.5 font-mono">
-                                <button onclick="copyToClipboard('{{ webhook_url }}')"
+                                <button onclick="NotipusUI.copyToClipboard('{{ webhook_url }}')"
                                         class="inline-flex items-center px-3 py-2.5 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 focus:ring-2 focus:ring-[#635bff]"
                                         type="button">
                                     <i class="ti ti-copy mr-1"></i> Copy
@@ -275,25 +295,13 @@
 
     <!-- JavaScript for copy to clipboard -->
     <script>
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(function() {
-                NotipusUI.toast('Copied to clipboard!', 'success');
-            }, function(err) {
-                console.error('Could not copy text: ', err);
-                NotipusUI.toast('Failed to copy to clipboard', 'error');
-            });
-        }
-
         function copyEvent(text, index) {
-            navigator.clipboard.writeText(text).then(function() {
-                var check = document.getElementById('check-' + index);
+            var check = document.getElementById('check-' + index);
+            if (check) {
                 check.classList.remove('text-gray-300');
                 check.classList.add('text-green-500');
-                NotipusUI.toast('Copied to clipboard!', 'success');
-            }, function(err) {
-                console.error('Could not copy text: ', err);
-                NotipusUI.toast('Failed to copy to clipboard', 'error');
-            });
+            }
+            NotipusUI.copyToClipboard(text);
         }
     </script>
 {% endblock content %}

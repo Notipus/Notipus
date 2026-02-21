@@ -35,6 +35,7 @@ dev = [
     "django-stubs-ext>=5.0.0",
     "django-extensions>=4.1,<5.0",
     "pytest-env>=1.2.0",
+    "pytest-socket>=0.7.0",
 ]
 
 [tool.ruff]
@@ -79,10 +80,11 @@ env = ["DEBUG=True"]
 python_files = ["tests.py", "test_*.py", "*_tests.py"]
 python_classes = ["Test*", "*Test", "*TestCase"]
 python_functions = ["test_*"]
-addopts = "--strict-markers"
+addopts = "--strict-markers --disable-socket --allow-unix-socket"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "allow_hosts: allow network connections to specified hosts (pytest-socket)",
 ]
 
 [tool.mypy]
