@@ -40,6 +40,8 @@ class EventProcessor:
         "payment_failure",
         "refund_issued",
         "invoice_paid",
+        "payment_action_required",
+        "checkout_completed",
         # Subscription events
         "subscription_created",
         "subscription_updated",
