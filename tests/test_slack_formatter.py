@@ -125,9 +125,10 @@ def notification_with_company(basic_notification: RichNotification) -> RichNotif
 @pytest.fixture
 def notification_with_actions(basic_notification: RichNotification) -> RichNotification:
     """Create a notification with action buttons."""
+    website_url = "https://acme.com"
     basic_notification.actions = [
         ActionButton(text="View in Stripe", url="https://stripe.com", style="primary"),
-        ActionButton(text="Website", url="https://acme.com", style="default"),
+        ActionButton(text="Website", url=website_url, style="default"),
     ]
     return basic_notification
 
@@ -436,7 +437,8 @@ class TestSlackDestinationPluginCompanySection:
             if block["type"] == "section" and "Test Corp" in str(block.get("text", {})):
                 text = str(block.get("text", {}).get("text", ""))
                 # Should have Slack link format, not HTML
-                assert "<https://test.com|Test Corp>" in text
+                expected_slack_link = "<https://test.com|Test Corp>"
+                assert expected_slack_link in text
                 assert "<p>" not in text
                 assert "<a " not in text
                 return

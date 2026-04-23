@@ -733,7 +733,8 @@ class TestDomainNormalization:
         assert domain is None
         assert error is not None
         assert "Custom domains are not supported" in error
-        assert "myshopify.com" in error
+        expected_domain_hint = "myshopify.com"
+        assert expected_domain_hint in error
 
     def test_reject_empty_input(self):
         """Test that empty input returns an error."""

@@ -207,6 +207,11 @@ def shopify_connect(request: HttpRequest) -> HttpResponseRedirect:
         "state": state,
     }
 
+    # Defense-in-depth: re-validate domain before constructing redirect URL
+    if not _is_valid_shop_domain(shop_domain):
+        messages.error(request, "Invalid Shopify store URL format")
+        return redirect("core:integrate_shopify")
+
     auth_url = f"https://{shop_domain}/admin/oauth/authorize?{urlencode(auth_params)}"
 
     logger.info(f"Redirecting to Shopify OAuth for shop: {shop_domain}")
@@ -585,6 +590,11 @@ def _exchange_code_for_token(request: HttpRequest, shop: str, code: str) -> dict
     Returns:
         Token data dict or None if exchange failed.
     """
+    if not _is_valid_shop_domain(shop):
+        logger.error(f"Invalid shop domain in token exchange: {shop}")
+        messages.error(request, "Invalid shop domain. Please try again.")
+        return None
+
     token_url = f"https://{shop}/admin/oauth/access_token"
 
     try:
@@ -642,6 +652,11 @@ def _create_webhook_subscriptions(
     Returns:
         List of created webhook IDs or None if failed.
     """
+    if not _is_valid_shop_domain(shop):
+        logger.error(f"Invalid shop domain in webhook creation: {shop}")
+        messages.error(request, "Invalid shop domain. Please try again.")
+        return None
+
     if enabled_categories is None:
         enabled_categories = _get_default_categories()
 
@@ -715,7 +730,7 @@ def _delete_webhook_subscriptions(integration: Integration) -> None:
     access_token = integration.oauth_credentials.get("access_token")
     webhook_ids = integration.integration_settings.get("webhook_ids", [])
 
-    if not shop or not access_token:
+    if not shop or not access_token or not _is_valid_shop_domain(shop):
         return
 
     api_version = settings.SHOPIFY_API_VERSION

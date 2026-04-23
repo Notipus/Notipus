@@ -108,7 +108,20 @@ def create_success_response(message: str) -> dict:
 
 
 def create_error_response(error: Exception, status_code: int = 500) -> dict:
-    """Create standardized error response"""
+    """Create standardized error response.
+
+    For 5xx errors, returns a generic message to avoid leaking internal
+    details (stack traces, exception messages) to external clients.
+    For 4xx errors, includes the error type and message since those are
+    intentional client-facing feedback.
+    """
+    if status_code >= 500:
+        return {
+            "status": "error",
+            "error": "InternalError",
+            "message": "Internal error processing webhook",
+            "code": status_code,
+        }
     return {
         "status": "error",
         "error": type(error).__name__,
