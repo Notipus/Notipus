@@ -192,21 +192,36 @@ class BrandfetchPlugin(BaseEnrichmentPlugin):
         Args:
             headers: Response headers from the Brandfetch API.
         """
+        # Header names: x-api-key-quota, x-api-key-approximate-usage
+        # Values are numeric only — convert to int early to avoid logging raw
+        # header strings (which CodeQL flags due to "api-key" in header name).
+        _HEADER_QUOTA = "x-api-key-quota"  # noqa: N806
+        _HEADER_USAGE = "x-api-key-approximate-usage"  # noqa: N806
         try:
-            quota = headers.get("x-api-key-quota")
-            usage = headers.get("x-api-key-approximate-usage")
+            raw_quota = headers.get(_HEADER_QUOTA)
+            raw_usage = headers.get(_HEADER_USAGE)
 
-            if quota and usage and str(quota).isdigit() and str(usage).isdigit():
-                quota_int = int(quota)
-                usage_int = int(usage)
+            if (
+                raw_quota
+                and raw_usage
+                and str(raw_quota).isdigit()
+                and str(raw_usage).isdigit()
+            ):
+                quota_int = int(raw_quota)
+                usage_int = int(raw_usage)
                 usage_pct = (usage_int / quota_int) * 100
-                logger.info(f"Brandfetch API usage: {usage}/{quota} ({usage_pct:.1f}%)")
+                logger.info(
+                    "Brandfetch API usage: %d/%d (%.1f%%)",
+                    usage_int,
+                    quota_int,
+                    usage_pct,
+                )
 
                 if usage_pct > 80:
-                    logger.warning(f"Brandfetch API usage high: {usage_pct:.1f}%")
-            elif quota and str(quota).isdigit():
-                logger.debug(f"Brandfetch API quota: {quota}")
-            elif usage and str(usage).isdigit():
-                logger.debug(f"Brandfetch API usage: {usage}")
+                    logger.warning("Brandfetch API usage high: %.1f%%", usage_pct)
+            elif raw_quota and str(raw_quota).isdigit():
+                logger.debug("Brandfetch API quota: %d", int(raw_quota))
+            elif raw_usage and str(raw_usage).isdigit():
+                logger.debug("Brandfetch API usage: %d", int(raw_usage))
         except (ValueError, TypeError, ZeroDivisionError) as e:
-            logger.debug(f"Could not parse quota headers: {e}")
+            logger.debug("Could not parse quota headers: %s", e)

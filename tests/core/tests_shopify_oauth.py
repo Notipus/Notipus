@@ -155,7 +155,8 @@ class TestIntegrateShopifyView:
 
         assert response.status_code == 200
         assert b"Connected" in response.content
-        assert b"teststore.myshopify.com" in response.content
+        expected_domain = b"teststore.myshopify.com"
+        assert expected_domain in response.content
 
 
 @pytest.mark.django_db
