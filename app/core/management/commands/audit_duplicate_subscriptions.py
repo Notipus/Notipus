@@ -7,18 +7,15 @@ those customers so they can be reconciled (cancel the duplicates, refund
 the overlapping charges). Read-only by default.
 """
 
-import logging
 from argparse import ArgumentParser
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import stripe
 from core.models import Workspace
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-
-logger = logging.getLogger(__name__)
 
 LIVE_STATUSES = ("active", "trialing", "past_due")
 
@@ -32,6 +29,10 @@ class Command(BaseCommand):
 
         # Spot-check a single customer
         python manage.py audit_duplicate_subscriptions --customer cus_ABC123
+
+        # Limit the scan to recent subscriptions and a max number of records
+        python manage.py audit_duplicate_subscriptions \
+            --created-after 2026-01-01 --max-results 5000
     """
 
     help = "Report Stripe customers with 2+ active subscriptions"
@@ -44,6 +45,25 @@ class Command(BaseCommand):
                 "Limit the audit to a single Stripe customer id. "
                 "Skips the global scan; useful for spot-checks against a "
                 "specific customer reported via support."
+            ),
+        )
+        parser.add_argument(
+            "--created-after",
+            metavar="DATE",
+            help=(
+                "Only inspect subscriptions created on or after this date "
+                "(YYYY-MM-DD or unix timestamp). Lets a large account scan "
+                "skip ancient subscriptions and stay under Stripe rate limits."
+            ),
+        )
+        parser.add_argument(
+            "--max-results",
+            type=int,
+            metavar="N",
+            help=(
+                "Stop after inspecting N subscriptions. Useful as a guard "
+                "rail when running against a very large Stripe account; "
+                "the audit aborts early once the cap is reached."
             ),
         )
 
@@ -60,19 +80,16 @@ class Command(BaseCommand):
             ) from err
 
         only_customer = options.get("customer")
-        subscriptions = self._fetch_subscriptions(only_customer=only_customer)
-        by_customer: dict[str, list[stripe.Subscription]] = defaultdict(list)
-        for sub in subscriptions:
-            customer_id = sub.customer
-            if hasattr(customer_id, "id"):
-                customer_id = customer_id.id
-            by_customer[customer_id].append(sub)
+        created_after = self._parse_created_after(options.get("created_after"))
+        max_results = options.get("max_results")
 
-        duplicates = {
-            cid: subs
-            for cid, subs in by_customer.items()
-            if sum(1 for s in subs if s.status in LIVE_STATUSES) >= 2
-        }
+        by_customer = self._stream_live_subs(
+            only_customer=only_customer,
+            created_after=created_after,
+            max_results=max_results,
+        )
+
+        duplicates = {cid: subs for cid, subs in by_customer.items() if len(subs) >= 2}
 
         self.stdout.write("")
         if not duplicates:
@@ -96,9 +113,38 @@ class Command(BaseCommand):
             "then run sync_stripe_subscriptions to reconcile local state."
         )
 
-    def _fetch_subscriptions(
-        self, only_customer: str | None = None
-    ) -> list[stripe.Subscription]:
+    @staticmethod
+    def _parse_created_after(raw: str | None) -> int | None:
+        """Convert a CLI date argument to a unix timestamp.
+
+        Accepts ``YYYY-MM-DD`` (interpreted as UTC midnight) or a raw
+        unix timestamp. Returns None when no value was supplied.
+        """
+        if not raw:
+            return None
+        if raw.isdigit():
+            return int(raw)
+        try:
+            dt = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=UTC)
+        except ValueError as err:
+            raise CommandError(
+                f"--created-after: expected YYYY-MM-DD or unix timestamp, got {raw!r}"
+            ) from err
+        return int(dt.timestamp())
+
+    def _stream_live_subs(
+        self,
+        only_customer: str | None,
+        created_after: int | None,
+        max_results: int | None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Stream Stripe subscriptions and group live ones by customer.
+
+        Uses auto_paging_iter so we don't buffer the full result set in
+        memory, and only retains a compact record for each *live* sub —
+        canceled/incomplete ones are discarded as they stream by, since
+        they can't form a duplicate.
+        """
         if only_customer:
             self.stdout.write(
                 f"Fetching subscriptions from Stripe for customer {only_customer}..."
@@ -106,34 +152,70 @@ class Command(BaseCommand):
         else:
             self.stdout.write("Fetching subscriptions from Stripe (all customers)...")
 
-        result: list[stripe.Subscription] = []
-        starting_after: str | None = None
+        params: dict[str, Any] = {"limit": 100, "status": "all"}
+        if only_customer:
+            params["customer"] = only_customer
+        if created_after is not None:
+            params["created"] = {"gte": created_after}
 
-        while True:
-            params: dict[str, Any] = {"limit": 100, "status": "all"}
-            if only_customer:
-                params["customer"] = only_customer
-            if starting_after:
-                params["starting_after"] = starting_after
-
-            response = stripe.Subscription.list(**params)
-            result.extend(response.data)
-
-            if not response.has_more or not response.data:
+        by_customer: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        scanned = 0
+        for sub in stripe.Subscription.list(**params).auto_paging_iter():
+            scanned += 1
+            if max_results is not None and scanned > max_results:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Reached --max-results={max_results}, stopping early. "
+                        "Re-run with --created-after or a higher --max-results "
+                        "to continue."
+                    )
+                )
                 break
-            starting_after = response.data[-1].id
+            if sub.status not in LIVE_STATUSES:
+                continue
 
-        self.stdout.write(f"Fetched {len(result)} subscription(s)")
-        return result
+            customer_id = sub.customer
+            if hasattr(customer_id, "id"):
+                customer_id = customer_id.id
+            by_customer[customer_id].append(self._compact_sub(sub))
+
+        self.stdout.write(f"Scanned {scanned} subscription(s)")
+        return by_customer
+
+    @staticmethod
+    def _compact_sub(sub: stripe.Subscription) -> dict[str, Any]:
+        """Reduce a Stripe Subscription to the fields the report prints.
+
+        Avoids retaining the full Stripe object for every live subscription,
+        which keeps memory bounded even on accounts with thousands of subs.
+        """
+        amount: str = "?"
+        try:
+            items = getattr(sub, "items", None)
+            data = getattr(items, "data", []) if items else []
+            if data:
+                price = getattr(data[0], "price", None)
+                unit = getattr(price, "unit_amount", None) if price else None
+                currency = (getattr(price, "currency", "usd") or "usd").upper()
+                if unit is not None:
+                    amount = f"{unit / 100:.2f} {currency}"
+        except Exception:
+            amount = "?"
+
+        return {
+            "id": sub.id,
+            "status": sub.status,
+            "created": getattr(sub, "created", None),
+            "amount": amount,
+        }
 
     def _print_customer_block(
-        self, customer_id: str, subs: list[stripe.Subscription]
+        self, customer_id: str, subs: list[dict[str, Any]]
     ) -> None:
         workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
         emails = self._workspace_emails(workspace)
 
-        live = [s for s in subs if s.status in LIVE_STATUSES]
-        live.sort(key=lambda s: getattr(s, "created", 0))
+        subs_sorted = sorted(subs, key=lambda s: s.get("created") or 0)
 
         self.stdout.write("")
         self.stdout.write(f"Customer: {customer_id}")
@@ -146,19 +228,18 @@ class Command(BaseCommand):
             self.stdout.write("  Workspace: <no local workspace matches this customer>")
         if emails:
             self.stdout.write(f"  Members: {', '.join(emails)}")
-        self.stdout.write(f"  Live subscriptions ({len(live)}):")
+        self.stdout.write(f"  Live subscriptions ({len(subs_sorted)}):")
 
-        for sub in live:
-            created = getattr(sub, "created", None)
+        for sub in subs_sorted:
+            created = sub.get("created")
             created_str = (
-                datetime.fromtimestamp(created, tz=timezone.utc).isoformat()
+                datetime.fromtimestamp(created, tz=UTC).isoformat()
                 if created
                 else "?"
             )
-            amount = self._sub_amount(sub)
             self.stdout.write(
-                f"    - {sub.id}  status={sub.status}  "
-                f"created={created_str}  ~={amount}"
+                f"    - {sub['id']}  status={sub['status']}  "
+                f"created={created_str}  ~={sub['amount']}"
             )
 
     @staticmethod
@@ -170,19 +251,3 @@ class Command(BaseCommand):
             for m in workspace.members.select_related("user").all()
             if m.user.email
         ]
-
-    @staticmethod
-    def _sub_amount(sub: stripe.Subscription) -> str:
-        try:
-            items = getattr(sub, "items", None)
-            data = getattr(items, "data", []) if items else []
-            if not data:
-                return "?"
-            price = getattr(data[0], "price", None)
-            unit = getattr(price, "unit_amount", None) if price else None
-            currency = (getattr(price, "currency", "usd") or "usd").upper()
-            if unit is None:
-                return "?"
-            return f"{unit / 100:.2f} {currency}"
-        except Exception:
-            return "?"

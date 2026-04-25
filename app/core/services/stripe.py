@@ -150,6 +150,44 @@ class StripeAPI:
             logger.error(f"Unexpected error creating Stripe customer: {e!s}")
             return None
 
+    def _create_customer_idempotent(
+        self,
+        workspace_uuid: Any,
+        workspace_id: Any,
+        workspace_name: str,
+        member_email: str | None,
+    ) -> stripe.Customer:
+        """Create the Stripe customer with a stable idempotency key, then
+        apply mutable display fields (name, email) via a follow-up modify.
+
+        The idempotent payload is intentionally minimal — only the immutable
+        workspace identifiers. Stripe rejects an idempotency replay whose
+        params differ from the original (e.g. 24h ago "name=Old"; now
+        "name=New" after a rename), so mutable fields must NOT travel
+        through the create call. Modify failures are non-fatal: the customer
+        exists and is correctly linked via metadata.
+        """
+        customer = stripe.Customer.create(
+            idempotency_key=f"workspace-customer-{workspace_uuid}",
+            metadata={
+                "workspace_id": str(workspace_id),
+                "workspace_uuid": str(workspace_uuid),
+            },
+        )
+
+        modify_params: dict[str, Any] = {"name": workspace_name}
+        if member_email:
+            modify_params["email"] = member_email
+        try:
+            stripe.Customer.modify(customer.id, **modify_params)
+        except stripe.StripeError as modify_err:
+            logger.warning(
+                f"Failed to set name/email on Stripe customer "
+                f"{customer.id}: {modify_err!s}"
+            )
+
+        return customer
+
     def get_or_create_customer(self, workspace: "Workspace") -> dict[str, Any] | None:
         """Get existing Stripe customer or create a new one for the workspace.
 
@@ -204,20 +242,14 @@ class StripeAPI:
 
             # Phase 2: create the customer outside any DB lock. Two concurrent
             # callers send the same idempotency key, so Stripe creates exactly
-            # one customer and returns the same id to both.
-            customer_data: dict[str, Any] = {
-                "name": workspace_name,
-                "metadata": {
-                    "workspace_id": str(workspace_id),
-                    "workspace_uuid": str(workspace_uuid),
-                },
-            }
-            if member_email:
-                customer_data["email"] = member_email
-
-            customer = stripe.Customer.create(
-                idempotency_key=f"workspace-customer-{workspace_uuid}",
-                **customer_data,
+            # one customer and returns the same id to both. Mutable fields
+            # (name/email) are applied in a separate non-idempotent call to
+            # keep the idempotent payload stable across retries.
+            customer = self._create_customer_idempotent(
+                workspace_uuid=workspace_uuid,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                member_email=member_email,
             )
 
             # Phase 3: short locked write. Overwrite if either (a) the row
@@ -605,15 +637,26 @@ class StripeAPI:
         self,
         customer_id: str,
         status: str = "all",
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """Get subscriptions for a customer.
 
         Args:
             customer_id: Stripe customer ID.
             status: Filter by status ('all', 'active', 'canceled', etc.).
+            raise_on_error: If True, propagate Stripe errors instead of
+                swallowing them and returning []. Use this from callers
+                that need to fail closed — e.g. the duplicate-subscription
+                guard, where "no subs" and "couldn't check" must not be
+                conflated or a transient Stripe outage will let a second
+                live subscription through.
 
         Returns:
             List of subscription dictionaries.
+
+        Raises:
+            stripe.StripeError: When raise_on_error=True and the Stripe API
+                call fails. Default callers continue to receive [] on error.
         """
         try:
             stripe.api_key = self.api_key
@@ -655,9 +698,13 @@ class StripeAPI:
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error getting subscriptions: {e!s}")
+            if raise_on_error:
+                raise
             return []
         except Exception as e:
             logger.error(f"Unexpected error getting subscriptions: {e!s}")
+            if raise_on_error:
+                raise
             return []
 
     def get_invoices(

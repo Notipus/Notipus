@@ -250,6 +250,7 @@ def checkout(
     Returns:
         Redirect to Stripe Checkout or error page.
     """
+    import stripe
     from core.services.stripe import StripeAPI
     from django.conf import settings as django_settings
 
@@ -278,9 +279,29 @@ def checkout(
         # Don't create a duplicate subscription if the customer already has
         # a live one. Plan changes belong in the Stripe Customer Portal,
         # which handles them with prorations instead of a second subscription.
-        existing_subs = stripe_api.get_customer_subscriptions(
-            customer["id"], status="all"
-        )
+        #
+        # Fail closed when Stripe is unavailable: an empty list returned on
+        # error is indistinguishable from "no subscriptions", so a transient
+        # outage could let a second live subscription through. raise_on_error
+        # makes the lookup raise instead, and we redirect to the portal with
+        # an explicit message rather than charge the customer twice.
+        try:
+            existing_subs = stripe_api.get_customer_subscriptions(
+                customer["id"], status="all", raise_on_error=True
+            )
+        except stripe.StripeError:
+            logger.exception(
+                "Stripe error while checking existing subscriptions for "
+                f"customer {customer['id']}; refusing to create a new "
+                "subscription to avoid duplicate billing."
+            )
+            messages.error(
+                request,
+                "We couldn't verify your subscription status with Stripe. "
+                "Please try again in a moment, or use the billing portal "
+                "to manage your subscription.",
+            )
+            return redirect("core:billing_portal")
         if any(
             sub.get("status") in ("active", "trialing", "past_due")
             for sub in existing_subs

@@ -492,10 +492,12 @@ class TestStripeAPIGetOrCreateCustomer:
             subscription_status="active",
         )
 
+    @patch("core.services.stripe.stripe.Customer.modify")
     @patch("core.services.stripe.stripe.Customer.create")
     def test_creates_new_customer_when_none_exists(
         self,
         mock_create: MagicMock,
+        mock_modify: MagicMock,
         stripe_api: StripeAPI,
         workspace: Any,
     ) -> None:
@@ -513,10 +515,12 @@ class TestStripeAPIGetOrCreateCustomer:
         workspace.refresh_from_db()
         assert workspace.stripe_customer_id == "cus_new123"
 
+    @patch("core.services.stripe.stripe.Customer.modify")
     @patch("core.services.stripe.stripe.Customer.create")
     def test_passes_idempotency_key_derived_from_workspace_uuid(
         self,
         mock_create: MagicMock,
+        mock_modify: MagicMock,
         stripe_api: StripeAPI,
         workspace: Any,
     ) -> None:
@@ -535,6 +539,71 @@ class TestStripeAPIGetOrCreateCustomer:
         assert call_kwargs.get("idempotency_key") == (
             f"workspace-customer-{workspace.uuid}"
         )
+
+    @patch("core.services.stripe.stripe.Customer.modify")
+    @patch("core.services.stripe.stripe.Customer.create")
+    def test_idempotent_create_payload_omits_mutable_fields(
+        self,
+        mock_create: MagicMock,
+        mock_modify: MagicMock,
+        stripe_api: StripeAPI,
+        workspace: Any,
+    ) -> None:
+        """Stripe rejects an idempotency-key replay whose params differ from
+        the original call. The workspace name and member email can change
+        between calls, so they must NOT travel through the idempotent create
+        — only the immutable workspace identifiers, which never change.
+        """
+        mock_customer = Mock()
+        mock_customer.id = "cus_new123"
+        mock_customer.to_dict.return_value = {"id": "cus_new123"}
+        mock_create.return_value = mock_customer
+
+        stripe_api.get_or_create_customer(workspace)
+
+        call_kwargs = mock_create.call_args.kwargs
+        # Only the idempotency key + metadata payload is allowed.
+        assert "name" not in call_kwargs
+        assert "email" not in call_kwargs
+        metadata = call_kwargs.get("metadata", {})
+        assert metadata.get("workspace_uuid") == str(workspace.uuid)
+        assert metadata.get("workspace_id") == str(workspace.id)
+
+    @patch("core.services.stripe.stripe.Customer.modify")
+    @patch("core.services.stripe.stripe.Customer.create")
+    def test_applies_name_and_email_via_customer_modify(
+        self,
+        mock_create: MagicMock,
+        mock_modify: MagicMock,
+        stripe_api: StripeAPI,
+        workspace: Any,
+    ) -> None:
+        """Mutable display fields must still reach Stripe — just via a
+        non-idempotent follow-up call so a workspace rename doesn't trip
+        Stripe's idempotency-mismatch check on the next create attempt.
+        """
+        from core.models import WorkspaceMember
+        from django.contrib.auth.models import User
+
+        user = User.objects.create_user(
+            username="alice", email="alice@example.com", password="x"
+        )
+        WorkspaceMember.objects.create(
+            user=user, workspace=workspace, role="owner", is_active=True
+        )
+
+        mock_customer = Mock()
+        mock_customer.id = "cus_new123"
+        mock_customer.to_dict.return_value = {"id": "cus_new123"}
+        mock_create.return_value = mock_customer
+
+        stripe_api.get_or_create_customer(workspace)
+
+        mock_modify.assert_called_once()
+        modify_args, modify_kwargs = mock_modify.call_args
+        assert modify_args[0] == "cus_new123"
+        assert modify_kwargs.get("name") == workspace.name
+        assert modify_kwargs.get("email") == "alice@example.com"
 
     @patch("core.services.stripe.stripe.Customer.retrieve")
     @patch("core.services.stripe.stripe.Customer.create")
@@ -562,12 +631,14 @@ class TestStripeAPIGetOrCreateCustomer:
         mock_retrieve.assert_called_once_with("cus_existing123")
         mock_create.assert_not_called()
 
+    @patch("core.services.stripe.stripe.Customer.modify")
     @patch("core.services.stripe.stripe.Customer.retrieve")
     @patch("core.services.stripe.stripe.Customer.create")
     def test_overwrites_stripe_customer_id_when_existing_one_was_deleted(
         self,
         mock_create: MagicMock,
         mock_retrieve: MagicMock,
+        mock_modify: MagicMock,
         stripe_api: StripeAPI,
         workspace: Any,
     ) -> None:
@@ -599,12 +670,14 @@ class TestStripeAPIGetOrCreateCustomer:
         # The DB row must have been overwritten — not still pointing at cus_dead.
         assert Workspace.objects.get(pk=workspace.pk).stripe_customer_id == "cus_new"
 
+    @patch("core.services.stripe.stripe.Customer.modify")
     @patch("core.services.stripe.stripe.Customer.retrieve")
     @patch("core.services.stripe.stripe.Customer.create")
     def test_concurrent_callers_create_only_one_customer(
         self,
         mock_create: MagicMock,
         mock_retrieve: MagicMock,
+        mock_modify: MagicMock,
         stripe_api: StripeAPI,
         workspace: Any,
     ) -> None:
@@ -867,6 +940,23 @@ class TestStripeAPISubscriptions:
         result = stripe_api.get_customer_subscriptions("cus_test123")
 
         assert result == []
+
+    @patch("core.services.stripe.stripe.Subscription.list")
+    def test_get_customer_subscriptions_raises_when_raise_on_error(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """Callers that need to fail closed (e.g. the duplicate-subscription
+        guard in checkout) pass raise_on_error=True so a Stripe outage is
+        not silently mapped to "no subscriptions".
+        """
+        from stripe import StripeError
+
+        mock_list.side_effect = StripeError("Service unavailable")
+
+        with pytest.raises(StripeError):
+            stripe_api.get_customer_subscriptions(
+                "cus_test123", raise_on_error=True
+            )
 
 
 class TestExtractSubscriptionItems:
@@ -1240,6 +1330,38 @@ class TestCheckoutViewActiveSubscriptionGuard:
         assert response.status_code == 302
         assert response.url == "https://checkout.stripe.com/x"
         mock_create_session.assert_called_once()
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_redirects_to_billing_portal_on_stripe_error_in_subscription_check(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_get_subs: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        setup: Any,
+    ) -> None:
+        """If Stripe is unavailable when checking for an existing live
+        subscription, the view must NOT fall through to creating a new one
+        — that's how the original duplicate-billing bug surfaces. It must
+        redirect the user to the billing portal with an explanatory error
+        instead of charging them a second time.
+        """
+        from django.urls import reverse
+        from stripe import StripeError
+
+        client, _workspace = setup
+        mock_get_or_create.return_value = {"id": "cus_existing"}
+        mock_get_subs.side_effect = StripeError("Service unavailable")
+        mock_get_price.return_value = {"id": "price_pro_monthly"}
+
+        response = client.get(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 302
+        assert reverse("core:billing_portal") in response.url
+        mock_create_session.assert_not_called()
 
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
