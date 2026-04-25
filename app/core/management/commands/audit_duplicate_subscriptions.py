@@ -27,15 +27,25 @@ class Command(BaseCommand):
     """Report customers with two or more live Stripe subscriptions.
 
     Usage:
+        # Scan all customers (slow on large accounts)
         python manage.py audit_duplicate_subscriptions
+
+        # Spot-check a single customer
+        python manage.py audit_duplicate_subscriptions --customer cus_ABC123
     """
 
     help = "Report Stripe customers with 2+ active subscriptions"
 
     def add_arguments(self, parser: "ArgumentParser") -> None:
-        # No flags needed today; left here so we can grow the command without
-        # changing the call site contract.
-        pass
+        parser.add_argument(
+            "--customer",
+            metavar="CUSTOMER_ID",
+            help=(
+                "Limit the audit to a single Stripe customer id. "
+                "Skips the global scan; useful for spot-checks against a "
+                "specific customer reported via support."
+            ),
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         stripe.api_key = settings.STRIPE_SECRET_KEY
@@ -49,7 +59,8 @@ class Command(BaseCommand):
                 "Failed to connect to Stripe. Check your STRIPE_SECRET_KEY."
             ) from err
 
-        subscriptions = self._fetch_subscriptions()
+        only_customer = options.get("customer")
+        subscriptions = self._fetch_subscriptions(only_customer=only_customer)
         by_customer: dict[str, list[stripe.Subscription]] = defaultdict(list)
         for sub in subscriptions:
             customer_id = sub.customer
@@ -85,14 +96,23 @@ class Command(BaseCommand):
             "then run sync_stripe_subscriptions to reconcile local state."
         )
 
-    def _fetch_subscriptions(self) -> list[stripe.Subscription]:
-        self.stdout.write("Fetching subscriptions from Stripe...")
+    def _fetch_subscriptions(
+        self, only_customer: str | None = None
+    ) -> list[stripe.Subscription]:
+        if only_customer:
+            self.stdout.write(
+                f"Fetching subscriptions from Stripe for customer {only_customer}..."
+            )
+        else:
+            self.stdout.write("Fetching subscriptions from Stripe (all customers)...")
 
         result: list[stripe.Subscription] = []
         starting_after: str | None = None
 
         while True:
             params: dict[str, Any] = {"limit": 100, "status": "all"}
+            if only_customer:
+                params["customer"] = only_customer
             if starting_after:
                 params["starting_after"] = starting_after
 

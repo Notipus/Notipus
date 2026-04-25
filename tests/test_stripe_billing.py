@@ -564,6 +564,43 @@ class TestStripeAPIGetOrCreateCustomer:
 
     @patch("core.services.stripe.stripe.Customer.retrieve")
     @patch("core.services.stripe.stripe.Customer.create")
+    def test_overwrites_stripe_customer_id_when_existing_one_was_deleted(
+        self,
+        mock_create: MagicMock,
+        mock_retrieve: MagicMock,
+        stripe_api: StripeAPI,
+        workspace: Any,
+    ) -> None:
+        """If the workspace points at a Stripe customer that has been deleted,
+        the row must be updated to the freshly created one. Otherwise every
+        future call would try to retrieve the dead id, fall through, and
+        create yet another customer.
+        """
+        from core.models import Workspace
+
+        workspace.stripe_customer_id = "cus_dead"
+        workspace.save(update_fields=["stripe_customer_id"])
+
+        deleted_customer = Mock()
+        deleted_customer.id = "cus_dead"
+        deleted_customer.deleted = True
+        deleted_customer.to_dict.return_value = {"id": "cus_dead", "deleted": True}
+        mock_retrieve.return_value = deleted_customer
+
+        new_customer = Mock()
+        new_customer.id = "cus_new"
+        new_customer.to_dict.return_value = {"id": "cus_new"}
+        mock_create.return_value = new_customer
+
+        result = stripe_api.get_or_create_customer(workspace)
+
+        assert result is not None
+        assert result["id"] == "cus_new"
+        # The DB row must have been overwritten — not still pointing at cus_dead.
+        assert Workspace.objects.get(pk=workspace.pk).stripe_customer_id == "cus_new"
+
+    @patch("core.services.stripe.stripe.Customer.retrieve")
+    @patch("core.services.stripe.stripe.Customer.create")
     def test_concurrent_callers_create_only_one_customer(
         self,
         mock_create: MagicMock,
@@ -757,16 +794,8 @@ class TestStripeAPISubscriptions:
         """
         return StripeAPI()
 
-    @patch("core.services.stripe.stripe.Subscription.list")
-    def test_get_customer_subscriptions_success(
-        self, mock_list: MagicMock, stripe_api: StripeAPI
-    ) -> None:
-        """Test successful subscription retrieval.
-
-        Args:
-            mock_list: Mock for Stripe subscription list.
-            stripe_api: StripeAPI fixture.
-        """
+    @staticmethod
+    def _build_mock_subscription(sub_id: str = "sub_test123") -> Mock:
         mock_product = Mock()
         mock_product.name = "Pro Plan"
 
@@ -780,16 +809,25 @@ class TestStripeAPISubscriptions:
         mock_item.price = mock_price
         mock_item.quantity = 1
 
-        mock_subscription = Mock()
-        mock_subscription.id = "sub_test123"
-        mock_subscription.status = "active"
-        mock_subscription.current_period_start = 1704067200
-        mock_subscription.current_period_end = 1706745600
-        mock_subscription.cancel_at_period_end = False
-        mock_subscription.canceled_at = None
-        mock_subscription.items = Mock(data=[mock_item])
+        sub = Mock()
+        sub.id = sub_id
+        sub.status = "active"
+        sub.current_period_start = 1704067200
+        sub.current_period_end = 1706745600
+        sub.cancel_at_period_end = False
+        sub.canceled_at = None
+        sub.items = Mock(data=[mock_item])
+        return sub
 
-        mock_list.return_value = Mock(data=[mock_subscription])
+    @patch("core.services.stripe.stripe.Subscription.list")
+    def test_get_customer_subscriptions_success(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """Test successful subscription retrieval."""
+        mock_subscription = self._build_mock_subscription()
+        list_response = Mock()
+        list_response.auto_paging_iter.return_value = iter([mock_subscription])
+        mock_list.return_value = list_response
 
         result = stripe_api.get_customer_subscriptions("cus_test123")
 
@@ -798,15 +836,30 @@ class TestStripeAPISubscriptions:
         assert result[0]["status"] == "active"
 
     @patch("core.services.stripe.stripe.Subscription.list")
+    def test_get_customer_subscriptions_paginates_across_pages(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """The duplicate-subscription guard relies on this method seeing
+        every subscription, not just the first Stripe page. A customer
+        with many canceled subs plus one off-page live one must still
+        return that live one. Verifies auto_paging_iter is being used.
+        """
+        page_one = [self._build_mock_subscription(f"sub_{i}") for i in range(100)]
+        page_two = [self._build_mock_subscription("sub_off_page")]
+        list_response = Mock()
+        list_response.auto_paging_iter.return_value = iter(page_one + page_two)
+        mock_list.return_value = list_response
+
+        result = stripe_api.get_customer_subscriptions("cus_test123")
+
+        assert len(result) == 101
+        assert result[-1]["id"] == "sub_off_page"
+
+    @patch("core.services.stripe.stripe.Subscription.list")
     def test_get_customer_subscriptions_stripe_error(
         self, mock_list: MagicMock, stripe_api: StripeAPI
     ) -> None:
-        """Test subscription retrieval with Stripe error.
-
-        Args:
-            mock_list: Mock for Stripe subscription list.
-            stripe_api: StripeAPI fixture.
-        """
+        """Test subscription retrieval with Stripe error."""
         from stripe import StripeError
 
         mock_list.side_effect = StripeError("Test error")

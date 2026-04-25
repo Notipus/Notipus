@@ -220,11 +220,17 @@ class StripeAPI:
                 **customer_data,
             )
 
-            # Phase 3: short locked write. Only write if nobody else has,
-            # so a race that lost still ends up with the same id on the row.
+            # Phase 3: short locked write. Overwrite if either (a) the row
+            # is empty, or (b) it still points at the known-bad id we saw
+            # in Phase 1 (deleted/missing on Stripe). A concurrent racer
+            # that already wrote a different id wins — the idempotency key
+            # ensures their id is the same Stripe customer as ours.
             with transaction.atomic():
                 fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
-                if not fresh.stripe_customer_id:
+                if (
+                    not fresh.stripe_customer_id
+                    or fresh.stripe_customer_id == existing_customer_id
+                ):
                     fresh.stripe_customer_id = customer.id
                     fresh.save(update_fields=["stripe_customer_id"])
                 workspace.stripe_customer_id = fresh.stripe_customer_id
@@ -617,15 +623,18 @@ class StripeAPI:
                 # Note: Can't expand data.items.data.price.product (5 levels > 4 max)
                 # Expand only to price level, fetch product separately if needed
                 "expand": ["data.items.data.price"],
+                # max page size; auto_paging_iter still pages beyond this
+                "limit": 100,
             }
 
             if status != "all":
                 params["status"] = status
 
-            subscriptions = stripe.Subscription.list(**params)
-
+            # auto_paging_iter walks every page, so a customer with more
+            # subscriptions than fits on one page (e.g. an account with many
+            # canceled ones) doesn't hide an off-page live one from callers.
             result = []
-            for sub in subscriptions.data:
+            for sub in stripe.Subscription.list(**params).auto_paging_iter():
                 # Use _safe_getattr for attributes that may be missing
                 # on canceled/incomplete subscriptions. Stripe SDK's __getattr__
                 # raises KeyError (not AttributeError) for missing attributes.
