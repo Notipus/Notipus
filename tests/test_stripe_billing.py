@@ -251,6 +251,51 @@ class TestStripeAPICheckout:
         assert call_kwargs["subscription_data"]["metadata"] == metadata
         assert call_kwargs["metadata"] == metadata
 
+    @patch("core.services.stripe.stripe.checkout.Session.create")
+    def test_create_checkout_session_passes_idempotency_key(
+        self, mock_create: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """When given an idempotency_key, it must reach stripe.checkout.Session.create.
+
+        Stripe's idempotency window is 24h; this is what collapses
+        double-clicks/back-button replays into one checkout session.
+        """
+        mock_session = Mock()
+        mock_session.id = "cs_test123"
+        mock_session.url = "https://checkout.stripe.com/pay/cs_test123"
+        mock_session.customer = "cus_test123"
+        mock_session.status = "open"
+        mock_create.return_value = mock_session
+
+        stripe_api.create_checkout_session(
+            customer_id="cus_test123",
+            price_id="price_test123",
+            idempotency_key="checkout-abc-pro-2026-04-25",
+        )
+
+        call_kwargs = mock_create.call_args.kwargs
+        assert call_kwargs.get("idempotency_key") == "checkout-abc-pro-2026-04-25"
+
+    @patch("core.services.stripe.stripe.checkout.Session.create")
+    def test_create_checkout_session_omits_idempotency_key_when_not_provided(
+        self, mock_create: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """Backwards-compatible: omitting idempotency_key sends no key."""
+        mock_session = Mock()
+        mock_session.id = "cs_test123"
+        mock_session.url = "https://checkout.stripe.com/pay/cs_test123"
+        mock_session.customer = "cus_test123"
+        mock_session.status = "open"
+        mock_create.return_value = mock_session
+
+        stripe_api.create_checkout_session(
+            customer_id="cus_test123",
+            price_id="price_test123",
+        )
+
+        call_kwargs = mock_create.call_args.kwargs
+        assert "idempotency_key" not in call_kwargs
+
 
 class TestStripeAPIPortal:
     """Tests for Stripe Customer Portal functionality."""
@@ -419,8 +464,13 @@ class TestStripeAPIPrices:
         assert result == []
 
 
+@pytest.mark.django_db
 class TestStripeAPIGetOrCreateCustomer:
-    """Tests for get_or_create_customer functionality."""
+    """Tests for get_or_create_customer functionality.
+
+    Uses real Workspace rows because the implementation acquires a
+    row-level lock via `select_for_update()` to make concurrent calls safe.
+    """
 
     @pytest.fixture
     def stripe_api(self) -> StripeAPI:
@@ -432,76 +482,132 @@ class TestStripeAPIGetOrCreateCustomer:
         return StripeAPI()
 
     @pytest.fixture
-    def mock_workspace(self) -> MagicMock:
-        """Create a mock workspace for testing.
+    def workspace(self) -> Any:
+        """Create a real Workspace row with no Stripe customer yet."""
+        from core.models import Workspace
 
-        Returns:
-            Mock workspace with standard attributes.
-        """
-        workspace = MagicMock()
-        workspace.id = 1
-        workspace.uuid = "test-uuid-1234"
-        workspace.name = "Test Workspace"
-        workspace.stripe_customer_id = ""
-        workspace.members.exists.return_value = True
-        first_member = MagicMock()
-        first_member.user = MagicMock(email="test@example.com")
-        workspace.members.first.return_value = first_member
-        return workspace
+        return Workspace.objects.create(
+            name="Test Workspace",
+            subscription_plan="free",
+            subscription_status="active",
+        )
 
     @patch("core.services.stripe.stripe.Customer.create")
     def test_creates_new_customer_when_none_exists(
         self,
         mock_create: MagicMock,
         stripe_api: StripeAPI,
-        mock_workspace: MagicMock,
+        workspace: Any,
     ) -> None:
-        """Test customer creation when workspace has no Stripe customer.
+        """Customer creation when workspace has no Stripe customer."""
+        mock_customer = Mock()
+        mock_customer.id = "cus_new123"
+        mock_customer.to_dict.return_value = {"id": "cus_new123"}
+        mock_create.return_value = mock_customer
 
-        Args:
-            mock_create: Mock for Stripe customer create.
-            stripe_api: StripeAPI fixture.
-            mock_workspace: Mock workspace fixture.
+        result = stripe_api.get_or_create_customer(workspace)
+
+        assert result is not None
+        assert result["id"] == "cus_new123"
+        mock_create.assert_called_once()
+        workspace.refresh_from_db()
+        assert workspace.stripe_customer_id == "cus_new123"
+
+    @patch("core.services.stripe.stripe.Customer.create")
+    def test_passes_idempotency_key_keyed_by_workspace_uuid(
+        self,
+        mock_create: MagicMock,
+        stripe_api: StripeAPI,
+        workspace: Any,
+    ) -> None:
+        """The Stripe call must carry an idempotency_key derived from the
+        workspace UUID, so a network retry within Stripe's 24h window
+        cannot create a second Customer for the same workspace.
         """
         mock_customer = Mock()
         mock_customer.id = "cus_new123"
         mock_customer.to_dict.return_value = {"id": "cus_new123"}
         mock_create.return_value = mock_customer
 
-        result = stripe_api.get_or_create_customer(mock_workspace)
+        stripe_api.get_or_create_customer(workspace)
 
-        assert result is not None
-        assert result["id"] == "cus_new123"
-        mock_create.assert_called_once()
-        mock_workspace.save.assert_called_once()
+        call_kwargs = mock_create.call_args.kwargs
+        assert call_kwargs.get("idempotency_key") == (
+            f"workspace-customer-{workspace.uuid}"
+        )
 
     @patch("core.services.stripe.stripe.Customer.retrieve")
-    def test_retrieves_existing_customer(
+    @patch("core.services.stripe.stripe.Customer.create")
+    def test_does_not_create_when_workspace_already_has_customer(
         self,
+        mock_create: MagicMock,
         mock_retrieve: MagicMock,
         stripe_api: StripeAPI,
-        mock_workspace: MagicMock,
+        workspace: Any,
     ) -> None:
-        """Test retrieval of existing Stripe customer.
+        """Existing Stripe customer is retrieved, not re-created."""
+        workspace.stripe_customer_id = "cus_existing123"
+        workspace.save(update_fields=["stripe_customer_id"])
 
-        Args:
-            mock_retrieve: Mock for Stripe customer retrieve.
-            stripe_api: StripeAPI fixture.
-            mock_workspace: Mock workspace fixture.
-        """
-        mock_workspace.stripe_customer_id = "cus_existing123"
+        existing_customer = Mock()
+        existing_customer.id = "cus_existing123"
+        existing_customer.deleted = False
+        existing_customer.to_dict.return_value = {"id": "cus_existing123"}
+        mock_retrieve.return_value = existing_customer
 
-        mock_customer = Mock()
-        mock_customer.id = "cus_existing123"
-        mock_customer.deleted = False
-        mock_customer.to_dict.return_value = {"id": "cus_existing123"}
-        mock_retrieve.return_value = mock_customer
-
-        result = stripe_api.get_or_create_customer(mock_workspace)
+        result = stripe_api.get_or_create_customer(workspace)
 
         assert result is not None
         assert result["id"] == "cus_existing123"
         mock_retrieve.assert_called_once_with("cus_existing123")
+        mock_create.assert_not_called()
+
+    @patch("core.services.stripe.stripe.Customer.retrieve")
+    @patch("core.services.stripe.stripe.Customer.create")
+    def test_concurrent_callers_create_only_one_customer(
+        self,
+        mock_create: MagicMock,
+        mock_retrieve: MagicMock,
+        stripe_api: StripeAPI,
+        workspace: Any,
+    ) -> None:
+        """Two concurrent get_or_create_customer calls on the same
+        workspace must not both call stripe.Customer.create.
+
+        Simulates the race where two requests both load a stale
+        workspace instance with empty stripe_customer_id, then race to
+        create a customer. The select_for_update lock + re-check should
+        cause the second caller to see the first caller's write and
+        skip the create.
+        """
+        from core.models import Workspace
+
+        # First caller wins: creates customer + writes back to DB.
+        mock_customer = Mock()
+        mock_customer.id = "cus_first"
+        mock_customer.to_dict.return_value = {"id": "cus_first"}
+        mock_create.return_value = mock_customer
+
+        existing_customer = Mock()
+        existing_customer.id = "cus_first"
+        existing_customer.deleted = False
+        existing_customer.to_dict.return_value = {"id": "cus_first"}
+        mock_retrieve.return_value = existing_customer
+
+        # Both callers receive the same in-memory workspace with
+        # stripe_customer_id="". (The first call will write through.)
+        result_a = stripe_api.get_or_create_customer(workspace)
+
+        # Reload a stale copy that mimics a concurrent request that
+        # loaded the workspace row before the first request committed.
+        stale = Workspace.objects.get(pk=workspace.pk)
+        stale.stripe_customer_id = ""  # simulate the stale view
+        result_b = stripe_api.get_or_create_customer(stale)
+
+        assert result_a is not None and result_a["id"] == "cus_first"
+        assert result_b is not None and result_b["id"] == "cus_first"
+        # Stripe.Customer.create called exactly once across both callers.
+        assert mock_create.call_count == 1
 
 
 class TestBillingServiceWebhooks:
@@ -984,3 +1090,131 @@ class TestStripeAPIArchive:
         result = stripe_api.list_prices_for_product("prod_test123")
 
         assert result == []
+
+
+@pytest.mark.django_db
+class TestCheckoutViewActiveSubscriptionGuard:
+    """The checkout() view must refuse to create a second subscription for
+    a workspace that already has a live one in Stripe. The previous absence
+    of this guard is what let one customer accumulate three parallel Pro
+    subscriptions, all billing monthly.
+    """
+
+    @pytest.fixture
+    def setup(self) -> Any:
+        """Build a logged-in user + workspace + plan, return them."""
+        from core.models import Plan, Workspace, WorkspaceMember
+        from django.contrib.auth.models import User
+        from django.test import Client
+
+        user = User.objects.create_user(username="vik", password="x")
+        workspace = Workspace.objects.create(
+            name="Vik Workspace",
+            subscription_plan="free",
+            subscription_status="active",
+            stripe_customer_id="cus_existing",
+        )
+        WorkspaceMember.objects.create(
+            user=user, workspace=workspace, role="owner", is_active=True
+        )
+        # The "pro" Plan may already exist via migrations; ensure it has a
+        # Stripe price id so the view doesn't bail before the guard.
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "is_active": True,
+                "stripe_price_id_monthly": "price_pro_monthly",
+            },
+        )
+        client = Client()
+        client.force_login(user)
+        return client, workspace
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_redirects_to_billing_portal_when_active_subscription_exists(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_get_subs: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        setup: Any,
+    ) -> None:
+        """Active sub on Stripe -> redirect to billing portal, no new session."""
+        from django.urls import reverse
+
+        client, _workspace = setup
+        mock_get_or_create.return_value = {"id": "cus_existing"}
+        mock_get_subs.return_value = [{"id": "sub_1", "status": "active"}]
+
+        response = client.get(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 302
+        assert reverse("core:billing_portal") in response.url
+        mock_create_session.assert_not_called()
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_proceeds_to_checkout_when_no_active_subscription(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_get_subs: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        setup: Any,
+    ) -> None:
+        """No live sub -> checkout session is created and user redirected to it."""
+        from django.urls import reverse
+
+        client, _workspace = setup
+        mock_get_or_create.return_value = {"id": "cus_existing"}
+        mock_get_subs.return_value = [{"id": "sub_old", "status": "canceled"}]
+        mock_create_session.return_value = {
+            "id": "cs_new",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 302
+        assert response.url == "https://checkout.stripe.com/x"
+        mock_create_session.assert_called_once()
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_passes_idempotency_key_to_checkout_session(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_get_subs: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        setup: Any,
+    ) -> None:
+        """Checkout view must pass a stable idempotency_key derived from
+        workspace UUID + plan + today's date so a double-click within
+        Stripe's 24h window collapses to a single session."""
+        from django.urls import reverse
+
+        client, workspace = setup
+        mock_get_or_create.return_value = {"id": "cus_existing"}
+        mock_get_subs.return_value = []
+        mock_create_session.return_value = {
+            "id": "cs_new",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        client.get(reverse("core:checkout", args=["pro"]))
+
+        kwargs = mock_create_session.call_args.kwargs
+        idempotency_key = kwargs.get("idempotency_key", "")
+        assert str(workspace.uuid) in idempotency_key
+        assert "pro" in idempotency_key
+        assert idempotency_key.startswith("checkout-")

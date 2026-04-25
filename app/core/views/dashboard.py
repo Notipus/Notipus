@@ -88,11 +88,16 @@ def _create_stripe_checkout_for_plan(
 
         # TRIAL_PERIOD_DAYS: Number of days for paid plan trials (default: 14)
         trial_days = getattr(settings, "TRIAL_PERIOD_DAYS", 14)
+        from datetime import date
+
         checkout = stripe_api.create_checkout_session(
             customer_id=customer["id"],
             price_id=plan.stripe_price_id_monthly,
             trial_period_days=trial_days,
             metadata={"workspace_id": str(workspace.pk)},
+            idempotency_key=(
+                f"checkout-{workspace.uuid}-{selected_plan}-{date.today().isoformat()}"
+            ),
         )
         return checkout.get("url") if checkout else None
 

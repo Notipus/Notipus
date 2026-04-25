@@ -5,6 +5,7 @@ and checkout flows.
 """
 
 import logging
+from datetime import date
 from typing import Any
 
 from django.contrib import messages
@@ -274,6 +275,23 @@ def checkout(
             )
             return redirect("core:upgrade_plan")
 
+        # Don't create a duplicate subscription if the customer already has
+        # a live one. Plan changes belong in the Stripe Customer Portal,
+        # which handles them with prorations instead of a second subscription.
+        existing_subs = stripe_api.get_customer_subscriptions(
+            customer["id"], status="all"
+        )
+        if any(
+            sub.get("status") in ("active", "trialing", "past_due")
+            for sub in existing_subs
+        ):
+            messages.info(
+                request,
+                "You already have an active subscription. "
+                "Use the billing portal to change plans.",
+            )
+            return redirect("core:billing_portal")
+
         # Try to get price from Stripe using lookup key (preferred method)
         lookup_key = f"{plan_name}_monthly"
         price = stripe_api.get_price_by_lookup_key(lookup_key)
@@ -291,6 +309,9 @@ def checkout(
             price_id = price["id"]
 
         # Create Stripe Checkout Session
+        # Idempotency key collapses duplicate POSTs (double-click, browser
+        # back, retry) to one session within Stripe's 24h window, while
+        # leaving a deliberate next-day retry unblocked.
         checkout_session = stripe_api.create_checkout_session(
             customer_id=customer["id"],
             price_id=price_id,
@@ -298,6 +319,9 @@ def checkout(
                 "workspace_id": str(workspace.id),
                 "plan_name": plan_name,
             },
+            idempotency_key=(
+                f"checkout-{workspace.uuid}-{plan_name}-{date.today().isoformat()}"
+            ),
         )
 
         if not checkout_session or not checkout_session.get("url"):

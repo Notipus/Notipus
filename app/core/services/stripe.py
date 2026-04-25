@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import stripe
 from django.conf import settings
+from django.db import transaction
 
 if TYPE_CHECKING:
     from core.models import Workspace
@@ -156,55 +157,68 @@ class StripeAPI:
         that customer. Otherwise, creates a new customer and updates
         the workspace with the new customer ID.
 
+        Concurrent calls on the same workspace are serialized via row-level
+        lock to prevent two requests from each creating a Stripe customer.
+        The Stripe call itself is also keyed by workspace UUID so a network
+        retry inside Stripe's 24h idempotency window collapses to one resource.
+
         Args:
             workspace: The Workspace instance.
 
         Returns:
             Customer data dictionary, or None on failure.
         """
+        # Local import to avoid circular import at module load.
+        from core.models import Workspace as WorkspaceModel
+
         try:
             stripe.api_key = self.api_key
 
-            # If workspace already has a Stripe customer, retrieve it
-            if workspace.stripe_customer_id:
-                try:
-                    customer = stripe.Customer.retrieve(workspace.stripe_customer_id)
-                    # Check if customer was deleted
-                    if not _safe_getattr(customer, "deleted", False):
-                        return customer.to_dict()
-                    logger.warning(
-                        f"Stripe customer {workspace.stripe_customer_id} was deleted"
-                    )
-                except stripe.InvalidRequestError:
-                    logger.warning(
-                        f"Stripe customer {workspace.stripe_customer_id} not found"
-                    )
+            with transaction.atomic():
+                fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
 
-            # Create new customer
-            customer_data = {
-                "name": workspace.name,
-                "metadata": {
-                    "workspace_id": str(workspace.id),
-                    "workspace_uuid": str(workspace.uuid),
-                },
-            }
+                # Re-check after acquiring lock; another request may have
+                # written stripe_customer_id while we were waiting.
+                if fresh.stripe_customer_id:
+                    try:
+                        customer = stripe.Customer.retrieve(fresh.stripe_customer_id)
+                        if not _safe_getattr(customer, "deleted", False):
+                            workspace.stripe_customer_id = fresh.stripe_customer_id
+                            return customer.to_dict()
+                        logger.warning(
+                            f"Stripe customer {fresh.stripe_customer_id} was deleted"
+                        )
+                    except stripe.InvalidRequestError:
+                        logger.warning(
+                            f"Stripe customer {fresh.stripe_customer_id} not found"
+                        )
 
-            # Add email if workspace has members
-            if hasattr(workspace, "members") and workspace.members.exists():
-                first_member = workspace.members.first()
-                if first_member and first_member.user.email:
-                    customer_data["email"] = first_member.user.email
+                customer_data: dict[str, Any] = {
+                    "name": fresh.name,
+                    "metadata": {
+                        "workspace_id": str(fresh.id),
+                        "workspace_uuid": str(fresh.uuid),
+                    },
+                }
 
-            customer = stripe.Customer.create(**customer_data)
+                if hasattr(fresh, "members") and fresh.members.exists():
+                    first_member = fresh.members.first()
+                    if first_member and first_member.user.email:
+                        customer_data["email"] = first_member.user.email
 
-            # Update workspace with new customer ID
-            workspace.stripe_customer_id = customer.id
-            workspace.save(update_fields=["stripe_customer_id"])
+                customer = stripe.Customer.create(
+                    idempotency_key=f"workspace-customer-{fresh.uuid}",
+                    **customer_data,
+                )
 
-            logger.info(
-                f"Created Stripe customer {customer.id} for workspace {workspace.id}"
-            )
-            return customer.to_dict()
+                fresh.stripe_customer_id = customer.id
+                fresh.save(update_fields=["stripe_customer_id"])
+                workspace.stripe_customer_id = customer.id
+
+                logger.info(
+                    f"Created Stripe customer {customer.id} for workspace {fresh.id}"
+                )
+                return customer.to_dict()
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error in get_or_create_customer: {e!s}")
@@ -221,6 +235,7 @@ class StripeAPI:
         cancel_url: str | None = None,
         metadata: dict[str, str] | None = None,
         trial_period_days: int | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any] | None:
         """Create a Stripe Checkout Session for subscription.
 
@@ -232,6 +247,10 @@ class StripeAPI:
             metadata: Additional metadata to attach to the session.
             trial_period_days: Number of days for trial period. If set,
                 the subscription will start with a trial period.
+            idempotency_key: Stripe idempotency key. Repeated calls with
+                the same key (within Stripe's 24h window) return the
+                existing session instead of creating a new one. Recommended
+                whenever the caller can derive a stable key per intent.
 
         Returns:
             Checkout session data with 'url' for redirect, or None on failure.
@@ -275,6 +294,9 @@ class StripeAPI:
                 subscription_data["trial_period_days"] = trial_period_days
             if subscription_data:
                 session_params["subscription_data"] = subscription_data
+
+            if idempotency_key:
+                session_params["idempotency_key"] = idempotency_key
 
             session = stripe.checkout.Session.create(**session_params)
 
