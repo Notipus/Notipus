@@ -308,10 +308,10 @@ def checkout(
         else:
             price_id = price["id"]
 
-        # Create Stripe Checkout Session
-        # Idempotency key collapses duplicate POSTs (double-click, browser
-        # back, retry) to one session within Stripe's 24h window, while
-        # leaving a deliberate next-day retry unblocked.
+        # Create Stripe Checkout Session.
+        # Idempotency key collapses duplicate checkout-initiation requests
+        # (double-click, browser back, retry) to one session within Stripe's
+        # 24h window, while leaving a deliberate next-day retry unblocked.
         checkout_session = stripe_api.create_checkout_session(
             customer_id=customer["id"],
             price_id=price_id,

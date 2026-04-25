@@ -28,7 +28,6 @@ class Command(BaseCommand):
 
     Usage:
         python manage.py audit_duplicate_subscriptions
-        python manage.py audit_duplicate_subscriptions --include-canceled
     """
 
     help = "Report Stripe customers with 2+ active subscriptions"

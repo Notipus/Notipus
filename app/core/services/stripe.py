@@ -157,10 +157,12 @@ class StripeAPI:
         that customer. Otherwise, creates a new customer and updates
         the workspace with the new customer ID.
 
-        Concurrent calls on the same workspace are serialized via row-level
-        lock to prevent two requests from each creating a Stripe customer.
-        The Stripe call itself is also keyed by workspace UUID so a network
-        retry inside Stripe's 24h idempotency window collapses to one resource.
+        The Stripe.Customer.create call uses an idempotency key derived
+        from the workspace UUID, so two concurrent callers always get
+        the same Stripe customer back even though Stripe sees two requests.
+        DB locks are kept to short read-then-check and short write-then-check
+        windows; the network call to Stripe runs outside any row lock so a
+        slow Stripe response doesn't block unrelated traffic.
 
         Args:
             workspace: The Workspace instance.
@@ -174,51 +176,63 @@ class StripeAPI:
         try:
             stripe.api_key = self.api_key
 
+            # Phase 1: short locked read. If a customer already exists,
+            # confirm it with Stripe and return early.
             with transaction.atomic():
                 fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
-
-                # Re-check after acquiring lock; another request may have
-                # written stripe_customer_id while we were waiting.
-                if fresh.stripe_customer_id:
-                    try:
-                        customer = stripe.Customer.retrieve(fresh.stripe_customer_id)
-                        if not _safe_getattr(customer, "deleted", False):
-                            workspace.stripe_customer_id = fresh.stripe_customer_id
-                            return customer.to_dict()
-                        logger.warning(
-                            f"Stripe customer {fresh.stripe_customer_id} was deleted"
-                        )
-                    except stripe.InvalidRequestError:
-                        logger.warning(
-                            f"Stripe customer {fresh.stripe_customer_id} not found"
-                        )
-
-                customer_data: dict[str, Any] = {
-                    "name": fresh.name,
-                    "metadata": {
-                        "workspace_id": str(fresh.id),
-                        "workspace_uuid": str(fresh.uuid),
-                    },
-                }
-
+                existing_customer_id = fresh.stripe_customer_id
+                workspace_name = fresh.name
+                workspace_id = fresh.id
+                workspace_uuid = fresh.uuid
+                member_email: str | None = None
                 if hasattr(fresh, "members") and fresh.members.exists():
                     first_member = fresh.members.first()
                     if first_member and first_member.user.email:
-                        customer_data["email"] = first_member.user.email
+                        member_email = first_member.user.email
 
-                customer = stripe.Customer.create(
-                    idempotency_key=f"workspace-customer-{fresh.uuid}",
-                    **customer_data,
-                )
+            if existing_customer_id:
+                try:
+                    customer = stripe.Customer.retrieve(existing_customer_id)
+                    if not _safe_getattr(customer, "deleted", False):
+                        workspace.stripe_customer_id = existing_customer_id
+                        return customer.to_dict()
+                    logger.warning(
+                        f"Stripe customer {existing_customer_id} was deleted"
+                    )
+                except stripe.InvalidRequestError:
+                    logger.warning(f"Stripe customer {existing_customer_id} not found")
 
-                fresh.stripe_customer_id = customer.id
-                fresh.save(update_fields=["stripe_customer_id"])
-                workspace.stripe_customer_id = customer.id
+            # Phase 2: create the customer outside any DB lock. Two concurrent
+            # callers send the same idempotency key, so Stripe creates exactly
+            # one customer and returns the same id to both.
+            customer_data: dict[str, Any] = {
+                "name": workspace_name,
+                "metadata": {
+                    "workspace_id": str(workspace_id),
+                    "workspace_uuid": str(workspace_uuid),
+                },
+            }
+            if member_email:
+                customer_data["email"] = member_email
 
-                logger.info(
-                    f"Created Stripe customer {customer.id} for workspace {fresh.id}"
-                )
-                return customer.to_dict()
+            customer = stripe.Customer.create(
+                idempotency_key=f"workspace-customer-{workspace_uuid}",
+                **customer_data,
+            )
+
+            # Phase 3: short locked write. Only write if nobody else has,
+            # so a race that lost still ends up with the same id on the row.
+            with transaction.atomic():
+                fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
+                if not fresh.stripe_customer_id:
+                    fresh.stripe_customer_id = customer.id
+                    fresh.save(update_fields=["stripe_customer_id"])
+                workspace.stripe_customer_id = fresh.stripe_customer_id
+
+            logger.info(
+                f"Created Stripe customer {customer.id} for workspace {workspace_id}"
+            )
+            return customer.to_dict()
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error in get_or_create_customer: {e!s}")

@@ -514,7 +514,7 @@ class TestStripeAPIGetOrCreateCustomer:
         assert workspace.stripe_customer_id == "cus_new123"
 
     @patch("core.services.stripe.stripe.Customer.create")
-    def test_passes_idempotency_key_keyed_by_workspace_uuid(
+    def test_passes_idempotency_key_derived_from_workspace_uuid(
         self,
         mock_create: MagicMock,
         stripe_api: StripeAPI,
@@ -1150,6 +1150,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
         client, _workspace = setup
         mock_get_or_create.return_value = {"id": "cus_existing"}
         mock_get_subs.return_value = [{"id": "sub_1", "status": "active"}]
+        mock_get_price.return_value = {"id": "price_pro_monthly"}
 
         response = client.get(reverse("core:checkout", args=["pro"]))
 
@@ -1175,6 +1176,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
         client, _workspace = setup
         mock_get_or_create.return_value = {"id": "cus_existing"}
         mock_get_subs.return_value = [{"id": "sub_old", "status": "canceled"}]
+        mock_get_price.return_value = {"id": "price_pro_monthly"}
         mock_create_session.return_value = {
             "id": "cs_new",
             "url": "https://checkout.stripe.com/x",
@@ -1206,6 +1208,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
         client, workspace = setup
         mock_get_or_create.return_value = {"id": "cus_existing"}
         mock_get_subs.return_value = []
+        mock_get_price.return_value = {"id": "price_pro_monthly"}
         mock_create_session.return_value = {
             "id": "cs_new",
             "url": "https://checkout.stripe.com/x",
