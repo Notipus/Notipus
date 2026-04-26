@@ -1431,6 +1431,66 @@ class TestCheckoutViewActiveSubscriptionGuard:
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
     @patch("core.services.stripe.StripeAPI.has_live_subscription")
     @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_skips_live_subscription_probe_for_brand_new_customer(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_has_live: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+    ) -> None:
+        """A workspace that didn't have a stripe_customer_id before this
+        request can't possibly have an existing subscription — the
+        customer was just created. Skipping the probe saves 1-3 Stripe
+        API calls on every first checkout and lowers latency.
+        """
+        from core.models import Plan, Workspace, WorkspaceMember
+        from django.contrib.auth.models import User
+        from django.test import Client
+        from django.urls import reverse
+
+        # Brand-new workspace: no stripe_customer_id yet.
+        user = User.objects.create_user(username="newcomer", password="x")
+        workspace = Workspace.objects.create(
+            name="New Workspace",
+            subscription_plan="free",
+            subscription_status="active",
+            stripe_customer_id="",
+        )
+        WorkspaceMember.objects.create(
+            user=user, workspace=workspace, role="owner", is_active=True
+        )
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "is_active": True,
+                "stripe_price_id_monthly": "price_pro_monthly",
+            },
+        )
+        client = Client()
+        client.force_login(user)
+
+        # get_or_create_customer "creates" a new customer; the probe must
+        # not be called even though there's now a customer["id"].
+        mock_get_or_create.return_value = {"id": "cus_just_created"}
+        mock_get_price.return_value = {"id": "price_pro_monthly"}
+        mock_create_session.return_value = {
+            "id": "cs_new",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 302
+        assert response.url == "https://checkout.stripe.com/x"
+        mock_has_live.assert_not_called()
+        mock_create_session.assert_called_once()
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.has_live_subscription")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
     def test_passes_idempotency_key_to_checkout_session(
         self,
         mock_get_or_create: MagicMock,

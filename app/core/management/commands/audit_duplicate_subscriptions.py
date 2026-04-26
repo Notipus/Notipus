@@ -160,27 +160,37 @@ class Command(BaseCommand):
 
         by_customer: dict[str, list[dict[str, Any]]] = defaultdict(list)
         scanned = 0
-        for sub in stripe.Subscription.list(**params).auto_paging_iter():
-            # Check the cap *before* counting this sub so the reported
-            # `scanned` value matches the number we actually inspected
-            # (i.e. exactly --max-results, not max_results+1).
-            if max_results is not None and scanned >= max_results:
-                self.stdout.write(
-                    self.style.WARNING(
-                        f"Reached --max-results={max_results}, stopping early. "
-                        "Re-run with --created-after or a higher --max-results "
-                        "to continue."
+        try:
+            for sub in stripe.Subscription.list(**params).auto_paging_iter():
+                # Check the cap *before* counting this sub so the reported
+                # `scanned` value matches the number we actually inspected
+                # (i.e. exactly --max-results, not max_results+1).
+                if max_results is not None and scanned >= max_results:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Reached --max-results={max_results}, stopping early. "
+                            "Re-run with --created-after or a higher --max-results "
+                            "to continue."
+                        )
                     )
-                )
-                break
-            scanned += 1
-            if sub.status not in LIVE_STATUSES:
-                continue
+                    break
+                scanned += 1
+                if sub.status not in LIVE_STATUSES:
+                    continue
 
-            customer_id = sub.customer
-            if hasattr(customer_id, "id"):
-                customer_id = customer_id.id
-            by_customer[customer_id].append(self._compact_sub(sub))
+                customer_id = sub.customer
+                if hasattr(customer_id, "id"):
+                    customer_id = customer_id.id
+                by_customer[customer_id].append(self._compact_sub(sub))
+        except stripe.StripeError as exc:
+            # Surface a clean, actionable message to the operator instead
+            # of a stack trace if Stripe is unavailable mid-scan. The
+            # partial `by_customer` is discarded so a half-paginated scan
+            # can't be mistaken for a complete one.
+            raise CommandError(
+                f"Failed to fetch subscriptions from Stripe after "
+                f"scanning {scanned} record(s): {exc}. Please retry."
+            ) from exc
 
         self.stdout.write(f"Scanned {scanned} subscription(s)")
         return by_customer

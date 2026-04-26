@@ -10,6 +10,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
+from django.utils import timezone
 
 from ..models import UserProfile, Workspace, WorkspaceMember
 
@@ -88,15 +89,19 @@ def _create_stripe_checkout_for_plan(
 
         # TRIAL_PERIOD_DAYS: Number of days for paid plan trials (default: 14)
         trial_days = getattr(settings, "TRIAL_PERIOD_DAYS", 14)
-        from datetime import date
 
         checkout = stripe_api.create_checkout_session(
             customer_id=customer["id"],
             price_id=plan.stripe_price_id_monthly,
             trial_period_days=trial_days,
             metadata={"workspace_id": str(workspace.pk)},
+            # timezone.now() is timezone-aware (USE_TZ=True), so .date()
+            # gives a UTC date that's stable across hosts/timezones —
+            # avoids a midnight-local-time retry generating a different
+            # key within Stripe's 24h idempotency window.
             idempotency_key=(
-                f"checkout-{workspace.uuid}-{selected_plan}-{date.today().isoformat()}"
+                f"checkout-{workspace.uuid}-{selected_plan}-"
+                f"{timezone.now().date().isoformat()}"
             ),
         )
         return checkout.get("url") if checkout else None

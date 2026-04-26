@@ -5,7 +5,6 @@ and checkout flows.
 """
 
 import logging
-from datetime import date
 from typing import Any
 
 from django.contrib import messages
@@ -237,6 +236,62 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
     return render(request, "core/billing_history.html.j2", context)
 
 
+def _duplicate_subscription_guard(
+    request: HttpRequest,
+    stripe_api: Any,
+    *,
+    customer_id: str,
+    had_stripe_customer: bool,
+) -> HttpResponseRedirect | None:
+    """Block checkout when the customer already has a live subscription.
+
+    Returns a redirect response when the caller must abort (existing live
+    sub, or Stripe outage during the check), or None to proceed with
+    checkout.
+
+    Skips the Stripe probe entirely when the workspace had no Stripe
+    customer before this request: a brand-new customer can't have any
+    subscriptions, so the 1-3 probe calls would be wasted latency.
+
+    The Stripe-error branch fails closed: a silently-returned False would
+    be indistinguishable from "no live sub" and let a second subscription
+    through during a transient outage, so we redirect to the portal with
+    an explicit message instead.
+    """
+    import stripe
+
+    if not had_stripe_customer:
+        return None
+
+    try:
+        has_live_sub = stripe_api.has_live_subscription(
+            customer_id, raise_on_error=True
+        )
+    except stripe.StripeError:
+        logger.exception(
+            "Stripe error while checking existing subscriptions for "
+            f"customer {customer_id}; refusing to create a new "
+            "subscription to avoid duplicate billing."
+        )
+        messages.error(
+            request,
+            "We couldn't verify your subscription status with Stripe. "
+            "Please try again in a moment, or use the billing portal "
+            "to manage your subscription.",
+        )
+        return redirect("core:billing_portal")
+
+    if has_live_sub:
+        messages.info(
+            request,
+            "You already have an active subscription. "
+            "Use the billing portal to change plans.",
+        )
+        return redirect("core:billing_portal")
+
+    return None
+
+
 @login_required
 def checkout(
     request: HttpRequest, plan_name: str
@@ -250,7 +305,6 @@ def checkout(
     Returns:
         Redirect to Stripe Checkout or error page.
     """
-    import stripe
     from core.services.stripe import StripeAPI
     from django.conf import settings as django_settings
 
@@ -268,6 +322,12 @@ def checkout(
         # Initialize Stripe API
         stripe_api = StripeAPI()
 
+        # Capture whether the workspace already had a Stripe customer
+        # *before* get_or_create_customer mutates the instance. A brand-new
+        # customer can't have any subscriptions, so we can skip the
+        # has_live_subscription probe (1–3 Stripe calls) on first checkout.
+        had_stripe_customer = bool(workspace.stripe_customer_id)
+
         # Get or create Stripe customer for the workspace
         customer = stripe_api.get_or_create_customer(workspace)
         if not customer:
@@ -276,41 +336,14 @@ def checkout(
             )
             return redirect("core:upgrade_plan")
 
-        # Don't create a duplicate subscription if the customer already has
-        # a live one. Plan changes belong in the Stripe Customer Portal,
-        # which handles them with prorations instead of a second subscription.
-        #
-        # Use has_live_subscription rather than fetching the full list:
-        # customers with long churn histories would otherwise force every
-        # checkout click to paginate through every canceled subscription.
-        # raise_on_error makes Stripe outages fail closed (a silent False
-        # would be indistinguishable from "no live sub" and let a second
-        # subscription through), so on error we redirect to the portal
-        # with an explicit message instead of charging the customer twice.
-        try:
-            has_live_sub = stripe_api.has_live_subscription(
-                customer["id"], raise_on_error=True
-            )
-        except stripe.StripeError:
-            logger.exception(
-                "Stripe error while checking existing subscriptions for "
-                f"customer {customer['id']}; refusing to create a new "
-                "subscription to avoid duplicate billing."
-            )
-            messages.error(
-                request,
-                "We couldn't verify your subscription status with Stripe. "
-                "Please try again in a moment, or use the billing portal "
-                "to manage your subscription.",
-            )
-            return redirect("core:billing_portal")
-        if has_live_sub:
-            messages.info(
-                request,
-                "You already have an active subscription. "
-                "Use the billing portal to change plans.",
-            )
-            return redirect("core:billing_portal")
+        guard_redirect = _duplicate_subscription_guard(
+            request,
+            stripe_api,
+            customer_id=customer["id"],
+            had_stripe_customer=had_stripe_customer,
+        )
+        if guard_redirect is not None:
+            return guard_redirect
 
         # Try to get price from Stripe using lookup key (preferred method)
         lookup_key = f"{plan_name}_monthly"
@@ -339,8 +372,13 @@ def checkout(
                 "workspace_id": str(workspace.id),
                 "plan_name": plan_name,
             },
+            # timezone.now() is timezone-aware (USE_TZ=True), so .date()
+            # gives a UTC date that's stable across hosts/timezones —
+            # avoids a midnight-local-time retry generating a different
+            # key within Stripe's 24h idempotency window.
             idempotency_key=(
-                f"checkout-{workspace.uuid}-{plan_name}-{date.today().isoformat()}"
+                f"checkout-{workspace.uuid}-{plan_name}-"
+                f"{timezone.now().date().isoformat()}"
             ),
         )
 
