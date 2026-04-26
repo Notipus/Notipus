@@ -236,6 +236,62 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
     return render(request, "core/billing_history.html.j2", context)
 
 
+def _duplicate_subscription_guard(
+    request: HttpRequest,
+    stripe_api: Any,
+    *,
+    customer_id: str,
+    had_stripe_customer: bool,
+) -> HttpResponseRedirect | None:
+    """Block checkout when the customer already has a live subscription.
+
+    Returns a redirect response when the caller must abort (existing live
+    sub, or Stripe outage during the check), or None to proceed with
+    checkout.
+
+    Skips the Stripe probe entirely when the workspace had no Stripe
+    customer before this request: a brand-new customer can't have any
+    subscriptions, so the 1-3 probe calls would be wasted latency.
+
+    The Stripe-error branch fails closed: a silently-returned False would
+    be indistinguishable from "no live sub" and let a second subscription
+    through during a transient outage, so we redirect to the portal with
+    an explicit message instead.
+    """
+    import stripe
+
+    if not had_stripe_customer:
+        return None
+
+    try:
+        has_live_sub = stripe_api.has_live_subscription(
+            customer_id, raise_on_error=True
+        )
+    except stripe.StripeError:
+        logger.exception(
+            "Stripe error while checking existing subscriptions for "
+            f"customer {customer_id}; refusing to create a new "
+            "subscription to avoid duplicate billing."
+        )
+        messages.error(
+            request,
+            "We couldn't verify your subscription status with Stripe. "
+            "Please try again in a moment, or use the billing portal "
+            "to manage your subscription.",
+        )
+        return redirect("core:billing_portal")
+
+    if has_live_sub:
+        messages.info(
+            request,
+            "You already have an active subscription. "
+            "Use the billing portal to change plans.",
+        )
+        return redirect("core:billing_portal")
+
+    return None
+
+
 @login_required
 def checkout(
     request: HttpRequest, plan_name: str
@@ -266,6 +322,12 @@ def checkout(
         # Initialize Stripe API
         stripe_api = StripeAPI()
 
+        # Capture whether the workspace already had a Stripe customer
+        # *before* get_or_create_customer mutates the instance. A brand-new
+        # customer can't have any subscriptions, so we can skip the
+        # has_live_subscription probe (1–3 Stripe calls) on first checkout.
+        had_stripe_customer = bool(workspace.stripe_customer_id)
+
         # Get or create Stripe customer for the workspace
         customer = stripe_api.get_or_create_customer(workspace)
         if not customer:
@@ -273,6 +335,15 @@ def checkout(
                 request, "Unable to create billing account. Please try again."
             )
             return redirect("core:upgrade_plan")
+
+        guard_redirect = _duplicate_subscription_guard(
+            request,
+            stripe_api,
+            customer_id=customer["id"],
+            had_stripe_customer=had_stripe_customer,
+        )
+        if guard_redirect is not None:
+            return guard_redirect
 
         # Try to get price from Stripe using lookup key (preferred method)
         lookup_key = f"{plan_name}_monthly"
@@ -290,7 +361,10 @@ def checkout(
         else:
             price_id = price["id"]
 
-        # Create Stripe Checkout Session
+        # Create Stripe Checkout Session.
+        # Idempotency key collapses duplicate checkout-initiation requests
+        # (double-click, browser back, retry) to one session within Stripe's
+        # 24h window, while leaving a deliberate next-day retry unblocked.
         checkout_session = stripe_api.create_checkout_session(
             customer_id=customer["id"],
             price_id=price_id,
@@ -298,6 +372,14 @@ def checkout(
                 "workspace_id": str(workspace.id),
                 "plan_name": plan_name,
             },
+            # No time-based component: any date bucket (local or UTC)
+            # has a midnight edge where retries minutes apart fall on
+            # different sides and stop deduping. Stripe's idempotency
+            # keys already expire 24h after first use, so the same
+            # (workspace, plan) within 24h collapses to one session and
+            # a deliberate next-day retry creates a new one — exactly
+            # the desired behavior, without a midnight glitch.
+            idempotency_key=f"checkout-{workspace.uuid}-{plan_name}",
         )
 
         if not checkout_session or not checkout_session.get("url"):

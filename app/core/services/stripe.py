@@ -5,10 +5,11 @@ official Stripe SDK, including Checkout Sessions and Customer Portal.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import stripe
 from django.conf import settings
+from django.db import transaction
 
 if TYPE_CHECKING:
     from core.models import Workspace
@@ -149,6 +150,44 @@ class StripeAPI:
             logger.error(f"Unexpected error creating Stripe customer: {e!s}")
             return None
 
+    def _create_customer_idempotent(
+        self,
+        workspace_uuid: Any,
+        workspace_id: Any,
+        workspace_name: str,
+        member_email: str | None,
+    ) -> stripe.Customer:
+        """Create the Stripe customer with a stable idempotency key, then
+        apply mutable display fields (name, email) via a follow-up modify.
+
+        The idempotent payload is intentionally minimal — only the immutable
+        workspace identifiers. Stripe rejects an idempotency replay whose
+        params differ from the original (e.g. 24h ago "name=Old"; now
+        "name=New" after a rename), so mutable fields must NOT travel
+        through the create call. Modify failures are non-fatal: the customer
+        exists and is correctly linked via metadata.
+        """
+        customer = stripe.Customer.create(
+            idempotency_key=f"workspace-customer-{workspace_uuid}",
+            metadata={
+                "workspace_id": str(workspace_id),
+                "workspace_uuid": str(workspace_uuid),
+            },
+        )
+
+        modify_params: dict[str, Any] = {"name": workspace_name}
+        if member_email:
+            modify_params["email"] = member_email
+        try:
+            stripe.Customer.modify(customer.id, **modify_params)
+        except stripe.StripeError as modify_err:
+            logger.warning(
+                f"Failed to set name/email on Stripe customer "
+                f"{customer.id}: {modify_err!s}"
+            )
+
+        return customer
+
     def get_or_create_customer(self, workspace: "Workspace") -> dict[str, Any] | None:
         """Get existing Stripe customer or create a new one for the workspace.
 
@@ -156,55 +195,97 @@ class StripeAPI:
         that customer. Otherwise, creates a new customer and updates
         the workspace with the new customer ID.
 
+        The Stripe.Customer.create call uses an idempotency key derived
+        from the workspace UUID, so two concurrent callers always get
+        the same Stripe customer back even though Stripe sees two requests.
+        DB locks are kept to short read-then-check and short write-then-check
+        windows; the network call to Stripe runs outside any row lock so a
+        slow Stripe response doesn't block unrelated traffic.
+
         Args:
             workspace: The Workspace instance.
 
         Returns:
             Customer data dictionary, or None on failure.
         """
+        # Local import to avoid circular import at module load.
+        from core.models import Workspace as WorkspaceModel
+
         try:
             stripe.api_key = self.api_key
 
-            # If workspace already has a Stripe customer, retrieve it
-            if workspace.stripe_customer_id:
+            # Phase 1: short locked read. If a customer already exists,
+            # confirm it with Stripe and return early.
+            with transaction.atomic():
+                fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
+                existing_customer_id = fresh.stripe_customer_id
+                workspace_name = fresh.name
+                workspace_id = fresh.id
+                workspace_uuid = fresh.uuid
+                # Single JOINed query under the row lock instead of
+                # exists()+first()+lazy user fetch (3 queries) — keeps
+                # the select_for_update window small.
+                member_email: str | None = None
+                if hasattr(fresh, "members"):
+                    first_member = fresh.members.select_related("user").first()
+                    if first_member and first_member.user.email:
+                        member_email = first_member.user.email
+
+            if existing_customer_id:
                 try:
-                    customer = stripe.Customer.retrieve(workspace.stripe_customer_id)
-                    # Check if customer was deleted
+                    customer = stripe.Customer.retrieve(existing_customer_id)
                     if not _safe_getattr(customer, "deleted", False):
+                        workspace.stripe_customer_id = existing_customer_id
                         return customer.to_dict()
                     logger.warning(
-                        f"Stripe customer {workspace.stripe_customer_id} was deleted"
+                        f"Stripe customer {existing_customer_id} was deleted"
                     )
                 except stripe.InvalidRequestError:
-                    logger.warning(
-                        f"Stripe customer {workspace.stripe_customer_id} not found"
-                    )
+                    logger.warning(f"Stripe customer {existing_customer_id} not found")
 
-            # Create new customer
-            customer_data = {
-                "name": workspace.name,
-                "metadata": {
-                    "workspace_id": str(workspace.id),
-                    "workspace_uuid": str(workspace.uuid),
-                },
-            }
+            # Phase 2: create the customer outside any DB lock. Two concurrent
+            # callers send the same idempotency key, so Stripe creates exactly
+            # one customer and returns the same id to both. Mutable fields
+            # (name/email) are applied in a separate non-idempotent call to
+            # keep the idempotent payload stable across retries.
+            customer = self._create_customer_idempotent(
+                workspace_uuid=workspace_uuid,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                member_email=member_email,
+            )
 
-            # Add email if workspace has members
-            if hasattr(workspace, "members") and workspace.members.exists():
-                first_member = workspace.members.first()
-                if first_member and first_member.user.email:
-                    customer_data["email"] = first_member.user.email
-
-            customer = stripe.Customer.create(**customer_data)
-
-            # Update workspace with new customer ID
-            workspace.stripe_customer_id = customer.id
-            workspace.save(update_fields=["stripe_customer_id"])
+            # Phase 3: short locked write. Overwrite if either (a) the row
+            # is empty, or (b) it still points at the known-bad id we saw
+            # in Phase 1 (deleted/missing on Stripe). A concurrent racer
+            # that already wrote a different id wins — the idempotency key
+            # ensures their id is the same Stripe customer as ours.
+            with transaction.atomic():
+                fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
+                if (
+                    not fresh.stripe_customer_id
+                    or fresh.stripe_customer_id == existing_customer_id
+                ):
+                    fresh.stripe_customer_id = customer.id
+                    fresh.save(update_fields=["stripe_customer_id"])
+                persisted_customer_id = fresh.stripe_customer_id
+                workspace.stripe_customer_id = persisted_customer_id
 
             logger.info(
-                f"Created Stripe customer {customer.id} for workspace {workspace.id}"
+                f"Created Stripe customer {customer.id} for workspace {workspace_id}"
             )
-            return customer.to_dict()
+
+            # Return the customer that was actually persisted on the
+            # workspace, not necessarily the one we created in Phase 2.
+            # In the common case the idempotency key guarantees the two
+            # ids match; defending here keeps the contract honest if a
+            # concurrent racer ever wrote a different id (e.g. if the
+            # idempotency-key derivation is changed in the future) so
+            # callers can't end up using a customer id that doesn't
+            # match what's stored on the workspace.
+            if customer.id == persisted_customer_id:
+                return customer.to_dict()
+            return stripe.Customer.retrieve(persisted_customer_id).to_dict()
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error in get_or_create_customer: {e!s}")
@@ -221,6 +302,7 @@ class StripeAPI:
         cancel_url: str | None = None,
         metadata: dict[str, str] | None = None,
         trial_period_days: int | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any] | None:
         """Create a Stripe Checkout Session for subscription.
 
@@ -232,6 +314,10 @@ class StripeAPI:
             metadata: Additional metadata to attach to the session.
             trial_period_days: Number of days for trial period. If set,
                 the subscription will start with a trial period.
+            idempotency_key: Stripe idempotency key. Repeated calls with
+                the same key (within Stripe's 24h window) return the
+                existing session instead of creating a new one. Recommended
+                whenever the caller can derive a stable key per intent.
 
         Returns:
             Checkout session data with 'url' for redirect, or None on failure.
@@ -275,6 +361,9 @@ class StripeAPI:
                 subscription_data["trial_period_days"] = trial_period_days
             if subscription_data:
                 session_params["subscription_data"] = subscription_data
+
+            if idempotency_key:
+                session_params["idempotency_key"] = idempotency_key
 
             session = stripe.checkout.Session.create(**session_params)
 
@@ -559,19 +648,89 @@ class StripeAPI:
 
         return items
 
+    def has_live_subscription(
+        self,
+        customer_id: str,
+        raise_on_error: bool = False,
+    ) -> bool:
+        """Return True if the customer has any live subscription on Stripe.
+
+        "Live" = active, trialing, or past_due. Queries each live status
+        with limit=1 and short-circuits on the first hit, so a customer
+        with a long history of canceled subscriptions doesn't force the
+        caller to paginate the entire history just to answer yes/no.
+        Use this in checkout-time guards instead of
+        get_customer_subscriptions(status="all"), which materializes the
+        full list.
+
+        Args:
+            customer_id: Stripe customer ID.
+            raise_on_error: If True, propagate Stripe errors instead of
+                returning False. Use this from callers that must not
+                conflate "no live sub" with "couldn't check" — e.g. the
+                duplicate-subscription guard during checkout.
+
+        Raises:
+            stripe.StripeError: When raise_on_error=True and the Stripe
+                API call fails. Default callers continue to receive False
+                on error.
+        """
+        live_statuses: tuple[Literal["active", "trialing", "past_due"], ...] = (
+            "active",
+            "trialing",
+            "past_due",
+        )
+        try:
+            stripe.api_key = self.api_key
+            for status in live_statuses:
+                response = stripe.Subscription.list(
+                    customer=customer_id, status=status, limit=1
+                )
+                if response.data:
+                    return True
+            return False
+        except stripe.StripeError as e:
+            logger.error(f"Stripe error checking live subscriptions: {e!s}")
+            if raise_on_error:
+                raise
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error checking live subscriptions: {e!s}")
+            if raise_on_error:
+                raise
+            return False
+
     def get_customer_subscriptions(
         self,
         customer_id: str,
         status: str = "all",
+        raise_on_error: bool = False,
+        max_results: int | None = None,
     ) -> list[dict[str, Any]]:
         """Get subscriptions for a customer.
 
         Args:
             customer_id: Stripe customer ID.
             status: Filter by status ('all', 'active', 'canceled', etc.).
+            raise_on_error: If True, propagate Stripe errors instead of
+                swallowing them and returning []. Use this from callers
+                that need to fail closed — e.g. the duplicate-subscription
+                guard, where "no subs" and "couldn't check" must not be
+                conflated or a transient Stripe outage will let a second
+                live subscription through.
+            max_results: Stop after collecting this many subscriptions.
+                Default (None) walks the full history via auto_paging_iter
+                — necessary for callers that need exhaustive coverage.
+                Latency-sensitive callers (sync, dashboard) can cap the
+                walk to avoid paying N Stripe round-trips on customers
+                with long churn histories.
 
         Returns:
             List of subscription dictionaries.
+
+        Raises:
+            stripe.StripeError: When raise_on_error=True and the Stripe API
+                call fails. Default callers continue to receive [] on error.
         """
         try:
             stripe.api_key = self.api_key
@@ -581,15 +740,21 @@ class StripeAPI:
                 # Note: Can't expand data.items.data.price.product (5 levels > 4 max)
                 # Expand only to price level, fetch product separately if needed
                 "expand": ["data.items.data.price"],
+                # max page size; auto_paging_iter still pages beyond this
+                "limit": 100,
+                # Always pass status through, including "all". Omitting it on
+                # Stripe means "any status except canceled", which silently
+                # hides canceled subs from callers that asked for "all" — and
+                # defeats the duplicate-sub guard's auto_paging_iter, whose
+                # whole point was to surface canceled-history pages too.
+                "status": status,
             }
 
-            if status != "all":
-                params["status"] = status
-
-            subscriptions = stripe.Subscription.list(**params)
-
+            # auto_paging_iter walks every page, so a customer with more
+            # subscriptions than fits on one page (e.g. an account with many
+            # canceled ones) doesn't hide an off-page live one from callers.
             result = []
-            for sub in subscriptions.data:
+            for sub in stripe.Subscription.list(**params).auto_paging_iter():
                 # Use _safe_getattr for attributes that may be missing
                 # on canceled/incomplete subscriptions. Stripe SDK's __getattr__
                 # raises KeyError (not AttributeError) for missing attributes.
@@ -605,14 +770,20 @@ class StripeAPI:
                     "items": self._extract_subscription_items(sub),
                 }
                 result.append(sub_data)
+                if max_results is not None and len(result) >= max_results:
+                    break
 
             return result
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error getting subscriptions: {e!s}")
+            if raise_on_error:
+                raise
             return []
         except Exception as e:
             logger.error(f"Unexpected error getting subscriptions: {e!s}")
+            if raise_on_error:
+                raise
             return []
 
     def get_invoices(

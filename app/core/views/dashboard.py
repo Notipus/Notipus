@@ -88,11 +88,20 @@ def _create_stripe_checkout_for_plan(
 
         # TRIAL_PERIOD_DAYS: Number of days for paid plan trials (default: 14)
         trial_days = getattr(settings, "TRIAL_PERIOD_DAYS", 14)
+
         checkout = stripe_api.create_checkout_session(
             customer_id=customer["id"],
             price_id=plan.stripe_price_id_monthly,
             trial_period_days=trial_days,
             metadata={"workspace_id": str(workspace.pk)},
+            # No time-based component: any date bucket (local or UTC)
+            # has a midnight edge where retries minutes apart fall on
+            # different sides and stop deduping. Stripe's idempotency
+            # keys already expire 24h after first use, so the same
+            # (workspace, plan) within 24h collapses to one session and
+            # a deliberate next-day retry creates a new one — exactly
+            # the desired behavior, without a midnight glitch.
+            idempotency_key=f"checkout-{workspace.uuid}-{selected_plan}",
         )
         return checkout.get("url") if checkout else None
 
