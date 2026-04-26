@@ -280,14 +280,16 @@ def checkout(
         # a live one. Plan changes belong in the Stripe Customer Portal,
         # which handles them with prorations instead of a second subscription.
         #
-        # Fail closed when Stripe is unavailable: an empty list returned on
-        # error is indistinguishable from "no subscriptions", so a transient
-        # outage could let a second live subscription through. raise_on_error
-        # makes the lookup raise instead, and we redirect to the portal with
-        # an explicit message rather than charge the customer twice.
+        # Use has_live_subscription rather than fetching the full list:
+        # customers with long churn histories would otherwise force every
+        # checkout click to paginate through every canceled subscription.
+        # raise_on_error makes Stripe outages fail closed (a silent False
+        # would be indistinguishable from "no live sub" and let a second
+        # subscription through), so on error we redirect to the portal
+        # with an explicit message instead of charging the customer twice.
         try:
-            existing_subs = stripe_api.get_customer_subscriptions(
-                customer["id"], status="all", raise_on_error=True
+            has_live_sub = stripe_api.has_live_subscription(
+                customer["id"], raise_on_error=True
             )
         except stripe.StripeError:
             logger.exception(
@@ -302,10 +304,7 @@ def checkout(
                 "to manage your subscription.",
             )
             return redirect("core:billing_portal")
-        if any(
-            sub.get("status") in ("active", "trialing", "past_due")
-            for sub in existing_subs
-        ):
+        if has_live_sub:
             messages.info(
                 request,
                 "You already have an active subscription. "

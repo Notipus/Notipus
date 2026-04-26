@@ -161,8 +161,10 @@ class Command(BaseCommand):
         by_customer: dict[str, list[dict[str, Any]]] = defaultdict(list)
         scanned = 0
         for sub in stripe.Subscription.list(**params).auto_paging_iter():
-            scanned += 1
-            if max_results is not None and scanned > max_results:
+            # Check the cap *before* counting this sub so the reported
+            # `scanned` value matches the number we actually inspected
+            # (i.e. exactly --max-results, not max_results+1).
+            if max_results is not None and scanned >= max_results:
                 self.stdout.write(
                     self.style.WARNING(
                         f"Reached --max-results={max_results}, stopping early. "
@@ -171,6 +173,7 @@ class Command(BaseCommand):
                     )
                 )
                 break
+            scanned += 1
             if sub.status not in LIVE_STATUSES:
                 continue
 
@@ -233,9 +236,7 @@ class Command(BaseCommand):
         for sub in subs_sorted:
             created = sub.get("created")
             created_str = (
-                datetime.fromtimestamp(created, tz=UTC).isoformat()
-                if created
-                else "?"
+                datetime.fromtimestamp(created, tz=UTC).isoformat() if created else "?"
             )
             self.stdout.write(
                 f"    - {sub['id']}  status={sub['status']}  "

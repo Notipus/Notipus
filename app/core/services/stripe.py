@@ -5,7 +5,7 @@ official Stripe SDK, including Checkout Sessions and Customer Portal.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import stripe
 from django.conf import settings
@@ -632,6 +632,58 @@ class StripeAPI:
             )
 
         return items
+
+    def has_live_subscription(
+        self,
+        customer_id: str,
+        raise_on_error: bool = False,
+    ) -> bool:
+        """Return True if the customer has any live subscription on Stripe.
+
+        "Live" = active, trialing, or past_due. Queries each live status
+        with limit=1 and short-circuits on the first hit, so a customer
+        with a long history of canceled subscriptions doesn't force the
+        caller to paginate the entire history just to answer yes/no.
+        Use this in checkout-time guards instead of
+        get_customer_subscriptions(status="all"), which materializes the
+        full list.
+
+        Args:
+            customer_id: Stripe customer ID.
+            raise_on_error: If True, propagate Stripe errors instead of
+                returning False. Use this from callers that must not
+                conflate "no live sub" with "couldn't check" — e.g. the
+                duplicate-subscription guard during checkout.
+
+        Raises:
+            stripe.StripeError: When raise_on_error=True and the Stripe
+                API call fails. Default callers continue to receive False
+                on error.
+        """
+        live_statuses: tuple[Literal["active", "trialing", "past_due"], ...] = (
+            "active",
+            "trialing",
+            "past_due",
+        )
+        try:
+            stripe.api_key = self.api_key
+            for status in live_statuses:
+                response = stripe.Subscription.list(
+                    customer=customer_id, status=status, limit=1
+                )
+                if response.data:
+                    return True
+            return False
+        except stripe.StripeError as e:
+            logger.error(f"Stripe error checking live subscriptions: {e!s}")
+            if raise_on_error:
+                raise
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error checking live subscriptions: {e!s}")
+            if raise_on_error:
+                raise
+            return False
 
     def get_customer_subscriptions(
         self,

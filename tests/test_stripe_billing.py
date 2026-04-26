@@ -954,9 +954,73 @@ class TestStripeAPISubscriptions:
         mock_list.side_effect = StripeError("Service unavailable")
 
         with pytest.raises(StripeError):
-            stripe_api.get_customer_subscriptions(
-                "cus_test123", raise_on_error=True
-            )
+            stripe_api.get_customer_subscriptions("cus_test123", raise_on_error=True)
+
+    @patch("core.services.stripe.stripe.Subscription.list")
+    def test_has_live_subscription_returns_true_on_first_match(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """has_live_subscription must short-circuit on the first live
+        status it finds — no need to query the rest, no need to page
+        through canceled subs. Verifies only one Stripe call is made
+        when the very first probe (active) hits.
+        """
+        list_response = Mock()
+        list_response.data = [Mock()]
+        mock_list.return_value = list_response
+
+        assert stripe_api.has_live_subscription("cus_test123") is True
+        # Short-circuited after the first ("active") query
+        mock_list.assert_called_once_with(
+            customer="cus_test123", status="active", limit=1
+        )
+
+    @patch("core.services.stripe.stripe.Subscription.list")
+    def test_has_live_subscription_checks_all_live_statuses(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """When no subscriptions exist for any live status, the helper
+        must probe each of active/trialing/past_due before returning
+        False — past_due in particular is easy to forget and would
+        let an unpaid customer start a second subscription.
+        """
+        empty = Mock()
+        empty.data = []
+        mock_list.return_value = empty
+
+        assert stripe_api.has_live_subscription("cus_test123") is False
+        statuses = [c.kwargs["status"] for c in mock_list.call_args_list]
+        assert statuses == ["active", "trialing", "past_due"]
+
+    @patch("core.services.stripe.stripe.Subscription.list")
+    def test_has_live_subscription_returns_false_on_error_by_default(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """Default behavior matches get_customer_subscriptions: swallow
+        the Stripe error and return False so non-critical callers don't
+        crash on transient outages."""
+        from stripe import StripeError
+
+        mock_list.side_effect = StripeError("Service unavailable")
+
+        assert stripe_api.has_live_subscription("cus_test123") is False
+
+    @patch("core.services.stripe.stripe.Subscription.list")
+    def test_has_live_subscription_raises_when_raise_on_error(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """The checkout duplicate-subscription guard relies on this: a
+        silent False on Stripe outage would be indistinguishable from
+        "no live sub" and let a second subscription through. With
+        raise_on_error=True the caller can route the user to the portal
+        instead of charging them a second time.
+        """
+        from stripe import StripeError
+
+        mock_list.side_effect = StripeError("Service unavailable")
+
+        with pytest.raises(StripeError):
+            stripe_api.has_live_subscription("cus_test123", raise_on_error=True)
 
 
 class TestExtractSubscriptionItems:
@@ -1277,12 +1341,12 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
-    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.has_live_subscription")
     @patch("core.services.stripe.StripeAPI.get_or_create_customer")
     def test_redirects_to_billing_portal_when_active_subscription_exists(
         self,
         mock_get_or_create: MagicMock,
-        mock_get_subs: MagicMock,
+        mock_has_live: MagicMock,
         mock_create_session: MagicMock,
         mock_get_price: MagicMock,
         setup: Any,
@@ -1292,7 +1356,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
         client, _workspace = setup
         mock_get_or_create.return_value = {"id": "cus_existing"}
-        mock_get_subs.return_value = [{"id": "sub_1", "status": "active"}]
+        mock_has_live.return_value = True
         mock_get_price.return_value = {"id": "price_pro_monthly"}
 
         response = client.get(reverse("core:checkout", args=["pro"]))
@@ -1303,12 +1367,12 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
-    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.has_live_subscription")
     @patch("core.services.stripe.StripeAPI.get_or_create_customer")
     def test_proceeds_to_checkout_when_no_active_subscription(
         self,
         mock_get_or_create: MagicMock,
-        mock_get_subs: MagicMock,
+        mock_has_live: MagicMock,
         mock_create_session: MagicMock,
         mock_get_price: MagicMock,
         setup: Any,
@@ -1318,7 +1382,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
         client, _workspace = setup
         mock_get_or_create.return_value = {"id": "cus_existing"}
-        mock_get_subs.return_value = [{"id": "sub_old", "status": "canceled"}]
+        mock_has_live.return_value = False
         mock_get_price.return_value = {"id": "price_pro_monthly"}
         mock_create_session.return_value = {
             "id": "cs_new",
@@ -1333,12 +1397,12 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
-    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.has_live_subscription")
     @patch("core.services.stripe.StripeAPI.get_or_create_customer")
     def test_redirects_to_billing_portal_on_stripe_error_in_subscription_check(
         self,
         mock_get_or_create: MagicMock,
-        mock_get_subs: MagicMock,
+        mock_has_live: MagicMock,
         mock_create_session: MagicMock,
         mock_get_price: MagicMock,
         setup: Any,
@@ -1354,7 +1418,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
         client, _workspace = setup
         mock_get_or_create.return_value = {"id": "cus_existing"}
-        mock_get_subs.side_effect = StripeError("Service unavailable")
+        mock_has_live.side_effect = StripeError("Service unavailable")
         mock_get_price.return_value = {"id": "price_pro_monthly"}
 
         response = client.get(reverse("core:checkout", args=["pro"]))
@@ -1365,12 +1429,12 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
-    @patch("core.services.stripe.StripeAPI.get_customer_subscriptions")
+    @patch("core.services.stripe.StripeAPI.has_live_subscription")
     @patch("core.services.stripe.StripeAPI.get_or_create_customer")
     def test_passes_idempotency_key_to_checkout_session(
         self,
         mock_get_or_create: MagicMock,
-        mock_get_subs: MagicMock,
+        mock_has_live: MagicMock,
         mock_create_session: MagicMock,
         mock_get_price: MagicMock,
         setup: Any,
@@ -1382,7 +1446,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
 
         client, workspace = setup
         mock_get_or_create.return_value = {"id": "cus_existing"}
-        mock_get_subs.return_value = []
+        mock_has_live.return_value = False
         mock_get_price.return_value = {"id": "price_pro_monthly"}
         mock_create_session.return_value = {
             "id": "cs_new",
