@@ -265,12 +265,24 @@ class StripeAPI:
                 ):
                     fresh.stripe_customer_id = customer.id
                     fresh.save(update_fields=["stripe_customer_id"])
-                workspace.stripe_customer_id = fresh.stripe_customer_id
+                persisted_customer_id = fresh.stripe_customer_id
+                workspace.stripe_customer_id = persisted_customer_id
 
             logger.info(
                 f"Created Stripe customer {customer.id} for workspace {workspace_id}"
             )
-            return customer.to_dict()
+
+            # Return the customer that was actually persisted on the
+            # workspace, not necessarily the one we created in Phase 2.
+            # In the common case the idempotency key guarantees the two
+            # ids match; defending here keeps the contract honest if a
+            # concurrent racer ever wrote a different id (e.g. if the
+            # idempotency-key derivation is changed in the future) so
+            # callers can't end up using a customer id that doesn't
+            # match what's stored on the workspace.
+            if customer.id == persisted_customer_id:
+                return customer.to_dict()
+            return stripe.Customer.retrieve(persisted_customer_id).to_dict()
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error in get_or_create_customer: {e!s}")

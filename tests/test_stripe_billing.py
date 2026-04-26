@@ -719,6 +719,59 @@ class TestStripeAPIGetOrCreateCustomer:
         # Stripe.Customer.create called exactly once across both callers.
         assert mock_create.call_count == 1
 
+    @patch("core.services.stripe.stripe.Customer.retrieve")
+    @patch("core.services.stripe.stripe.Customer.modify")
+    @patch("core.services.stripe.stripe.Customer.create")
+    def test_returns_persisted_customer_when_phase3_diverges(
+        self,
+        mock_create: MagicMock,
+        mock_modify: MagicMock,
+        mock_retrieve: MagicMock,
+        stripe_api: StripeAPI,
+        workspace: Any,
+    ) -> None:
+        """If a concurrent racer wrote a different stripe_customer_id
+        between Phase 1 and Phase 3, get_or_create_customer must return
+        the customer that was actually persisted on the workspace, not
+        the one we created in Phase 2 — otherwise callers (checkout,
+        portal) would use a customer id that doesn't match the DB.
+
+        In practice the idempotency key keeps the two ids equal, but
+        this guards against future drift in the key derivation.
+        """
+        from core.models import Workspace
+
+        # Phase 2: simulate a concurrent racer that wins by writing a
+        # different id to the DB *during* our Phase 2 create call —
+        # before we acquire the Phase 3 lock. By the time Phase 3 reads
+        # the row under select_for_update, fresh.stripe_customer_id is
+        # "cus_winner" (not empty, not equal to the original
+        # existing_customer_id of ""), so our overwrite condition is
+        # False and we should fall through to retrieving the winner.
+        ours = Mock()
+        ours.id = "cus_ours"
+        ours.to_dict.return_value = {"id": "cus_ours"}
+
+        def racer_writes_during_create(**_: Any) -> Mock:
+            Workspace.objects.filter(pk=workspace.pk).update(
+                stripe_customer_id="cus_winner"
+            )
+            return ours
+
+        mock_create.side_effect = racer_writes_during_create
+
+        winner = Mock()
+        winner.id = "cus_winner"
+        winner.to_dict.return_value = {"id": "cus_winner"}
+        mock_retrieve.return_value = winner
+
+        result = stripe_api.get_or_create_customer(workspace)
+
+        assert result is not None and result["id"] == "cus_winner"
+        # Phase 3 fall-through must re-fetch the persisted customer
+        # rather than returning the Phase 2 customer we created.
+        mock_retrieve.assert_called_once_with("cus_winner")
+
 
 class TestBillingServiceWebhooks:
     """Tests for billing service webhook handlers."""
