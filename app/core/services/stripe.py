@@ -222,9 +222,12 @@ class StripeAPI:
                 workspace_name = fresh.name
                 workspace_id = fresh.id
                 workspace_uuid = fresh.uuid
+                # Single JOINed query under the row lock instead of
+                # exists()+first()+lazy user fetch (3 queries) — keeps
+                # the select_for_update window small.
                 member_email: str | None = None
-                if hasattr(fresh, "members") and fresh.members.exists():
-                    first_member = fresh.members.first()
+                if hasattr(fresh, "members"):
+                    first_member = fresh.members.select_related("user").first()
                     if first_member and first_member.user.email:
                         member_email = first_member.user.email
 
@@ -702,6 +705,7 @@ class StripeAPI:
         customer_id: str,
         status: str = "all",
         raise_on_error: bool = False,
+        max_results: int | None = None,
     ) -> list[dict[str, Any]]:
         """Get subscriptions for a customer.
 
@@ -714,6 +718,12 @@ class StripeAPI:
                 guard, where "no subs" and "couldn't check" must not be
                 conflated or a transient Stripe outage will let a second
                 live subscription through.
+            max_results: Stop after collecting this many subscriptions.
+                Default (None) walks the full history via auto_paging_iter
+                — necessary for callers that need exhaustive coverage.
+                Latency-sensitive callers (sync, dashboard) can cap the
+                walk to avoid paying N Stripe round-trips on customers
+                with long churn histories.
 
         Returns:
             List of subscription dictionaries.
@@ -757,6 +767,8 @@ class StripeAPI:
                     "items": self._extract_subscription_items(sub),
                 }
                 result.append(sub_data)
+                if max_results is not None and len(result) >= max_results:
+                    break
 
             return result
 

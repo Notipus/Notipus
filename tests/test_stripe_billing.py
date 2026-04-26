@@ -1010,6 +1010,24 @@ class TestStripeAPISubscriptions:
             stripe_api.get_customer_subscriptions("cus_test123", raise_on_error=True)
 
     @patch("core.services.stripe.stripe.Subscription.list")
+    def test_get_customer_subscriptions_caps_at_max_results(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """Latency-sensitive callers can pass max_results so a customer
+        with thousands of canceled subs doesn't force the sync/dashboard
+        flow to walk every Stripe page. The default is still exhaustive
+        for callers that need correctness across the full history."""
+        many = [self._build_mock_subscription(f"sub_{i}") for i in range(50)]
+        list_response = Mock()
+        list_response.auto_paging_iter.return_value = iter(many)
+        mock_list.return_value = list_response
+
+        result = stripe_api.get_customer_subscriptions("cus_test123", max_results=5)
+
+        assert len(result) == 5
+        assert [s["id"] for s in result] == [f"sub_{i}" for i in range(5)]
+
+    @patch("core.services.stripe.stripe.Subscription.list")
     def test_has_live_subscription_returns_true_on_first_match(
         self, mock_list: MagicMock, stripe_api: StripeAPI
     ) -> None:
