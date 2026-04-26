@@ -10,7 +10,6 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
-from django.utils import timezone
 
 from ..models import UserProfile, Workspace, WorkspaceMember
 
@@ -95,14 +94,14 @@ def _create_stripe_checkout_for_plan(
             price_id=plan.stripe_price_id_monthly,
             trial_period_days=trial_days,
             metadata={"workspace_id": str(workspace.pk)},
-            # timezone.now() is timezone-aware (USE_TZ=True), so .date()
-            # gives a UTC date that's stable across hosts/timezones —
-            # avoids a midnight-local-time retry generating a different
-            # key within Stripe's 24h idempotency window.
-            idempotency_key=(
-                f"checkout-{workspace.uuid}-{selected_plan}-"
-                f"{timezone.now().date().isoformat()}"
-            ),
+            # No time-based component: any date bucket (local or UTC)
+            # has a midnight edge where retries minutes apart fall on
+            # different sides and stop deduping. Stripe's idempotency
+            # keys already expire 24h after first use, so the same
+            # (workspace, plan) within 24h collapses to one session and
+            # a deliberate next-day retry creates a new one — exactly
+            # the desired behavior, without a midnight glitch.
+            idempotency_key=f"checkout-{workspace.uuid}-{selected_plan}",
         )
         return checkout.get("url") if checkout else None
 

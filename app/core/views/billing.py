@@ -372,14 +372,14 @@ def checkout(
                 "workspace_id": str(workspace.id),
                 "plan_name": plan_name,
             },
-            # timezone.now() is timezone-aware (USE_TZ=True), so .date()
-            # gives a UTC date that's stable across hosts/timezones —
-            # avoids a midnight-local-time retry generating a different
-            # key within Stripe's 24h idempotency window.
-            idempotency_key=(
-                f"checkout-{workspace.uuid}-{plan_name}-"
-                f"{timezone.now().date().isoformat()}"
-            ),
+            # No time-based component: any date bucket (local or UTC)
+            # has a midnight edge where retries minutes apart fall on
+            # different sides and stop deduping. Stripe's idempotency
+            # keys already expire 24h after first use, so the same
+            # (workspace, plan) within 24h collapses to one session and
+            # a deliberate next-day retry creates a new one — exactly
+            # the desired behavior, without a midnight glitch.
+            idempotency_key=f"checkout-{workspace.uuid}-{plan_name}",
         )
 
         if not checkout_session or not checkout_session.get("url"):
