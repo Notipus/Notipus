@@ -1,10 +1,12 @@
-"""Find Stripe customers with multiple active subscriptions.
+"""Find Stripe customers with multiple live subscriptions.
 
 A historical bug in the checkout flow allowed a workspace to start a new
-subscription even when one was already active, leaving customers with two
-or more parallel subscriptions all billing in parallel. This command lists
-those customers so they can be reconciled (cancel the duplicates, refund
-the overlapping charges). Read-only by default.
+subscription even when one was already live, leaving customers with two
+or more parallel subscriptions all billing in parallel. "Live" here means
+any of active/trialing/past_due — past_due in particular is easy to miss
+and still bills the customer. This command lists those customers so they
+can be reconciled (cancel the duplicates, refund the overlapping charges).
+Read-only by default.
 """
 
 from argparse import ArgumentParser
@@ -35,7 +37,9 @@ class Command(BaseCommand):
             --created-after 2026-01-01 --max-results 5000
     """
 
-    help = "Report Stripe customers with 2+ active subscriptions"
+    help = (
+        "Report Stripe customers with 2+ live subscriptions (active/trialing/past_due)"
+    )
 
     def add_arguments(self, parser: "ArgumentParser") -> None:
         parser.add_argument(

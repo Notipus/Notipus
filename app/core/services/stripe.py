@@ -742,10 +742,13 @@ class StripeAPI:
                 "expand": ["data.items.data.price"],
                 # max page size; auto_paging_iter still pages beyond this
                 "limit": 100,
+                # Always pass status through, including "all". Omitting it on
+                # Stripe means "any status except canceled", which silently
+                # hides canceled subs from callers that asked for "all" — and
+                # defeats the duplicate-sub guard's auto_paging_iter, whose
+                # whole point was to surface canceled-history pages too.
+                "status": status,
             }
-
-            if status != "all":
-                params["status"] = status
 
             # auto_paging_iter walks every page, so a customer with more
             # subscriptions than fits on one page (e.g. an account with many
