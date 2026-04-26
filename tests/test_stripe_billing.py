@@ -1552,9 +1552,10 @@ class TestCheckoutViewActiveSubscriptionGuard:
         mock_get_price: MagicMock,
         setup: Any,
     ) -> None:
-        """Checkout view must pass a stable idempotency_key derived from
-        workspace UUID + plan + today's date so a double-click within
-        Stripe's 24h window collapses to a single session."""
+        """Checkout view must pass a stable idempotency_key of the form
+        ``checkout-{workspace.uuid}-{plan_name}`` (no time-based
+        component) so a double-click within Stripe's 24h window
+        collapses to a single session."""
         from django.urls import reverse
 
         client, workspace = setup
