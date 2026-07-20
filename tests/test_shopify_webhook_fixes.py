@@ -521,6 +521,130 @@ class TestDecimalPrecision:
         assert line_items[0]["price"] == Decimal("0")
 
 
+@pytest.mark.django_db
+class TestShopifyOAuthCallbackSecret:
+    """Tests for webhook secret handling in the OAuth callback."""
+
+    @pytest.fixture
+    def oauth_user(self, workspace: Workspace) -> Any:
+        """Create a user with a profile bound to the workspace."""
+        from core.models import UserProfile
+        from django.contrib.auth.models import User
+
+        user = User.objects.create_user(
+            username="oauthuser",
+            password="testpass123",
+            email="oauth@example.com",
+        )
+        UserProfile.objects.create(user=user, workspace=workspace)
+        return user
+
+    def _start_callback(self, client: Client) -> None:
+        """Store OAuth state in the session as shopify_connect would."""
+        session = client.session
+        session["shopify_oauth_state"] = "test_state"
+        session["shopify_shop_domain"] = "teststore.myshopify.com"
+        session.save()
+
+    def _callback_params(self) -> dict[str, str]:
+        """Return valid OAuth callback query parameters."""
+        return {
+            "code": "test_code",
+            "state": "test_state",
+            "shop": "teststore.myshopify.com",
+        }
+
+    @override_settings(
+        SHOPIFY_CLIENT_ID="test_client_id",
+        SHOPIFY_CLIENT_SECRET="",
+    )
+    def test_missing_client_secret_fails_early_and_preserves_secret(
+        self,
+        client: Client,
+        workspace: Workspace,
+        oauth_user: Any,
+    ) -> None:
+        """Unset SHOPIFY_CLIENT_SECRET fails the callback cleanly.
+
+        The callback must not clear an existing integration's
+        webhook_secret or create an integration with an empty secret.
+        """
+        from django.contrib.messages import get_messages
+        from django.urls import reverse
+
+        existing = Integration.objects.create(
+            workspace=workspace,
+            integration_type="shopify",
+            webhook_secret="existing-secret",
+            is_active=True,
+        )
+
+        client.force_login(oauth_user)
+        self._start_callback(client)
+
+        with patch("core.views.integrations.shopify.requests.post") as mock_post:
+            response = client.get(
+                reverse("core:shopify_connect_callback"),
+                self._callback_params(),
+            )
+
+        assert response.status_code == 302
+        assert response.url == reverse("core:integrations")
+        messages = list(get_messages(response.wsgi_request))
+        assert any("not configured" in str(m).lower() for m in messages)
+
+        # No token exchange or webhook creation was attempted
+        mock_post.assert_not_called()
+
+        # The existing webhook secret was not cleared
+        existing.refresh_from_db()
+        assert existing.webhook_secret == "existing-secret"
+
+    @override_settings(
+        SHOPIFY_CLIENT_ID="test_client_id",
+        SHOPIFY_CLIENT_SECRET="oauth-app-secret",
+        SHOPIFY_API_VERSION="2025-01",
+        BASE_URL="http://localhost:8000",
+    )
+    def test_successful_callback_stores_webhook_secret(
+        self,
+        client: Client,
+        workspace: Workspace,
+        oauth_user: Any,
+    ) -> None:
+        """A successful OAuth callback stores the client secret."""
+        from django.urls import reverse
+
+        token_response = Mock()
+        token_response.status_code = 200
+        token_response.raise_for_status = Mock()
+        token_response.json.return_value = {
+            "access_token": "test_access_token",
+            "scope": "read_orders,read_customers",
+        }
+        webhook_response = Mock()
+        webhook_response.status_code = 201
+        webhook_response.json.return_value = {"webhook": {"id": 12345}}
+
+        client.force_login(oauth_user)
+        self._start_callback(client)
+
+        with patch("core.views.integrations.shopify.requests.post") as mock_post:
+            mock_post.side_effect = [token_response] + [webhook_response] * 10
+            response = client.get(
+                reverse("core:shopify_connect_callback"),
+                self._callback_params(),
+            )
+
+        assert response.status_code == 302
+        integration = Integration.objects.get(
+            workspace=workspace, integration_type="shopify"
+        )
+        assert integration.is_active is True
+        # Webhook secret must be stored so HMAC validation can succeed
+        assert integration.webhook_secret == "oauth-app-secret"
+
+
 def _get_backfill() -> Any:
     """Import the backfill function from the data migration module."""
     from importlib import import_module

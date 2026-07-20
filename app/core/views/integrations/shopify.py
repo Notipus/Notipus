@@ -287,7 +287,10 @@ def shopify_connect_callback(
         messages.error(request, "OAuth verification failed. Please try again.")
         return redirect("core:integrations")
 
-    # Exchange authorization code for access token
+    # Exchange authorization code for access token. This fails early
+    # (before the integration is stored) when SHOPIFY_CLIENT_SECRET is
+    # not configured, so an existing integration's webhook_secret is
+    # never overwritten with an empty value.
     token_data = _exchange_code_for_token(request, shop, code)
     if token_data is None:
         return redirect("core:integrations")
@@ -317,11 +320,12 @@ def shopify_connect_callback(
     # Store or update Shopify integration.
     # Webhooks created via the Admin API are signed with the app's client
     # secret, so store it as the webhook secret for HMAC validation.
+    # SHOPIFY_CLIENT_SECRET is guaranteed non-empty by the check above.
     integration, created = Integration.objects.update_or_create(
         workspace=workspace,
         integration_type=INTEGRATION_TYPE,
         defaults={
-            "webhook_secret": settings.SHOPIFY_CLIENT_SECRET or "",
+            "webhook_secret": settings.SHOPIFY_CLIENT_SECRET,
             "oauth_credentials": {
                 "access_token": access_token,
                 "scope": scope,
@@ -591,8 +595,20 @@ def _exchange_code_for_token(request: HttpRequest, shop: str, code: str) -> dict
         code: The authorization code from Shopify.
 
     Returns:
-        Token data dict or None if exchange failed.
+        Token data dict or None if exchange failed (including when
+        SHOPIFY_CLIENT_SECRET is not configured).
     """
+    # The client secret is required both for the token exchange and as
+    # the stored webhook HMAC secret. Treat a missing secret as a failed
+    # connect instead of proceeding and persisting an empty
+    # webhook_secret (which would break validation of every webhook).
+    if not settings.SHOPIFY_CLIENT_SECRET:
+        logger.error("SHOPIFY_CLIENT_SECRET not configured")
+        messages.error(
+            request, "Shopify integration is not configured. Please contact support."
+        )
+        return None
+
     if not _is_valid_shop_domain(shop):
         logger.error(f"Invalid shop domain in token exchange: {shop}")
         messages.error(request, "Invalid shop domain. Please try again.")
