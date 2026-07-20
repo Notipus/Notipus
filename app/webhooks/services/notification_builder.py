@@ -4,6 +4,7 @@ This module provides the NotificationBuilder class that transforms raw event
 and customer data into RichNotification objects ready for formatting.
 """
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,8 @@ from webhooks.utils.currency import CURRENCY_SYMBOLS, format_money
 
 from .insight_detector import InsightDetector
 from .utils import get_display_name
+
+logger = logging.getLogger(__name__)
 
 # Provider display configurations
 PROVIDER_DISPLAY: dict[str, str] = {
@@ -253,10 +256,9 @@ class NotificationBuilder:
         # Build headline
         headline = self._build_headline(event_data, customer_data, company)
 
-        # Determine notification type and severity
-        notification_type = EVENT_TYPE_MAP.get(
-            event_type, NotificationType.PAYMENT_SUCCESS
-        )
+        # Determine notification type and severity. Unknown event types
+        # fall back to CUSTOM so they never render as successful payments.
+        notification_type = EVENT_TYPE_MAP.get(event_type, NotificationType.CUSTOM)
         severity = EVENT_SEVERITY_MAP.get(event_type, NotificationSeverity.INFO)
         headline_icon = EVENT_ICON_MAP.get(event_type, "info")
 
@@ -314,6 +316,10 @@ class NotificationBuilder:
         try:
             total_spent = float(total_spent_raw) if total_spent_raw else 0.0
         except (ValueError, TypeError):
+            logger.warning(
+                "Could not parse customer lifetime value; defaulting to 0.0",
+                extra={"total_spent_raw": repr(total_spent_raw)},
+            )
             total_spent = 0.0
         ltv_display = self._format_ltv(total_spent, currency) if total_spent else None
 
@@ -347,7 +353,6 @@ class NotificationBuilder:
             return None
 
         currency = event_data.get("currency", "USD")
-        metadata = event_data.get("metadata", {})
 
         # Detect billing interval
         _, interval = self._detect_recurring(event_data)
@@ -467,7 +472,9 @@ class NotificationBuilder:
             attempt_count = metadata.get("attempt_count")
             if amount is not None and attempt_count and attempt_count > 1:
                 money = format_money(amount, currency)
-                return f"{money} payment failed (retry #{attempt_count})"
+                # Stripe's attempt_count includes the initial attempt, so
+                # attempt_count=2 is the first retry.
+                return f"{money} payment failed (retry #{attempt_count - 1})"
             elif amount is not None:
                 return f"{format_money(amount, currency)} payment failed"
             return "Payment failed"
@@ -519,6 +526,21 @@ class NotificationBuilder:
                 return "Subscription downgraded"
             return "Subscription updated"
 
+        elif event_type == "subscription_renewed":
+            # No parser currently emits this type (Chargify acknowledges
+            # and skips subscription_renewed webhooks), but it remains a
+            # valid event type so a renewal must not collapse to a bare
+            # title without amount/plan context.
+            plan_name = metadata.get("plan_name")
+            suffix = _interval_suffix(metadata.get("billing_period"))
+            if plan_name and amount is not None:
+                money = format_money(amount, currency)
+                return f"Subscription renewed: {plan_name} ({money}{suffix})"
+            elif amount is not None:
+                money = format_money(amount, currency)
+                return f"Subscription renewed at {money}{suffix}"
+            return "Subscription renewed"
+
         elif event_type in ("subscription_canceled", "subscription_deleted"):
             return "Subscription canceled"
 
@@ -551,14 +573,12 @@ class NotificationBuilder:
             return "Order canceled"
 
         elif event_type == "order_fulfilled":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             if order_number:
                 return f"Order #{order_number} fulfilled"
             return "Order fulfilled"
 
         elif event_type == "fulfillment_created":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             tracking_number = metadata.get("tracking_number")
             if order_number and tracking_number:
@@ -568,7 +588,6 @@ class NotificationBuilder:
             return "Fulfillment created"
 
         elif event_type == "fulfillment_updated":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             status = metadata.get("shipment_status") or metadata.get(
                 "fulfillment_status"
@@ -580,7 +599,6 @@ class NotificationBuilder:
             return "Shipment updated"
 
         elif event_type == "shipment_delivered":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             if order_number:
                 return f"Order #{order_number} delivered"
@@ -607,45 +625,13 @@ class NotificationBuilder:
             List of ActionButton objects.
         """
         event_type = event_data.get("type", "")
-        provider = event_data.get("provider", "")
-        metadata = event_data.get("metadata", {})
 
         actions: list[ActionButton] = []
 
         # Provider-specific dashboard link
-        if provider == "stripe":
-            customer_id = metadata.get("stripe_customer_id")
-            if customer_id:
-                actions.append(
-                    ActionButton(
-                        text="View in Stripe",
-                        url=f"https://dashboard.stripe.com/customers/{customer_id}",
-                        style="primary",
-                    )
-                )
-
-        elif provider == "chargify":
-            subscription_id = metadata.get("subscription_id")
-            if subscription_id:
-                actions.append(
-                    ActionButton(
-                        text="View in Chargify",
-                        url=f"https://app.chargify.com/subscriptions/{subscription_id}",
-                        style="primary",
-                    )
-                )
-
-        elif provider == "shopify":
-            order_id = metadata.get("order_id")
-            shop_domain = metadata.get("shop_domain")
-            if order_id and shop_domain:
-                actions.append(
-                    ActionButton(
-                        text="View Order",
-                        url=f"https://{shop_domain}/admin/orders/{order_id}",
-                        style="primary",
-                    )
-                )
+        dashboard_action = self._build_provider_dashboard_action(event_data)
+        if dashboard_action:
+            actions.append(dashboard_action)
 
         # Add company website link if enriched
         if company and company.domain:
@@ -670,6 +656,60 @@ class NotificationBuilder:
 
         return actions
 
+    def _build_provider_dashboard_action(
+        self, event_data: dict[str, Any]
+    ) -> ActionButton | None:
+        """Build the provider-specific dashboard link button.
+
+        Args:
+            event_data: Event data dictionary.
+
+        Returns:
+            ActionButton linking to the provider dashboard, or None when
+            the data needed to build a working link is missing.
+        """
+        provider = event_data.get("provider", "")
+        metadata = event_data.get("metadata", {})
+
+        if provider in ("stripe", "stripe_customer"):
+            # Parsers write the customer id at the top level of the
+            # event, not in metadata.
+            customer_id = event_data.get("customer_id")
+            if customer_id:
+                return ActionButton(
+                    text="View in Stripe",
+                    url=f"https://dashboard.stripe.com/customers/{customer_id}",
+                    style="primary",
+                )
+
+        elif provider == "chargify":
+            subscription_id = metadata.get("subscription_id")
+            # Chargify (Maxio) dashboards live on per-site subdomains;
+            # a hardcoded app.chargify.com URL does not resolve. Omit
+            # the button when the site subdomain is unknown.
+            subdomain = metadata.get("site_subdomain")
+            if subscription_id and subdomain:
+                return ActionButton(
+                    text="View in Chargify",
+                    url=(
+                        f"https://{subdomain}.chargify.com"
+                        f"/subscriptions/{subscription_id}"
+                    ),
+                    style="primary",
+                )
+
+        elif provider == "shopify":
+            order_id = metadata.get("order_id")
+            shop_domain = metadata.get("shop_domain")
+            if order_id and shop_domain:
+                return ActionButton(
+                    text="View Order",
+                    url=f"https://{shop_domain}/admin/orders/{order_id}",
+                    style="primary",
+                )
+
+        return None
+
     def _detect_recurring(self, event_data: dict[str, Any]) -> tuple[bool, str | None]:
         """Detect if payment is recurring and extract billing interval.
 
@@ -679,13 +719,12 @@ class NotificationBuilder:
         Returns:
             Tuple of (is_recurring, billing_interval).
         """
-        event_type = event_data.get("type", "")
         metadata = event_data.get("metadata", {})
 
-        # Renewal events are always recurring
-        if event_type in ("renewal_success", "renewal_failure"):
-            interval = metadata.get("billing_period", "monthly")
-            return True, interval
+        # Note: Chargify renewal_success/renewal_failure are normalized
+        # to payment_success/payment_failure by the parser (with
+        # billing_period defaulted to "monthly" in metadata), so no
+        # renewal-specific branch is needed here.
 
         # Check for subscription_id presence
         if metadata.get("subscription_id"):
@@ -764,6 +803,10 @@ class NotificationBuilder:
             return f"Since {created_date.strftime('%b %Y')}"
 
         except (ValueError, TypeError):
+            logger.warning(
+                "Could not parse customer created_at for tenure display",
+                extra={"created_at": repr(created_at)},
+            )
             return None
 
     def _format_ltv(self, total_spent: float, currency: str = "USD") -> str:
