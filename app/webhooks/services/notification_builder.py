@@ -309,18 +309,23 @@ class NotificationBuilder:
         # Calculate tenure display
         tenure_display = self._format_tenure(customer_data)
 
-        # Calculate LTV display
-        total_spent_raw = customer_data.get("total_spent") or customer_data.get(
-            "lifetime_value", 0
-        )
-        try:
-            total_spent = float(total_spent_raw) if total_spent_raw else 0.0
-        except (ValueError, TypeError):
-            logger.warning(
-                "Could not parse customer lifetime value; defaulting to 0.0",
-                extra={"total_spent_raw": repr(total_spent_raw)},
-            )
+        # Calculate LTV display. Explicit None checks so a legitimate
+        # zero lifetime value (0, 0.0, Decimal("0")) is not treated as
+        # missing and does not fall back to the other key or warn.
+        total_spent_raw = customer_data.get("total_spent")
+        if total_spent_raw is None:
+            total_spent_raw = customer_data.get("lifetime_value")
+        if total_spent_raw is None:
             total_spent = 0.0
+        else:
+            try:
+                total_spent = float(total_spent_raw)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Could not parse customer lifetime value; defaulting to 0.0",
+                    extra={"total_spent_raw": repr(total_spent_raw)},
+                )
+                total_spent = 0.0
         ltv_display = self._format_ltv(total_spent, currency) if total_spent else None
 
         return CustomerInfo(

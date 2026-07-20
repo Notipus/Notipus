@@ -856,3 +856,53 @@ class TestSilentFallbackLogging:
 
         assert result.customer.total_spent is None
         assert any("lifetime value" in record.getMessage() for record in caplog.records)
+
+    def test_zero_total_spent_is_not_missing(
+        self,
+        builder: NotificationBuilder,
+        payment_success_event: dict,
+        customer_data: dict,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test a legitimate zero total_spent parses cleanly.
+
+        A genuinely-zero-spend customer must not fall back to
+        lifetime_value and must not trigger a parse warning.
+        """
+        customer_data["total_spent"] = 0
+        customer_data["lifetime_value"] = 500.0
+
+        with caplog.at_level(
+            "WARNING", logger="webhooks.services.notification_builder"
+        ):
+            result = builder.build(payment_success_event, customer_data)
+
+        # Zero spend renders as no LTV display; a fallback to
+        # lifetime_value would have produced "$500" here.
+        assert result.customer.ltv_display is None
+        assert result.customer.total_spent is None
+        assert not any(
+            "lifetime value" in record.getMessage() for record in caplog.records
+        )
+
+    @pytest.mark.parametrize("zero_value", [0.0, Decimal("0")])
+    def test_zero_lifetime_value_variants_do_not_warn(
+        self,
+        builder: NotificationBuilder,
+        payment_success_event: dict,
+        customer_data: dict,
+        caplog: pytest.LogCaptureFixture,
+        zero_value: object,
+    ) -> None:
+        """Test 0.0 and Decimal('0') lifetime values parse without warning."""
+        customer_data["total_spent"] = zero_value
+
+        with caplog.at_level(
+            "WARNING", logger="webhooks.services.notification_builder"
+        ):
+            result = builder.build(payment_success_event, customer_data)
+
+        assert result.customer.ltv_display is None
+        assert not any(
+            "lifetime value" in record.getMessage() for record in caplog.records
+        )
