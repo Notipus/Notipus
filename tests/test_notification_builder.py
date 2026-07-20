@@ -559,6 +559,74 @@ class TestActionButtons:
         assert "View in Chargify" not in action_texts
         assert not any("chargify.com" in a.url for a in result.actions)
 
+    @pytest.mark.parametrize(
+        "bad_subdomain",
+        [
+            "evil.example",  # dot: would change the registrable domain
+            "evil/path",  # slash: would break out of the host
+            "acme corp",  # interior whitespace
+            "-acme",  # invalid leading hyphen
+            "   ",  # whitespace only
+            12345,  # non-string
+        ],
+    )
+    def test_chargify_button_omitted_for_unsafe_subdomain(
+        self,
+        builder: NotificationBuilder,
+        customer_data: dict,
+        bad_subdomain: object,
+    ) -> None:
+        """Test unsafe site subdomains never reach the button URL.
+
+        The subdomain comes from webhook payload data and is
+        interpolated into the URL host, so anything that is not a
+        single valid DNS label must result in no button at all.
+        """
+        event = {
+            "type": "payment_success",
+            "provider": "chargify",
+            "customer_id": "12345",
+            "amount": 99.00,
+            "currency": "USD",
+            "metadata": {
+                "subscription_id": "sub_456",
+                "site_subdomain": bad_subdomain,
+            },
+        }
+        result = builder.build(event, customer_data)
+
+        action_texts = [a.text for a in result.actions]
+        assert "View in Chargify" not in action_texts
+        assert not any("chargify.com" in a.url for a in result.actions)
+
+    def test_chargify_subdomain_normalized_before_use(
+        self, builder: NotificationBuilder, customer_data: dict
+    ) -> None:
+        """Test surrounding whitespace and case are normalized, not rejected.
+
+        Padding and uppercase are cosmetic - they normalize to a valid
+        DNS label, so the button is built with the cleaned value.
+        """
+        event = {
+            "type": "payment_success",
+            "provider": "chargify",
+            "customer_id": "12345",
+            "amount": 99.00,
+            "currency": "USD",
+            "metadata": {
+                "subscription_id": "sub_456",
+                "site_subdomain": "  ACME-Corp  ",
+            },
+        }
+        result = builder.build(event, customer_data)
+
+        chargify_buttons = [a for a in result.actions if a.text == "View in Chargify"]
+        assert len(chargify_buttons) == 1
+        assert (
+            chargify_buttons[0].url
+            == "https://acme-corp.chargify.com/subscriptions/sub_456"
+        )
+
     def test_website_button_with_company(
         self,
         builder: NotificationBuilder,

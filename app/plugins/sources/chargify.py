@@ -575,13 +575,17 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         metadata so notification action buttons can link to the right
         site. Empty when the payload does not carry site information.
 
+        The value is normalized (stripped, lowercased) here; the
+        notification builder additionally validates it as a single DNS
+        label before interpolating it into a URL host.
+
         Args:
             data: Form data dictionary.
 
         Returns:
-            Site subdomain string, or "" when unknown.
+            Normalized site subdomain string, or "" when unknown.
         """
-        return str(data.get("payload[site][subdomain]", "") or "")
+        return str(data.get("payload[site][subdomain]", "") or "").strip().lower()
 
     def _parse_payment_success(self, data: dict[str, Any]) -> dict[str, Any]:
         """Parse payment_success webhook data.

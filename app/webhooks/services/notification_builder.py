@@ -5,6 +5,7 @@ and customer data into RichNotification objects ready for formatting.
 """
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +26,36 @@ from .insight_detector import InsightDetector
 from .utils import get_display_name
 
 logger = logging.getLogger(__name__)
+
+# A Chargify site subdomain must be a single DNS label: no dots, no
+# slashes, no whitespace. Anything else could point the dashboard
+# button at an unintended host.
+_CHARGIFY_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _normalize_chargify_subdomain(value: Any) -> str | None:
+    """Normalize and validate a Chargify site subdomain.
+
+    The subdomain originates from webhook payload data and is
+    interpolated into a URL host, so it is normalized (surrounding
+    whitespace stripped, lowercased) and then required to be a single
+    valid DNS label. Values that still do not match (dots, slashes,
+    interior whitespace, ...) are rejected.
+
+    Args:
+        value: Raw subdomain value from event metadata.
+
+    Returns:
+        The normalized subdomain, or None when the value is missing or
+        not a safe single DNS label.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not _CHARGIFY_SUBDOMAIN_RE.fullmatch(normalized):
+        return None
+    return normalized
+
 
 # Provider display configurations
 PROVIDER_DISPLAY: dict[str, str] = {
@@ -691,8 +722,10 @@ class NotificationBuilder:
             subscription_id = metadata.get("subscription_id")
             # Chargify (Maxio) dashboards live on per-site subdomains;
             # a hardcoded app.chargify.com URL does not resolve. Omit
-            # the button when the site subdomain is unknown.
-            subdomain = metadata.get("site_subdomain")
+            # the button when the site subdomain is unknown or is not a
+            # safe single DNS label (it comes from webhook payload data
+            # and is interpolated into the URL host).
+            subdomain = _normalize_chargify_subdomain(metadata.get("site_subdomain"))
             if subscription_id and subdomain:
                 return ActionButton(
                     text="View in Chargify",
