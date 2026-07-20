@@ -566,6 +566,27 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         except (InvalidOperation, ValueError, TypeError) as e:
             raise InvalidDataError(f"Invalid amount format: {amount_cents}") from e
 
+    @staticmethod
+    def _extract_site_subdomain(data: dict[str, Any]) -> str:
+        """Extract the Chargify site subdomain from a webhook payload.
+
+        The subdomain identifies the per-site dashboard host
+        (``<subdomain>.chargify.com``) and is threaded through event
+        metadata so notification action buttons can link to the right
+        site. Empty when the payload does not carry site information.
+
+        The value is normalized (stripped, lowercased) here; the
+        notification builder additionally validates it as a single DNS
+        label before interpolating it into a URL host.
+
+        Args:
+            data: Form data dictionary.
+
+        Returns:
+            Normalized site subdomain string, or "" when unknown.
+        """
+        return str(data.get("payload[site][subdomain]", "") or "").strip().lower()
+
     def _parse_payment_success(self, data: dict[str, Any]) -> dict[str, Any]:
         """Parse payment_success webhook data.
 
@@ -612,6 +633,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "provider": "chargify",
             "metadata": {
                 "subscription_id": subscription_id,
+                "site_subdomain": self._extract_site_subdomain(data),
                 "transaction_id": data.get("payload[transaction][id]", ""),
                 "plan_name": plan_name,
                 "shopify_order_ref": shopify_order_ref,
@@ -665,6 +687,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "provider": "chargify",
             "metadata": {
                 "subscription_id": data.get("payload[subscription][id]", ""),
+                "site_subdomain": self._extract_site_subdomain(data),
                 "transaction_id": data.get("payload[transaction][id]", ""),
                 "plan_name": data.get("payload[subscription][product][name]", ""),
                 "failure_reason": data.get(
@@ -714,6 +737,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "provider": "chargify",
             "metadata": {
                 "subscription_id": data.get("payload[subscription][id]", ""),
+                "site_subdomain": self._extract_site_subdomain(data),
                 "plan_name": data.get("payload[subscription][product][name]", ""),
                 "new_state": state,
                 "previous_state": data.get("payload[subscription][previous_state]"),
@@ -751,6 +775,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "provider": "chargify",
             "metadata": {
                 "subscription_id": data.get("payload[subscription][id]", ""),
+                "site_subdomain": self._extract_site_subdomain(data),
                 "plan_name": data.get("payload[subscription][product][name]", ""),
                 "previous_state": data.get("payload[subscription][previous_state]"),
                 "cancel_at_period_end": data.get(
