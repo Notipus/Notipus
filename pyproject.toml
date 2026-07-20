@@ -8,34 +8,34 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "django>=5.2.13,<6.0.0",
-    "requests>=2.32.3,<3.0.0",
+    "requests>=2.34.2,<3.0.0",
     "uvicorn[standard]>=0.34.0",
-    "psycopg2>=2.9.10,<3.0.0",
+    "psycopg2>=2.9.12,<3.0.0",
     "stripe>=15.3.1,<16.0.0",
     "shopifyapi>=12.7.0,<13.0.0",
-    "django-allauth>=65.10.0,<66.0.0",
+    "django-allauth>=65.18.0,<66.0.0",
     "webauthn>=3.0.0,<4.0.0",
     "redis>=5.2.0,<6.0.0",
-    "whitenoise>=6.11.0",
+    "whitenoise>=6.12.0",
     "sentry-sdk[django]>=2.66.0",
-    "disposable-email-domains>=0.0.156",
+    "disposable-email-domains>=0.0.227",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3,<10.0.0",
+    "pytest>=9.1.1,<10.0.0",
     "pytest-cov>=7.1.0,<8.0.0",
-    "ruff>=0.9.4,<0.10.0",
-    "pre-commit>=4.0.1,<5.0.0",
+    "ruff>=0.15.22,<0.16.0",
+    "pre-commit>=4.6.0,<5.0.0",
     "mypy>=1.8.0,<2.0.0",
-    "types-requests>=2.31.0.20240218",
-    "pytest-django>=4.11.1,<5.0.0",
-    "djlint>=1.36.4,<2.0.0",
+    "types-requests>=2.33.0.20260712",
+    "pytest-django>=4.12.0,<5.0.0",
+    "djlint>=1.42.0,<2.0.0",
     "django-stubs>=5.0.0",
     "django-stubs-ext>=5.0.0",
     "django-extensions>=4.1,<5.0",
-    "pytest-env>=1.2.0",
-    "pytest-socket>=0.7.0",
+    "pytest-env>=1.6.0",
+    "pytest-socket>=0.8.0",
 ]
 
 [tool.ruff]
