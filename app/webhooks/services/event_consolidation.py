@@ -113,27 +113,25 @@ class EventConsolidationService:
         self,
         workspace_id: str,
         customer_id: str,
-        correlation_id: str | None = None,
+        correlation_id: str,
     ) -> str:
         """Generate cache key for tracking which events to suppress.
 
-        Suppression is scoped to the transaction-level correlator (e.g.
-        subscription_id or invoice_id) when one is available, so a primary
-        event for one transaction never suppresses events belonging to an
-        unrelated transaction for the same customer.
+        Suppression is always scoped to the transaction-level correlator
+        (e.g. subscription_id or invoice_id), so a primary event for one
+        transaction never suppresses events belonging to an unrelated
+        transaction for the same customer. Events without a correlator
+        never participate in suppression (see should_send_notification).
 
         Args:
             workspace_id: The workspace UUID.
             customer_id: The customer identifier.
-            correlation_id: Optional transaction-level correlator.
+            correlation_id: Transaction-level correlator.
 
         Returns:
             Cache key string for suppression tracking.
         """
-        base = f"event_suppress:{workspace_id}:{customer_id}"
-        if correlation_id:
-            return f"{base}:{correlation_id}"
-        return base
+        return f"event_suppress:{workspace_id}:{customer_id}:{correlation_id}"
 
     def extract_correlation_id(self, event_data: dict[str, Any]) -> str | None:
         """Extract the transaction-level correlator from a parsed event.
@@ -183,10 +181,12 @@ class EventConsolidationService:
             customer_id: The customer identifier.
             workspace_id: The workspace UUID.
             amount: Optional payment amount for filtering zero-amount events.
-            correlation_id: Optional transaction-level correlator
-                (subscription_id, invoice_id, charge_id, ...). When provided,
-                suppression only applies between events sharing the same
-                correlator.
+            correlation_id: Transaction-level correlator (subscription_id,
+                invoice_id, charge_id, ...). Suppression only applies
+                between events sharing the same correlator; without one the
+                event is always delivered (never suppressed and never
+                suppressing), since a coarse customer-level fallback could
+                swallow an unrelated transaction's notification.
 
         Returns:
             True if notification should be sent, False if it should be suppressed.
@@ -208,6 +208,16 @@ class EventConsolidationService:
         if event_type in self.NEVER_SUPPRESS:
             logger.debug(
                 f"Event {event_type} is in NEVER_SUPPRESS list, allowing notification"
+            )
+            return True
+
+        # Without a transaction-level correlator we cannot tell which
+        # transaction a suppression marker belongs to. Deliver rather than
+        # risk suppressing (or being suppressed by) an unrelated transaction.
+        if not correlation_id:
+            logger.debug(
+                f"Event {event_type} has no transaction correlator, "
+                f"skipping consolidation suppression"
             )
             return True
 
@@ -243,7 +253,7 @@ class EventConsolidationService:
         workspace_id: str,
         customer_id: str,
         events_to_suppress: set[str],
-        correlation_id: str | None = None,
+        correlation_id: str,
     ) -> None:
         """Mark events for suppression within the consolidation window.
 
@@ -251,8 +261,8 @@ class EventConsolidationService:
             workspace_id: The workspace UUID.
             customer_id: The customer identifier.
             events_to_suppress: Set of event types to suppress.
-            correlation_id: Optional transaction-level correlator scoping
-                the suppression to a single transaction.
+            correlation_id: Transaction-level correlator scoping the
+                suppression to a single transaction.
         """
         suppression_key = self._get_suppression_key(
             workspace_id, customer_id, correlation_id

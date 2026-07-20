@@ -57,12 +57,13 @@ class TestEventConsolidationService:
     def test_secondary_event_suppressed_after_primary(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that secondary events are suppressed after a primary event."""
+        """Test that secondary events of the same transaction are suppressed."""
         # First, process the primary event
         service.should_send_notification(
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # Now the secondary event should be suppressed
@@ -70,6 +71,7 @@ class TestEventConsolidationService:
             event_type="payment_success",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         assert result is False
@@ -83,6 +85,7 @@ class TestEventConsolidationService:
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # invoice_paid should be suppressed
@@ -90,15 +93,20 @@ class TestEventConsolidationService:
             event_type="invoice_paid",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         assert result is False
 
-    def test_payment_failure_never_suppressed(
+    def test_events_without_correlator_never_suppressed(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that payment_failure is never suppressed."""
-        # Even after a primary event, payment_failure should go through
+        """Test that events lacking a transaction correlator are delivered.
+
+        Without a correlator we cannot tell which transaction a suppression
+        marker belongs to, so a coarse customer-level fallback could swallow
+        an unrelated transaction's notification. Deliver instead.
+        """
         service.should_send_notification(
             event_type="subscription_created",
             customer_id="cus_123",
@@ -106,9 +114,52 @@ class TestEventConsolidationService:
         )
 
         result = service.should_send_notification(
+            event_type="payment_success",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=100.00,
+        )
+
+        assert result is True
+
+    def test_correlated_primary_does_not_suppress_uncorrelated_secondary(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test that a correlated primary never suppresses a correlator-less event."""
+        service.should_send_notification(
+            event_type="subscription_created",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            correlation_id="sub_1",
+        )
+
+        result = service.should_send_notification(
+            event_type="payment_success",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=100.00,
+        )
+
+        assert result is True
+
+    def test_payment_failure_never_suppressed(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test that payment_failure is never suppressed."""
+        # Even after a primary event for the SAME transaction,
+        # payment_failure should go through
+        service.should_send_notification(
+            event_type="subscription_created",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            correlation_id="sub_1",
+        )
+
+        result = service.should_send_notification(
             event_type="payment_failure",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         assert result is True
@@ -300,6 +351,7 @@ class TestEventConsolidationService:
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # Different customer should not be suppressed
@@ -309,6 +361,7 @@ class TestEventConsolidationService:
             customer_id="cus_789",
             workspace_id="ws_456",
             amount=100.00,
+            correlation_id="sub_1",
         )
 
         assert result is True
@@ -322,6 +375,7 @@ class TestEventConsolidationService:
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # Different workspace should not be suppressed
@@ -331,6 +385,7 @@ class TestEventConsolidationService:
             customer_id="cus_123",
             workspace_id="ws_other",
             amount=100.00,
+            correlation_id="sub_1",
         )
 
         assert result is True
@@ -338,11 +393,12 @@ class TestEventConsolidationService:
     def test_checkout_completed_suppresses_payment_events(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that checkout_completed suppresses payment events."""
+        """Test that checkout_completed suppresses its own payment events."""
         service.should_send_notification(
             event_type="checkout_completed",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="cs_1",
         )
 
         # Both payment_success and invoice_paid should be suppressed
@@ -350,11 +406,15 @@ class TestEventConsolidationService:
             event_type="payment_success",
             customer_id="cus_123",
             workspace_id="ws_456",
+            amount=50.00,
+            correlation_id="cs_1",
         )
         result2 = service.should_send_notification(
             event_type="invoice_paid",
             customer_id="cus_123",
             workspace_id="ws_456",
+            amount=50.00,
+            correlation_id="cs_1",
         )
 
         assert result1 is False
@@ -455,6 +515,7 @@ class TestEventConsolidationService:
             customer_id="cus_123",
             workspace_id="ws_456",
             amount=100.00,
+            correlation_id="in_1",
         )
 
         # Another payment_success should still go through
@@ -463,6 +524,7 @@ class TestEventConsolidationService:
             customer_id="cus_123",
             workspace_id="ws_456",
             amount=100.00,
+            correlation_id="in_1",
         )
 
         assert result is True
@@ -470,17 +532,20 @@ class TestEventConsolidationService:
     def test_subscription_deleted_suppresses_invoice_paid(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that subscription_deleted suppresses invoice_paid."""
+        """Test that subscription_deleted suppresses its own invoice_paid."""
         service.should_send_notification(
             event_type="subscription_deleted",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         result = service.should_send_notification(
             event_type="invoice_paid",
             customer_id="cus_123",
             workspace_id="ws_456",
+            amount=10.00,
+            correlation_id="sub_1",
         )
 
         assert result is False
@@ -494,11 +559,14 @@ class TestEventConsolidationService:
         fire. The order_created event should suppress the subsequent payment_success
         to prevent duplicate notifications.
         """
-        # First, process order_created (from orders/create webhook)
+        # First, process order_created (from orders/create webhook).
+        # Both webhooks carry the same order id as external_id, which
+        # extract_correlation_id uses as the transaction correlator.
         service.should_send_notification(
             event_type="order_created",
             customer_id="shopify_cus_123",
             workspace_id="ws_456",
+            correlation_id="450789469",
         )
 
         # Now payment_success (from orders/paid webhook) should be suppressed
@@ -506,6 +574,8 @@ class TestEventConsolidationService:
             event_type="payment_success",
             customer_id="shopify_cus_123",
             workspace_id="ws_456",
+            amount=100.00,
+            correlation_id="450789469",
         )
 
         assert result is False

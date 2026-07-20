@@ -331,6 +331,99 @@ class TestPendingEventQueueAggregation:
 
         assert "has_payment_failure" not in winner_metadata
 
+    def test_aggregate_failure_merge_with_absent_winner_metadata(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test failure merge when the winner has no metadata key at all."""
+        winner_event = {"type": "subscription_created", "customer_id": "cus_123"}
+        stored_items = [
+            {"event_data": winner_event, "customer_data": {}},
+            {
+                "event_data": {
+                    "type": "payment_failure",
+                    "metadata": {"failure_reason": "Card declined"},
+                },
+                "customer_data": {},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["metadata"]["has_payment_failure"] is True
+        assert event["metadata"]["failure_reason"] == "Card declined"
+        # The stored item must not have been mutated
+        assert "metadata" not in winner_event
+
+    def test_aggregate_failure_merge_with_none_winner_metadata(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test failure merge when the winner's metadata is explicitly None."""
+        stored_items = [
+            {
+                "event_data": {"type": "subscription_created", "metadata": None},
+                "customer_data": {},
+            },
+            {
+                "event_data": {
+                    "type": "payment_failure",
+                    "metadata": {"failure_reason": "Card declined"},
+                },
+                "customer_data": {},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["metadata"]["has_payment_failure"] is True
+        assert event["metadata"]["failure_reason"] == "Card declined"
+
+    def test_aggregate_failure_merge_with_none_failure_metadata(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that a failure event with None metadata still gets surfaced."""
+        stored_items = [
+            {
+                "event_data": {"type": "subscription_created", "metadata": {}},
+                "customer_data": {},
+            },
+            {
+                "event_data": {
+                    "type": "payment_failure",
+                    "amount": 49.00,
+                    "metadata": None,
+                },
+                "customer_data": {},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["metadata"]["has_payment_failure"] is True
+        assert event["metadata"]["failed_amount"] == 49.00
+
+    def test_aggregate_preserves_zero_failed_amount(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that a legitimate 0.0 failed amount is kept (is not None check)."""
+        stored_items = [
+            {
+                "event_data": {"type": "subscription_created", "metadata": {}},
+                "customer_data": {},
+            },
+            {
+                "event_data": {
+                    "type": "payment_failure",
+                    "amount": 0.0,
+                    "metadata": {"failure_reason": "Card declined"},
+                },
+                "customer_data": {},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["metadata"]["failed_amount"] == 0.0
+
     def test_aggregate_lone_payment_failure_stays_failure(
         self, queue: PendingEventQueue
     ) -> None:

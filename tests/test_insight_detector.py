@@ -413,6 +413,29 @@ class TestAnniversaryDetection:
 
         assert result is None
 
+    def test_no_anniversary_without_workspace_id(
+        self,
+        detector: InsightDetector,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test that anniversary is skipped when the workspace is unknown.
+
+        The dedup key is tenant-scoped; customer ids are only unique per
+        provider account, so an unscoped claim could collide across
+        tenants. Skipping is the only behavior that cannot collide.
+        """
+        event = {
+            "type": "payment_success",
+            "customer_id": "cus_anniv",
+            "amount": 25.00,
+            "metadata": {},
+        }
+
+        result = detector.detect(event, anniversary_customer)
+
+        assert result is None
+
     def test_add_months_clamps_short_months(self, detector: InsightDetector) -> None:
         """Test that month arithmetic clamps Jan 31 to end of February."""
         jan_31 = datetime(2025, 1, 31, tzinfo=timezone.utc)
@@ -483,6 +506,19 @@ class TestTrialConvertedDetection:
 
         assert result is not None
         assert "Trial converted" in result.text
+
+    def test_none_metadata_does_not_crash(self, detector: InsightDetector) -> None:
+        """Test that an explicit metadata=None is handled gracefully."""
+        event = {
+            "type": "payment_success",
+            "customer_id": "cus_123",
+            "amount": 29.00,
+            "metadata": None,
+        }
+
+        result = detector._detect_trial_converted(event, {})
+
+        assert result is None
 
 
 class TestInitialPaymentFailureDetection:
@@ -557,6 +593,46 @@ class TestInitialPaymentFailureDetection:
         result = detector._detect_initial_payment_failure(event, {})
 
         assert result is None
+
+    def test_none_metadata_does_not_crash(self, detector: InsightDetector) -> None:
+        """Test that an explicit metadata=None is handled gracefully."""
+        event = {"type": "subscription_created", "metadata": None}
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is None
+
+    def test_retry_date_from_string_timestamp(self, detector: InsightDetector) -> None:
+        """Test that a numeric-string timestamp is still formatted."""
+        event = {
+            "type": "subscription_created",
+            "metadata": {
+                "has_payment_failure": True,
+                "next_payment_attempt": "1740182400",  # Feb 22 2025, as string
+            },
+        }
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is not None
+        assert "Next retry Feb 22" in result.text
+
+    def test_invalid_retry_timestamp_ignored(self, detector: InsightDetector) -> None:
+        """Test that an unparseable timestamp drops the retry date, not the insight."""
+        event = {
+            "type": "subscription_created",
+            "metadata": {
+                "has_payment_failure": True,
+                "failure_reason": "Card declined",
+                "next_payment_attempt": "soon",
+            },
+        }
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is not None
+        assert "Card declined" in result.text
+        assert "Next retry" not in result.text
 
 
 class TestPaymentGrowthDetection:

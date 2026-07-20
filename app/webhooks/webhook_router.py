@@ -345,12 +345,15 @@ def _process_immediately(
     # Add workspace_id to event_data for insight detection
     event_data["workspace_id"] = workspace_id
 
-    # Check if this event should be suppressed due to consolidation
+    # Check if this event should be suppressed due to consolidation.
+    # Suppression is scoped to the transaction-level correlator so an
+    # unrelated second transaction for the same customer is never suppressed.
     should_notify = event_consolidation_service.should_send_notification(
         event_type=event_type,
         customer_id=customer_id,
         workspace_id=workspace_id,
         amount=event_data.get("amount"),
+        correlation_id=event_consolidation_service.extract_correlation_id(event_data),
     )
 
     if not should_notify:

@@ -257,7 +257,7 @@ class InsightDetector:
             InsightInfo describing the failed payment or None.
         """
         _ = customer_data  # unused
-        metadata = event_data.get("metadata", {})
+        metadata = event_data.get("metadata") or {}
         if not metadata.get("has_payment_failure"):
             return None
 
@@ -273,14 +273,31 @@ class InsightDetector:
         if attempt_count and attempt_count >= 2:
             text += f" (attempt #{attempt_count})"
 
-        next_attempt = metadata.get("next_payment_attempt")
-        if next_attempt:
-            next_date = datetime.fromtimestamp(next_attempt, tz=timezone.utc).strftime(
-                "%b %-d"
-            )
-            text += f" · Next retry {next_date}"
+        next_retry = self._format_retry_date(metadata.get("next_payment_attempt"))
+        if next_retry:
+            text += f" · Next retry {next_retry}"
 
         return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
+
+    def _format_retry_date(self, next_attempt: Any) -> str | None:
+        """Format a next-payment-attempt timestamp as a short date.
+
+        Portable (no glibc-only ``%-d`` strftime code) and tolerant of
+        non-integer timestamp values from provider payloads.
+
+        Args:
+            next_attempt: Unix timestamp (int, float, or numeric string).
+
+        Returns:
+            Short date string like "Feb 22", or None if unparseable.
+        """
+        if next_attempt is None:
+            return None
+        try:
+            retry_dt = datetime.fromtimestamp(int(next_attempt), tz=timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            return None
+        return f"{retry_dt.strftime('%b')} {retry_dt.day}"
 
     def _detect_trial_converted(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
@@ -304,7 +321,7 @@ class InsightDetector:
         if event_type not in ("payment_success", "invoice_paid"):
             return None
 
-        metadata = event_data.get("metadata", {})
+        metadata = event_data.get("metadata") or {}
         if metadata.get("is_trial_conversion"):
             return InsightInfo(
                 icon=self.ICONS["trial_converted"],
@@ -401,6 +418,13 @@ class InsightDetector:
         marker ensures a customer paying multiple times inside the window
         (e.g. weekly) celebrates each anniversary exactly once.
 
+        Requires both customer_id and workspace_id: the dedup key is
+        tenant-scoped, and customer ids are only unique per provider
+        account, so claiming without a workspace could let one tenant's
+        celebration swallow another tenant's. Skipping the insight when
+        the workspace is unknown is the only behavior that cannot collide
+        across tenants.
+
         Args:
             event_data: Event data dictionary.
             customer_data: Customer data dictionary.
@@ -412,8 +436,9 @@ class InsightDetector:
             return None
 
         customer_id = event_data.get("customer_id", "")
-        if not customer_id:
-            # Cannot attribute (or dedup) an anniversary without a customer
+        workspace_id = event_data.get("workspace_id", "")
+        if not customer_id or not workspace_id:
+            # Cannot attribute (or tenant-scope the dedup of) an anniversary
             return None
 
         created_at = customer_data.get("created_at") or customer_data.get(
@@ -435,7 +460,7 @@ class InsightDetector:
                 continue
 
             if not self._claim_anniversary(
-                event_data.get("workspace_id", ""), customer_id, anniversary_month
+                workspace_id, customer_id, anniversary_month
             ):
                 return None  # Already celebrated this anniversary
 
@@ -457,7 +482,8 @@ class InsightDetector:
         detection window cannot both celebrate the same anniversary.
 
         Args:
-            workspace_id: The workspace UUID (may be empty).
+            workspace_id: The workspace UUID (never empty; enforced by caller
+                so dedup keys are always tenant-scoped).
             customer_id: The customer identifier.
             anniversary_month: The anniversary being claimed, in months.
 

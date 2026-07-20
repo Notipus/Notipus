@@ -441,8 +441,13 @@ class PendingEventQueue:
             ),
         )
         result_event = winner["event_data"].copy()
-        if result_event.get("metadata"):
-            result_event["metadata"] = dict(result_event["metadata"])
+        # Always give the result its own metadata dict: a shared reference
+        # (or a None/missing value) must never leak into later mutation by
+        # _merge_payment_failure.
+        winner_metadata = result_event.get("metadata")
+        result_event["metadata"] = (
+            dict(winner_metadata) if isinstance(winner_metadata, dict) else {}
+        )
         result_customer = winner["customer_data"].copy()
 
         for item in stored_items:
@@ -510,14 +515,21 @@ class PendingEventQueue:
             return
 
         failure_event = failure_items[0]["event_data"]
-        failure_metadata = failure_event.get("metadata", {})
+        failure_metadata = failure_event.get("metadata")
+        if not isinstance(failure_metadata, dict):
+            failure_metadata = {}
 
-        metadata = result_event.setdefault("metadata", {})
+        metadata = result_event.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result_event["metadata"] = metadata
+
         metadata["has_payment_failure"] = True
         for field in self.FAILURE_METADATA_FIELDS:
             if failure_metadata.get(field) is not None:
                 metadata[field] = failure_metadata[field]
-        if failure_event.get("amount"):
+        # `is not None` (not truthiness): a legitimate 0.0 must be kept
+        if failure_event.get("amount") is not None:
             metadata["failed_amount"] = failure_event["amount"]
 
         logger.info(
@@ -585,6 +597,10 @@ class PendingEventQueue:
         customer_id = event_data.get("customer_id", "")
         workspace_id = str(workspace.uuid) if workspace else ""
         external_id = event_data.get("external_id", "")
+
+        # Add workspace_id to event_data for insight detection (tenant-scoped
+        # anniversary dedup), mirroring webhook_router._process_immediately
+        event_data["workspace_id"] = workspace_id
 
         # Check if this event should be suppressed due to consolidation
         # (e.g., $0 trial invoices). Suppression is scoped to the
