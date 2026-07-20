@@ -21,6 +21,7 @@ from webhooks.services.event_consolidation import EventConsolidationService
 from webhooks.services.event_processor import EventProcessor
 
 
+@pytest.mark.django_db
 class TestTrialSignupIntegration:
     """Integration test: Trial signup webhook flow.
 
@@ -417,6 +418,7 @@ class TestTrialSignupIntegration:
         assert len(notifications_sent) == 1
 
 
+@pytest.mark.django_db
 class TestTrialConversionIntegration:
     """Integration test: Trial conversion to paid subscription.
 
@@ -526,6 +528,7 @@ class TestTrialConversionIntegration:
         assert "Trial converted" in notification.headline
 
 
+@pytest.mark.django_db
 class TestSubscriptionUpgradeIntegration:
     """Integration test: Subscription plan upgrade.
 

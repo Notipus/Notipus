@@ -205,6 +205,36 @@ def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
         return None
 
 
+def _get_dedup_key(event_data: Dict[str, Any]) -> str:
+    """Build the deduplication key for a parsed webhook event.
+
+    Prefers the provider's unique event id (e.g. Stripe's ``evt_...`` or
+    Chargify's webhook id). Falls back to a composite of event type and
+    object id so distinct events for the same object (e.g.
+    subscription.created and subscription.updated for one subscription)
+    don't collide.
+    """
+    event_id = event_data.get("event_id")
+    if event_id:
+        return str(event_id)
+    external_id = event_data.get("external_id", "")
+    if external_id:
+        return f"{event_data.get('type', '')}:{external_id}"
+    return ""
+
+
+def _record_dedup_marker(
+    event_data: Dict[str, Any], workspace_id: str, dedup_key: str
+) -> None:
+    """Record the dedup marker for a successfully queued/dispatched event."""
+    event_consolidation_service.record_event(
+        event_type=event_data.get("type", ""),
+        customer_id=event_data.get("customer_id", ""),
+        workspace_id=workspace_id,
+        external_id=dedup_key,
+    )
+
+
 def _process_webhook_data(
     event_data: Dict[str, Any],
     provider: Any,
@@ -225,13 +255,13 @@ def _process_webhook_data(
 
     event_type = event_data.get("type", "")
     workspace_id = str(workspace.uuid) if workspace else "global"
-    external_id = event_data.get("external_id", "")
     idempotency_key = event_data.get("idempotency_key")
+    dedup_key = _get_dedup_key(event_data)
 
-    # Check for exact duplicate (same external_id) - applies to all events
-    if event_consolidation_service.is_duplicate(workspace_id, external_id):
+    # Check for exact duplicate (same provider event) - applies to all events
+    if event_consolidation_service.is_duplicate(workspace_id, dedup_key):
         logger.info(
-            f"Skipping duplicate event {external_id} for workspace {workspace_id}"
+            f"Skipping duplicate event {dedup_key} for workspace {workspace_id}"
         )
         return JsonResponse(
             create_success_response(
@@ -240,17 +270,18 @@ def _process_webhook_data(
             status=200,
         )
 
-    # Record event ID to prevent exact duplicates
-    event_consolidation_service.record_event(
-        event_type=event_type,
-        customer_id=event_data.get("customer_id", ""),
-        workspace_id=workspace_id,
-        external_id=external_id,
-    )
+    # NOTE: the dedup marker is recorded only AFTER the event has been
+    # successfully queued or dispatched. Recording it earlier would make a
+    # failed dispatch (which returns 5xx) suppress the provider's retry,
+    # permanently losing the event.
 
     # Providers with complete data in one webhook - process immediately
     if provider_name in _IMMEDIATE_PROCESSING_PROVIDERS:
-        return _process_immediately(event_data, customer_data, provider_name, workspace)
+        response = _process_immediately(
+            event_data, customer_data, provider_name, workspace
+        )
+        _record_dedup_marker(event_data, workspace_id, dedup_key)
+        return response
 
     # Queue Stripe for delayed processing (needs invoice + subscription aggregation)
     should_aggregate = event_type in _AGGREGATABLE_EVENT_TYPES
@@ -270,6 +301,9 @@ def _process_webhook_data(
             provider_name=provider_name,
             workspace=workspace,
         )
+        # Queued events are owned by our system now (orphan recovery retries
+        # failed sends), so it is safe to suppress provider retries.
+        _record_dedup_marker(event_data, workspace_id, dedup_key)
 
         # Log with truncated key for readability
         if len(aggregation_key) > 20:
@@ -284,7 +318,9 @@ def _process_webhook_data(
         )
 
     # Events WITHOUT idempotency_key that don't benefit from aggregation
-    return _process_immediately(event_data, customer_data, provider_name, workspace)
+    response = _process_immediately(event_data, customer_data, provider_name, workspace)
+    _record_dedup_marker(event_data, workspace_id, dedup_key)
+    return response
 
 
 def _process_immediately(
@@ -344,13 +380,10 @@ def _process_immediately(
                 ),
                 status=200,
             )
-        try:
-            slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
-        except Exception as e:
-            logger.error(
-                f"Failed to send Slack notification for workspace "
-                f"{workspace.uuid if workspace else 'unknown'}: {str(e)}"
-            )
+        # Let delivery failures propagate: the router then returns 5xx so
+        # the provider retries, instead of the notification being silently
+        # lost (consistent with pending_event_queue._send_notification).
+        slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
     else:
         logger.warning(
             f"No Slack webhook URL configured for workspace "
@@ -366,6 +399,7 @@ def _process_immediately(
 
 def _handle_webhook_exceptions(e: Exception, provider_name: str) -> JsonResponse:
     """Handle different types of webhook exceptions."""
+    from plugins.sources.base import WebhookError as PluginWebhookError
     from webhooks.services.rate_limiter import RateLimitException
 
     if isinstance(e, WebhookSignatureError):
@@ -377,7 +411,8 @@ def _handle_webhook_exceptions(e: Exception, provider_name: str) -> JsonResponse
         logger.info(f"Rate limit exceeded for {provider_name} webhook: {e!s}")
         error_response = create_error_response(e, 429)
         return JsonResponse(error_response, status=429)
-    elif isinstance(e, WebhookError):
+    elif isinstance(e, (WebhookError, PluginWebhookError)):
+        # Malformed/invalid webhook data - retrying won't help, return 4xx
         logger.warning(f"Webhook validation error for {provider_name}: {str(e)}")
         error_response = create_error_response(e, 400)
         return JsonResponse(error_response, status=400)
@@ -625,15 +660,15 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
         ).first()
 
         if not billing_integration:
-            # Return 200 to acknowledge receipt - don't trigger Stripe retries
-            # Log error so we know configuration is missing
+            # Server-side misconfiguration: return 5xx so Stripe retries
+            # (with its own backoff) instead of the event being lost.
             logger.error(
                 "GlobalBillingIntegration not configured for stripe_billing. "
                 "Create record with integration_type='stripe_billing', is_active=True."
             )
             return JsonResponse(
                 {"status": "error", "message": "Billing integration not configured"},
-                status=200,  # 200 to prevent Stripe retries
+                status=500,
             )
 
         provider = StripeSourcePlugin(webhook_secret=billing_integration.webhook_secret)
@@ -644,8 +679,11 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
 
     except Exception as e:
         logger.error(f"Error in billing Stripe webhook: {str(e)}", exc_info=True)
-        # Return 200 to acknowledge receipt - prevents infinite retries
+        # Transient/unknown errors must return 5xx so Stripe redelivers.
+        # Stripe has its own exponential backoff and max-attempt policy,
+        # so this does not cause infinite retries. Signature and validation
+        # errors are mapped to 4xx inside _process_webhook.
         return JsonResponse(
             {"status": "error", "message": "Internal error processing webhook"},
-            status=200,
+            status=500,
         )

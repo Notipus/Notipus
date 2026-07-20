@@ -171,6 +171,7 @@ class StripeProviderTest(TestCase):
             "customer_id": "cus_123",
             "provider": "stripe",
             "external_id": "in_123",
+            "event_id": None,
             "status": "succeeded",
             "created_at": 1234567890,
             "currency": "USD",
@@ -180,6 +181,22 @@ class StripeProviderTest(TestCase):
         }
 
         self.assertEqual(result, expected)
+
+    def test_build_stripe_event_data_includes_event_id(self):
+        """Test that the Stripe event id is surfaced separately."""
+        data = {"id": "sub_123", "status": "active"}
+
+        result = self.provider._build_stripe_event_data(
+            "subscription_created",
+            "cus_123",
+            data,
+            20.00,
+            idempotency_key=None,
+            event_id="evt_abc123",
+        )
+
+        self.assertEqual(result["event_id"], "evt_abc123")
+        self.assertEqual(result["external_id"], "sub_123")
 
     def test_handle_stripe_billing_unknown_event(self):
         """Test handling unknown billing event."""

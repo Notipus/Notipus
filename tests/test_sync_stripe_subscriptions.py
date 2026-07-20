@@ -259,14 +259,28 @@ class TestSyncWorkspaceFromStripe:
             assert workspace.trial_end_date is not None
 
     def test_handles_stripe_api_error(self, workspace: Workspace) -> None:
-        """Verify sync handles API errors gracefully."""
+        """Verify sync handles Stripe API errors gracefully."""
+        import stripe
+
         with patch("webhooks.services.billing.StripeAPI") as mock_stripe_api_class:
             mock_api = MagicMock()
-            mock_api.get_customer_subscriptions.side_effect = Exception("API Error")
+            mock_api.get_customer_subscriptions.side_effect = stripe.StripeError(
+                "API Error"
+            )
             mock_stripe_api_class.return_value = mock_api
 
             result = BillingService.sync_workspace_from_stripe("cus_test123")
             assert result is False
+
+    def test_propagates_database_error(self, workspace: Workspace) -> None:
+        """Verify unexpected errors propagate instead of being swallowed."""
+        from django.db import OperationalError
+
+        with patch("webhooks.services.billing.Workspace.objects.filter") as mock_filter:
+            mock_filter.side_effect = OperationalError("connection lost")
+
+            with pytest.raises(OperationalError):
+                BillingService.sync_workspace_from_stripe("cus_test123")
 
 
 @pytest.mark.django_db

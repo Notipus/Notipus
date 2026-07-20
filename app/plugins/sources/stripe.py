@@ -402,6 +402,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         data: dict[str, Any],
         amount: float,
         idempotency_key: str | None = None,
+        event_id: str | None = None,
     ) -> dict[str, Any]:
         """Build Stripe event data structure.
 
@@ -411,6 +412,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
             data: Raw event data.
             amount: Payment amount in dollars.
             idempotency_key: Stripe request idempotency key for deduplication.
+            event_id: Stripe event id (``evt_...``) from the outer event
+                envelope, used for exact deduplication. Distinct from
+                ``external_id``, which is the underlying object id
+                (e.g. ``sub_...`` or ``in_...``).
 
         Returns:
             Standardized event data dictionary.
@@ -420,6 +425,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             "customer_id": customer_id,
             "provider": self.PROVIDER_NAME,
             "external_id": data.get("id", ""),
+            "event_id": event_id,
             "status": data.get("status"),
             "created_at": data.get("created"),
             "currency": str(data.get("currency", "USD")).upper(),
@@ -840,6 +846,11 @@ class StripeSourcePlugin(BaseSourcePlugin):
         # All events triggered by the same Stripe API request share this key
         idempotency_key = self._extract_idempotency_key(event)
 
+        # Extract the Stripe event id (evt_...) from the outer envelope for
+        # exact deduplication. The object id alone would make distinct events
+        # for the same object (e.g. created + updated) collide.
+        event_id = cast("str | None", getattr(event, "id", None))
+
         # Extract event info using Stripe event object
         event_type, data = self._extract_stripe_event_info(event)
 
@@ -886,7 +897,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
             # Build and return event data
             return self._build_stripe_event_data(
-                event_type, customer_id, data_dict, amount, idempotency_key
+                event_type, customer_id, data_dict, amount, idempotency_key, event_id
             )
 
         except (KeyError, ValueError, AttributeError) as e:

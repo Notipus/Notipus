@@ -8,8 +8,6 @@ import hashlib
 import hmac
 import logging
 import re
-import time
-from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, ClassVar, cast
 
@@ -29,8 +27,10 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     """Chargify (Maxio Advanced Billing) source plugin implementation.
 
     Handles webhook validation using HMAC signatures (SHA-256 preferred,
-    with MD5 fallback), deduplication, and parsing of various subscription
-    and payment events.
+    with MD5 fallback) and parsing of various subscription and payment
+    events. Deduplication is handled at the router level via the
+    event consolidation service, keyed on the ``X-Chargify-Webhook-Id``
+    header surfaced as ``event_id`` in the parsed event data.
 
     Attributes:
         EVENT_TYPE_MAPPING: Maps Chargify event names to internal types.
@@ -69,8 +69,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     }
 
     # Class-level constants
-    _CACHE_MAX_SIZE: ClassVar[int] = 1000
-    _DEDUP_WINDOW_SECONDS: ClassVar[int] = 300  # 5 minutes
     _TIMESTAMP_TOLERANCE_SECONDS: ClassVar[int] = 300  # 5 minutes tolerance
 
     @classmethod
@@ -101,48 +99,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         """
         super().__init__(webhook_secret)
         self._current_webhook_data: dict[str, Any] | None = None
-        # Instance-level cache for recently processed webhook IDs.
-        # Note: This cache is per-instance, meaning deduplication only works
-        # within a single request lifecycle. For cross-request deduplication
-        # in production, consider using Redis or another persistent store.
-        # The instance-level cache is intentional to ensure test isolation.
-        self._webhook_cache: OrderedDict[str, float] = OrderedDict()
-
-    def _check_webhook_duplicate(self, webhook_id: str) -> bool:
-        """Check if a webhook ID has been processed recently.
-
-        Implements proper idempotency by tracking recently processed
-        webhook IDs with a time-based cleanup.
-
-        Args:
-            webhook_id: The webhook identifier to check.
-
-        Returns:
-            True if this is a duplicate webhook, False otherwise.
-        """
-        if not webhook_id:
-            logger.warning("No webhook ID provided for deduplication check")
-            return False
-
-        now = time.time()
-
-        # Clean up old entries
-        cutoff = now - self._DEDUP_WINDOW_SECONDS
-        expired_keys = [k for k, v in self._webhook_cache.items() if v <= cutoff]
-        for key in expired_keys:
-            del self._webhook_cache[key]
-
-        # Check if webhook ID has been processed
-        if webhook_id in self._webhook_cache:
-            logger.info(f"Duplicate webhook detected: {webhook_id}")
-            return True
-
-        # Add to cache
-        self._webhook_cache[webhook_id] = now
-        if len(self._webhook_cache) > self._CACHE_MAX_SIZE:
-            self._webhook_cache.popitem(last=False)  # Remove oldest
-
-        return False
 
     def _validate_webhook_timestamp(self, request: HttpRequest) -> bool:
         """Validate webhook timestamp to prevent replay attacks.
@@ -585,24 +541,23 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     def _handle_chargify_event(
         self, event_type: str, customer_id: str, data: dict[str, Any], webhook_id: str
     ) -> dict[str, Any]:
-        """Route webhook event to appropriate handler with deduplication.
+        """Route webhook event to appropriate handler.
+
+        Deduplication happens at the router level (event consolidation
+        service), keyed on the webhook id surfaced via ``event_id``.
 
         Args:
             event_type: The webhook event type.
             customer_id: Customer identifier.
             data: Form data dictionary.
-            webhook_id: Webhook identifier for deduplication.
+            webhook_id: Webhook identifier (used for logging).
 
         Returns:
             Parsed event data dictionary.
 
         Raises:
-            InvalidDataError: If webhook is duplicate or event type unsupported.
+            InvalidDataError: If event type is unsupported.
         """
-        # Check for duplicates using webhook ID (proper idempotency)
-        if self._check_webhook_duplicate(webhook_id):
-            raise InvalidDataError(f"Duplicate webhook: {webhook_id}")
-
         if event_type == "payment_success":
             return self._parse_payment_success(data)
         elif event_type == "payment_failure":
@@ -642,7 +597,8 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             Parsed event data dictionary.
 
         Raises:
-            InvalidDataError: If webhook data is invalid.
+            InvalidDataError: If webhook data is invalid or the
+                ``X-Chargify-Webhook-Id`` header is missing.
         """
         logger.info(
             "Parsing Chargify webhook data",
@@ -662,9 +618,18 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         # Get event info
         event_type, customer_id = self._get_chargify_event_info(data)
 
-        # Handle the event
+        # The webhook id is required: it is the deduplication key, so a
+        # missing id must be a validation failure (400) rather than a
+        # webhook that bypasses dedup on every retry.
         webhook_id = request.headers.get("X-Chargify-Webhook-Id", "")
-        return self._handle_chargify_event(event_type, customer_id, data, webhook_id)
+        if not webhook_id:
+            raise InvalidDataError("Missing X-Chargify-Webhook-Id header")
+
+        event = self._handle_chargify_event(event_type, customer_id, data, webhook_id)
+
+        # Surface the webhook id so the router can deduplicate retries
+        event["event_id"] = webhook_id
+        return event
 
     def _parse_shopify_order_ref(self, memo: str) -> str | None:
         """Extract Shopify order reference from transaction memo.

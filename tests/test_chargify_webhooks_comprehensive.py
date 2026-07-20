@@ -5,7 +5,6 @@ deduplication, timestamp handling, and error scenarios for the
 Chargify provider.
 """
 
-import time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -292,69 +291,61 @@ class TestChargifyWebhookParsing:
 
 
 class TestChargifyWebhookDeduplication:
-    """Test Chargify webhook deduplication logic."""
+    """Test Chargify webhook deduplication key handling.
+
+    Deduplication itself happens at the router level via the event
+    consolidation service; the plugin's job is to surface a stable
+    dedup key (the webhook id) and reject webhooks without one.
+    """
 
     @pytest.fixture
     def provider(self) -> ChargifySourcePlugin:
-        """Create a Chargify provider with short dedup window for testing."""
+        """Create a Chargify provider instance for testing."""
+        return ChargifySourcePlugin(webhook_secret="test_secret")
 
-        # Create a custom provider class for testing with shorter dedup window
-        class TestChargifySourcePlugin(ChargifySourcePlugin):
-            _DEDUP_WINDOW_SECONDS = 60  # 1 minute for testing
+    @pytest.fixture
+    def form_data(self) -> dict[str, str]:
+        """Valid payment_success form data."""
+        return {
+            "event": "payment_success",
+            "payload[subscription][id]": "sub_12345",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[subscription][customer][email]": "test@example.com",
+            "payload[subscription][product][name]": "Premium Plan",
+            "payload[transaction][id]": "txn_789",
+            "payload[transaction][amount_in_cents]": "2999",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
 
-        return TestChargifySourcePlugin(webhook_secret="test_secret")
+    def test_webhook_id_surfaced_as_event_id(
+        self, provider: ChargifySourcePlugin, form_data: dict[str, str]
+    ) -> None:
+        """Test that the webhook id is surfaced for router-level dedup."""
+        mock_request = MagicMock()
+        mock_request.content_type = "application/x-www-form-urlencoded"
+        mock_request.headers = {"X-Chargify-Webhook-Id": "webhook_12345"}
+        mock_request.POST.dict.return_value = form_data
 
-    def test_webhook_deduplication_prevents_duplicates(self, provider):
-        """Test that duplicate webhook IDs are rejected"""
-        webhook_id = "webhook_12345"
+        result = provider.parse_webhook(mock_request)
 
-        # First webhook should be allowed
-        assert not provider._check_webhook_duplicate(webhook_id)
+        assert result is not None
+        assert result["event_id"] == "webhook_12345"
 
-        # Second webhook with same ID should be rejected
-        assert provider._check_webhook_duplicate(webhook_id)
+    def test_missing_webhook_id_rejected_in_parse(
+        self, provider: ChargifySourcePlugin, form_data: dict[str, str]
+    ) -> None:
+        """Test that a missing X-Chargify-Webhook-Id fails validation.
 
-    def test_webhook_deduplication_allows_different_webhook_ids(self, provider):
-        """Test that webhooks with different IDs are allowed"""
-        assert not provider._check_webhook_duplicate("webhook_123")
-        assert not provider._check_webhook_duplicate("webhook_456")
+        Without the webhook id there is no stable dedup key, so the
+        webhook must be rejected (400) rather than bypassing dedup.
+        """
+        mock_request = MagicMock()
+        mock_request.content_type = "application/x-www-form-urlencoded"
+        mock_request.headers = {}
+        mock_request.POST.dict.return_value = form_data
 
-    def test_webhook_deduplication_cache_cleanup(self, provider):
-        """Test that old webhook entries are cleaned up"""
-
-        # Create a provider with very short dedup window for this test
-        class QuickTestProvider(ChargifySourcePlugin):
-            _DEDUP_WINDOW_SECONDS = 1  # 1 second for quick testing
-
-        quick_provider = QuickTestProvider(webhook_secret="test_secret")
-
-        webhook_id = "webhook_12345"
-
-        # Process webhook
-        quick_provider._check_webhook_duplicate(webhook_id)
-
-        # Wait for window to expire
-        time.sleep(2)
-
-        # Should be allowed again after window expires
-        assert not quick_provider._check_webhook_duplicate(webhook_id)
-
-    def test_webhook_cache_size_limit(self, provider):
-        """Test that webhook cache respects size limits"""
-        provider._CACHE_MAX_SIZE = 5
-
-        # Fill cache beyond limit
-        for i in range(10):
-            provider._check_webhook_duplicate(f"webhook_{i}")
-
-        # Cache should not exceed max size
-        assert len(provider._webhook_cache) <= provider._CACHE_MAX_SIZE
-
-    def test_webhook_duplicate_with_empty_id(self, provider):
-        """Test handling of empty webhook ID"""
-        # Should return False and log warning for empty webhook ID
-        assert not provider._check_webhook_duplicate("")
-        assert not provider._check_webhook_duplicate(None)
+        with pytest.raises(InvalidDataError, match="X-Chargify-Webhook-Id"):
+            provider.parse_webhook(mock_request)
 
 
 class TestChargifyWebhookTimestampValidation:
