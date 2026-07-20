@@ -2,12 +2,18 @@
 
 This module processes billing-related webhook events from Stripe
 and updates workspace subscription status accordingly.
+
+Handlers distinguish expected no-ops (missing customer id, no matching
+workspace) from unexpected errors: expected no-ops are logged and return
+normally, while unexpected errors (e.g. database failures) propagate so
+the webhook view returns 5xx and Stripe redelivers the event.
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Any, cast
 
+import stripe
 from core.models import Workspace
 from core.services.stripe import StripeAPI
 
@@ -98,55 +104,58 @@ class BillingService:
 
         Returns:
             True if sync was successful, False otherwise.
+
+        Raises:
+            Exception: Unexpected errors (e.g. database failures) propagate
+                so webhook callers return 5xx and Stripe retries. Only
+                Stripe API errors are swallowed (the sync is best-effort
+                refinement after the primary update already succeeded).
         """
+        workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
+
+        if not workspace:
+            logger.warning(f"No workspace found for customer {customer_id} during sync")
+            return False
+
         try:
-            workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
-
-            if not workspace:
-                logger.warning(
-                    f"No workspace found for customer {customer_id} during sync"
-                )
-                return False
-
             stripe_api = StripeAPI()
             subscriptions = stripe_api.get_customer_subscriptions(
                 customer_id, status="all"
             )
-
-            if not subscriptions:
-                logger.info(f"No subscriptions found for customer {customer_id}")
-                return True
-
-            active_sub = BillingService._get_active_subscription(subscriptions)
-            stripe_status = active_sub.get("status", "active")
-            internal_status = STRIPE_STATUS_MAPPING.get(stripe_status, "active")
-            plan_name = BillingService._extract_plan_name_from_subscription(active_sub)
-
-            # Build update data
-            update_data: dict[str, Any] = {"subscription_status": internal_status}
-
-            if plan_name:
-                update_data["subscription_plan"] = plan_name
-
-            if active_sub.get("current_period_end"):
-                update_data["billing_cycle_anchor"] = active_sub["current_period_end"]
-
-            if stripe_status == "trialing" and active_sub.get("current_period_end"):
-                update_data["trial_end_date"] = datetime.fromtimestamp(
-                    active_sub["current_period_end"], tz=timezone.utc
-                )
-
-            Workspace.objects.filter(id=workspace.id).update(**update_data)
-
-            logger.info(
-                f"Synced workspace {workspace.name} from Stripe: "
-                f"status={internal_status}, plan={plan_name}"
-            )
-            return True
-
-        except Exception as e:
+        except stripe.StripeError as e:
             logger.error(f"Error syncing workspace from Stripe: {e!s}")
             return False
+
+        if not subscriptions:
+            logger.info(f"No subscriptions found for customer {customer_id}")
+            return True
+
+        active_sub = BillingService._get_active_subscription(subscriptions)
+        stripe_status = active_sub.get("status", "active")
+        internal_status = STRIPE_STATUS_MAPPING.get(stripe_status, "active")
+        plan_name = BillingService._extract_plan_name_from_subscription(active_sub)
+
+        # Build update data
+        update_data: dict[str, Any] = {"subscription_status": internal_status}
+
+        if plan_name:
+            update_data["subscription_plan"] = plan_name
+
+        if active_sub.get("current_period_end"):
+            update_data["billing_cycle_anchor"] = active_sub["current_period_end"]
+
+        if stripe_status == "trialing" and active_sub.get("current_period_end"):
+            update_data["trial_end_date"] = datetime.fromtimestamp(
+                active_sub["current_period_end"], tz=timezone.utc
+            )
+
+        Workspace.objects.filter(id=workspace.id).update(**update_data)
+
+        logger.info(
+            f"Synced workspace {workspace.name} from Stripe: "
+            f"status={internal_status}, plan={plan_name}"
+        )
+        return True
 
     @staticmethod
     def _get_customer_id(data: dict[str, Any], data_type: str) -> str | None:
@@ -172,32 +181,24 @@ class BillingService:
         Args:
             subscription: Subscription data from Stripe webhook.
         """
-        try:
-            customer_id = BillingService._get_customer_id(subscription, "subscription")
-            if not customer_id:
-                return
+        customer_id = BillingService._get_customer_id(subscription, "subscription")
+        if not customer_id:
+            return
 
-            # Don't set subscription_plan here - sync_workspace_from_stripe will
-            # properly extract and normalize the plan name from the Product.
-            # Previously this was setting plan_id (a Price ID) which is wrong.
-            updated_count = Workspace.objects.filter(
-                stripe_customer_id=customer_id
-            ).update(
-                subscription_status="active",
-                billing_cycle_anchor=subscription.get("current_period_start"),
-            )
+        # Don't set subscription_plan here - sync_workspace_from_stripe will
+        # properly extract and normalize the plan name from the Product.
+        # Previously this was setting plan_id (a Price ID) which is wrong.
+        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
+            subscription_status="active",
+            billing_cycle_anchor=subscription.get("current_period_start"),
+        )
 
-            if updated_count > 0:
-                logger.info(
-                    f"Subscription created for customer {customer_id}, syncing..."
-                )
-                # Sync full state from Stripe (properly extracts plan name)
-                BillingService.sync_workspace_from_stripe(customer_id)
-            else:
-                logger.warning(f"No workspace found for customer {customer_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling subscription created: {e!s}")
+        if updated_count > 0:
+            logger.info(f"Subscription created for customer {customer_id}, syncing...")
+            # Sync full state from Stripe (properly extracts plan name)
+            BillingService.sync_workspace_from_stripe(customer_id)
+        else:
+            logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
     def handle_subscription_updated(subscription: dict[str, Any]) -> None:
@@ -206,44 +207,38 @@ class BillingService:
         Args:
             subscription: Subscription data from Stripe webhook.
         """
-        try:
-            customer_id = BillingService._get_customer_id(subscription, "subscription")
-            if not customer_id:
-                return
+        customer_id = BillingService._get_customer_id(subscription, "subscription")
+        if not customer_id:
+            return
 
-            # Extract subscription status
-            status = subscription.get("status", "active")
+        # Extract subscription status
+        status = subscription.get("status", "active")
 
-            # Map Stripe statuses to our internal statuses
-            internal_status = STRIPE_STATUS_MAPPING.get(status, "active")
+        # Map Stripe statuses to our internal statuses
+        internal_status = STRIPE_STATUS_MAPPING.get(status, "active")
 
-            # Don't set subscription_plan here - sync_workspace_from_stripe will
-            # properly extract and normalize the plan name from the Product.
-            # Previously this was setting plan_id (a Price ID) which is wrong.
-            update_data: dict[str, Any] = {"subscription_status": internal_status}
+        # Don't set subscription_plan here - sync_workspace_from_stripe will
+        # properly extract and normalize the plan name from the Product.
+        # Previously this was setting plan_id (a Price ID) which is wrong.
+        update_data: dict[str, Any] = {"subscription_status": internal_status}
 
-            # Update billing cycle anchor if present
-            if subscription.get("current_period_end"):
-                update_data["billing_cycle_anchor"] = subscription.get(
-                    "current_period_end"
-                )
+        # Update billing cycle anchor if present
+        if subscription.get("current_period_end"):
+            update_data["billing_cycle_anchor"] = subscription.get("current_period_end")
 
-            updated_count = Workspace.objects.filter(
-                stripe_customer_id=customer_id
-            ).update(**update_data)
+        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
+            **update_data
+        )
 
-            if updated_count > 0:
-                logger.info(
-                    f"Updated subscription status to {internal_status} "
-                    f"for customer {customer_id}, syncing..."
-                )
-                # Sync full state from Stripe (properly extracts plan name)
-                BillingService.sync_workspace_from_stripe(customer_id)
-            else:
-                logger.warning(f"No workspace found for customer {customer_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling subscription updated: {e!s}")
+        if updated_count > 0:
+            logger.info(
+                f"Updated subscription status to {internal_status} "
+                f"for customer {customer_id}, syncing..."
+            )
+            # Sync full state from Stripe (properly extracts plan name)
+            BillingService.sync_workspace_from_stripe(customer_id)
+        else:
+            logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
     def handle_subscription_deleted(subscription: dict[str, Any]) -> None:
@@ -252,24 +247,18 @@ class BillingService:
         Args:
             subscription: Subscription data from Stripe webhook.
         """
-        try:
-            customer_id = BillingService._get_customer_id(subscription, "subscription")
-            if not customer_id:
-                return
+        customer_id = BillingService._get_customer_id(subscription, "subscription")
+        if not customer_id:
+            return
 
-            updated_count = Workspace.objects.filter(
-                stripe_customer_id=customer_id
-            ).update(subscription_status="cancelled")
+        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
+            subscription_status="cancelled"
+        )
 
-            if updated_count > 0:
-                logger.info(
-                    f"Marked subscription as cancelled for customer {customer_id}"
-                )
-            else:
-                logger.warning(f"No workspace found for customer {customer_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling subscription deleted: {e!s}")
+        if updated_count > 0:
+            logger.info(f"Marked subscription as cancelled for customer {customer_id}")
+        else:
+            logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
     def handle_payment_success(invoice: dict[str, Any]) -> None:
@@ -278,32 +267,26 @@ class BillingService:
         Args:
             invoice: Invoice data from Stripe webhook.
         """
-        try:
-            customer_id = invoice.get("customer")
-            if not customer_id:
-                logger.error("Missing customer ID in invoice data")
-                return
+        customer_id = invoice.get("customer")
+        if not customer_id:
+            logger.error("Missing customer ID in invoice data")
+            return
 
-            period_end = invoice.get("period_end")
+        period_end = invoice.get("period_end")
 
-            # Prepare update data
-            update_data: dict[str, Any] = {"subscription_status": "active"}
-            if period_end:
-                update_data["billing_cycle_anchor"] = period_end
+        # Prepare update data
+        update_data: dict[str, Any] = {"subscription_status": "active"}
+        if period_end:
+            update_data["billing_cycle_anchor"] = period_end
 
-            updated_count = Workspace.objects.filter(
-                stripe_customer_id=customer_id
-            ).update(**update_data)
+        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
+            **update_data
+        )
 
-            if updated_count > 0:
-                logger.info(
-                    f"Updated payment status to active for customer {customer_id}"
-                )
-            else:
-                logger.warning(f"No workspace found for customer {customer_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling payment success: {e!s}")
+        if updated_count > 0:
+            logger.info(f"Updated payment status to active for customer {customer_id}")
+        else:
+            logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
     def handle_payment_failed(invoice: dict[str, Any]) -> None:
@@ -312,25 +295,21 @@ class BillingService:
         Args:
             invoice: Invoice data from Stripe webhook.
         """
-        try:
-            customer_id = invoice.get("customer")
-            if not customer_id:
-                logger.error("Missing customer ID in invoice data")
-                return
+        customer_id = invoice.get("customer")
+        if not customer_id:
+            logger.error("Missing customer ID in invoice data")
+            return
 
-            updated_count = Workspace.objects.filter(
-                stripe_customer_id=customer_id
-            ).update(subscription_status="past_due")
+        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
+            subscription_status="past_due"
+        )
 
-            if updated_count > 0:
-                logger.warning(
-                    f"Updated payment status to past_due for customer {customer_id}"
-                )
-            else:
-                logger.warning(f"No workspace found for customer {customer_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling payment failure: {e!s}")
+        if updated_count > 0:
+            logger.warning(
+                f"Updated payment status to past_due for customer {customer_id}"
+            )
+        else:
+            logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
     def handle_checkout_completed(session: dict[str, Any]) -> None:
@@ -342,55 +321,49 @@ class BillingService:
         Args:
             session: Checkout session data from Stripe webhook.
         """
-        try:
-            customer_id = session.get("customer")
-            if not customer_id:
-                logger.error("Missing customer ID in checkout session")
-                return
+        customer_id = session.get("customer")
+        if not customer_id:
+            logger.error("Missing customer ID in checkout session")
+            return
 
-            # Extract metadata with workspace and plan info
-            metadata = session.get("metadata", {})
-            workspace_id = metadata.get("workspace_id") or metadata.get(
-                "organization_id"
+        # Extract metadata with workspace and plan info
+        metadata = session.get("metadata", {})
+        workspace_id = metadata.get("workspace_id") or metadata.get("organization_id")
+        plan_name = metadata.get("plan_name")
+
+        subscription_id = session.get("subscription")
+
+        # Update workspace with new subscription status
+        update_data: dict[str, Any] = {
+            "subscription_status": "active",
+            "payment_method_added": True,
+        }
+
+        if plan_name:
+            update_data["subscription_plan"] = plan_name
+
+        # Find workspace by customer ID or workspace ID from metadata
+        if workspace_id:
+            updated_count = Workspace.objects.filter(id=workspace_id).update(
+                **update_data
             )
-            plan_name = metadata.get("plan_name")
+        else:
+            updated_count = Workspace.objects.filter(
+                stripe_customer_id=customer_id
+            ).update(**update_data)
 
-            subscription_id = session.get("subscription")
-
-            # Update workspace with new subscription status
-            update_data: dict[str, Any] = {
-                "subscription_status": "active",
-                "payment_method_added": True,
-            }
-
-            if plan_name:
-                update_data["subscription_plan"] = plan_name
-
-            # Find workspace by customer ID or workspace ID from metadata
-            if workspace_id:
-                updated_count = Workspace.objects.filter(id=workspace_id).update(
-                    **update_data
-                )
-            else:
-                updated_count = Workspace.objects.filter(
-                    stripe_customer_id=customer_id
-                ).update(**update_data)
-
-            if updated_count > 0:
-                logger.info(
-                    f"Checkout completed for customer {customer_id}, "
-                    f"subscription: {subscription_id}, plan: {plan_name}"
-                )
-                # Verify/sync full state from Stripe (catches any drift)
-                BillingService.sync_workspace_from_stripe(customer_id)
-            else:
-                logger.warning(
-                    f"No workspace found for checkout session. "
-                    f"Customer: {customer_id}, Workspace ID: {workspace_id}"
-                )
-
-        except Exception as e:
-            logger.error(f"Error handling checkout completed: {e!s}")
+        if updated_count > 0:
+            logger.info(
+                f"Checkout completed for customer {customer_id}, "
+                f"subscription: {subscription_id}, plan: {plan_name}"
+            )
+            # Verify/sync full state from Stripe (catches any drift)
+            BillingService.sync_workspace_from_stripe(customer_id)
+        else:
+            logger.warning(
+                f"No workspace found for checkout session. "
+                f"Customer: {customer_id}, Workspace ID: {workspace_id}"
+            )
 
     @staticmethod
     def handle_trial_ending(subscription: dict[str, Any]) -> None:
@@ -402,28 +375,24 @@ class BillingService:
         Args:
             subscription: Subscription data from Stripe webhook.
         """
-        try:
-            customer_id = BillingService._get_customer_id(subscription, "trial ending")
-            if not customer_id:
-                return
+        customer_id = BillingService._get_customer_id(subscription, "trial ending")
+        if not customer_id:
+            return
 
-            trial_end = subscription.get("trial_end")
+        trial_end = subscription.get("trial_end")
 
-            # Find workspace and log the event
-            ws = Workspace.objects.filter(stripe_customer_id=customer_id).first()
+        # Find workspace and log the event
+        ws = Workspace.objects.filter(stripe_customer_id=customer_id).first()
 
-            if ws:
-                logger.info(
-                    f"Trial ending soon for workspace {ws.name} "
-                    f"(customer: {customer_id}), trial_end: {trial_end}"
-                )
-                # TODO: Send notification email to workspace admins
-                # TODO: Trigger Slack notification if configured
-            else:
-                logger.warning(f"Trial ending for unknown customer {customer_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling trial ending: {e!s}")
+        if ws:
+            logger.info(
+                f"Trial ending soon for workspace {ws.name} "
+                f"(customer: {customer_id}), trial_end: {trial_end}"
+            )
+            # TODO: Send notification email to workspace admins
+            # TODO: Trigger Slack notification if configured
+        else:
+            logger.warning(f"Trial ending for unknown customer {customer_id}")
 
     @staticmethod
     def handle_invoice_paid(invoice: dict[str, Any]) -> None:
@@ -435,34 +404,30 @@ class BillingService:
         Args:
             invoice: Invoice data from Stripe webhook.
         """
-        try:
-            customer_id = invoice.get("customer")
-            if not customer_id:
-                logger.error("Missing customer ID in paid invoice")
-                return
+        customer_id = invoice.get("customer")
+        if not customer_id:
+            logger.error("Missing customer ID in paid invoice")
+            return
 
-            # Mark organization as active with payment method confirmed
-            update_data: dict[str, Any] = {
-                "subscription_status": "active",
-                "payment_method_added": True,
-            }
+        # Mark organization as active with payment method confirmed
+        update_data: dict[str, Any] = {
+            "subscription_status": "active",
+            "payment_method_added": True,
+        }
 
-            # Update billing cycle anchor if period_end is present
-            period_end = invoice.get("period_end")
-            if period_end:
-                update_data["billing_cycle_anchor"] = period_end
+        # Update billing cycle anchor if period_end is present
+        period_end = invoice.get("period_end")
+        if period_end:
+            update_data["billing_cycle_anchor"] = period_end
 
-            updated_count = Workspace.objects.filter(
-                stripe_customer_id=customer_id
-            ).update(**update_data)
+        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
+            **update_data
+        )
 
-            if updated_count > 0:
-                logger.info(f"Invoice paid for customer {customer_id}")
-            else:
-                logger.warning(f"No workspace found for paid invoice: {customer_id}")
-
-        except Exception as e:
-            logger.error(f"Error handling invoice paid: {e!s}")
+        if updated_count > 0:
+            logger.info(f"Invoice paid for customer {customer_id}")
+        else:
+            logger.warning(f"No workspace found for paid invoice: {customer_id}")
 
     @staticmethod
     def handle_payment_action_required(invoice: dict[str, Any]) -> None:
@@ -474,28 +439,24 @@ class BillingService:
         Args:
             invoice: Invoice data from Stripe webhook.
         """
-        try:
-            customer_id = invoice.get("customer")
-            if not customer_id:
-                logger.error("Missing customer ID in action required invoice")
-                return
+        customer_id = invoice.get("customer")
+        if not customer_id:
+            logger.error("Missing customer ID in action required invoice")
+            return
 
-            hosted_invoice_url = invoice.get("hosted_invoice_url")
+        hosted_invoice_url = invoice.get("hosted_invoice_url")
 
-            # Find workspace and log the event
-            ws = Workspace.objects.filter(stripe_customer_id=customer_id).first()
+        # Find workspace and log the event
+        ws = Workspace.objects.filter(stripe_customer_id=customer_id).first()
 
-            if ws:
-                logger.warning(
-                    f"Payment action required for workspace {ws.name} "
-                    f"(customer: {customer_id}). Invoice URL: {hosted_invoice_url}"
-                )
-                # TODO: Send notification email to workspace admins
-                # with link to complete payment
-            else:
-                logger.warning(
-                    f"Payment action required for unknown customer: {customer_id}"
-                )
-
-        except Exception as e:
-            logger.error(f"Error handling payment action required: {e!s}")
+        if ws:
+            logger.warning(
+                f"Payment action required for workspace {ws.name} "
+                f"(customer: {customer_id}). Invoice URL: {hosted_invoice_url}"
+            )
+            # TODO: Send notification email to workspace admins
+            # with link to complete payment
+        else:
+            logger.warning(
+                f"Payment action required for unknown customer: {customer_id}"
+            )
