@@ -274,6 +274,9 @@ class BillingServiceTest(TestCase):
     @patch("webhooks.services.billing.logger")
     def test_handle_payment_failed(self, mock_logger):
         """Test failed payment handling for a subscription invoice"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            stripe_subscription_id="sub_test123"
+        )
         invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
         BillingService.handle_payment_failed(invoice_data)

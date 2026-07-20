@@ -24,6 +24,7 @@ import stripe
 from core.models import Workspace
 from core.services.stripe import StripeAPI
 from django.core.cache import cache
+from django.db.models import Q
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +328,7 @@ class BillingService:
             update_data["stripe_subscription_id"] = active_sub["id"]
 
         billing_anchor = BillingService._extract_billing_anchor(active_sub)
-        if billing_anchor:
+        if billing_anchor is not None:
             update_data["billing_cycle_anchor"] = billing_anchor
 
         if stripe_status == "trialing":
@@ -367,6 +368,27 @@ class BillingService:
         return cast(str, customer_id)
 
     @staticmethod
+    def _claim_subscription_id(customer_id: str, sub_id: str | None) -> None:
+        """Record sub_id as the workspace's subscription iff none is set.
+
+        A webhook for an add-on subscription must not displace the
+        recorded primary subscription id, so the write is conditional on
+        the field being empty (atomic via the filtered UPDATE).
+        sync_workspace_from_stripe — which derives the id from the
+        customer's active subscription — remains the authority for
+        changing an existing value.
+
+        Args:
+            customer_id: Stripe customer whose workspace may claim the id.
+            sub_id: Subscription id from the webhook payload, if any.
+        """
+        if not sub_id:
+            return
+        Workspace.objects.filter(
+            stripe_customer_id=customer_id, stripe_subscription_id=""
+        ).update(stripe_subscription_id=sub_id)
+
+    @staticmethod
     def handle_subscription_created(subscription: dict[str, Any]) -> None:
         """Handle subscription created event.
 
@@ -392,15 +414,18 @@ class BillingService:
         if billing_anchor is not None:
             update_data["billing_cycle_anchor"] = billing_anchor
 
-        if subscription.get("id"):
-            update_data["stripe_subscription_id"] = subscription["id"]
-
         with stripe_sync_lock(customer_id):
             updated_count = Workspace.objects.filter(
                 stripe_customer_id=customer_id
             ).update(**update_data)
 
             if updated_count > 0:
+                # Only claim the subscription id when none is recorded:
+                # a created event for an add-on subscription must not
+                # displace the workspace's primary one.
+                BillingService._claim_subscription_id(
+                    customer_id, subscription.get("id")
+                )
                 logger.info(
                     f"Subscription created for customer {customer_id}, syncing..."
                 )
@@ -442,6 +467,12 @@ class BillingService:
             ).update(**update_data)
 
             if updated_count > 0:
+                # Ensure a subscription id is recorded even if the sync
+                # below fails (it's what scopes deletion/payment-failure
+                # handling); only claims when currently empty.
+                BillingService._claim_subscription_id(
+                    customer_id, subscription.get("id")
+                )
                 logger.info(
                     f"Updated subscription status to {internal_status} "
                     f"for customer {customer_id}, syncing..."
@@ -582,10 +613,20 @@ class BillingService:
             logger.warning(f"No workspace found for customer {customer_id}")
             return
 
-        if (
-            workspace.stripe_subscription_id
-            and invoice_sub_id != workspace.stripe_subscription_id
-        ):
+        if not workspace.stripe_subscription_id:
+            # We can't tell whether this invoice belongs to the workspace's
+            # subscription — don't punish on a guess. Re-sync instead: it
+            # records the subscription id and derives the true status
+            # (Stripe reports the sub as past_due if this invoice was its).
+            logger.warning(
+                f"Workspace for customer {customer_id} has no recorded "
+                f"subscription id; re-syncing from Stripe instead of marking "
+                f"past_due for invoice subscription {invoice_sub_id}"
+            )
+            BillingService.sync_workspace_from_stripe(customer_id)
+            return
+
+        if invoice_sub_id != workspace.stripe_subscription_id:
             logger.info(
                 f"Ignoring failed invoice for subscription {invoice_sub_id} "
                 f"(workspace subscription is {workspace.stripe_subscription_id}) "
@@ -645,9 +686,20 @@ class BillingService:
         with stripe_sync_lock(customer_id):
             # Find workspace by customer ID or workspace ID from metadata
             if workspace_id:
-                updated_count = Workspace.objects.filter(id=workspace_id).update(
-                    **update_data
-                )
+                # The checkout view persists stripe_customer_id via
+                # get_or_create_customer() before the session is even
+                # created, so a genuine completion matches the workspace on
+                # both id and customer. Filtering on the customer too stops
+                # forged/stale metadata from updating an unrelated
+                # workspace; a still-empty customer id is claimed
+                # atomically (same filtered-UPDATE pattern as
+                # _claim_subscription_id) rather than silently matching
+                # zero rows, covering flows where the view's write didn't
+                # land.
+                updated_count = Workspace.objects.filter(
+                    Q(stripe_customer_id=customer_id) | Q(stripe_customer_id=""),
+                    id=workspace_id,
+                ).update(stripe_customer_id=customer_id, **update_data)
             else:
                 updated_count = Workspace.objects.filter(
                     stripe_customer_id=customer_id

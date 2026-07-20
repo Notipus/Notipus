@@ -274,6 +274,42 @@ class TestBillingCycleAnchorConsistency:
         assert BillingService._extract_billing_anchor(sub_data) == PERIOD_END
         assert BillingService._extract_billing_anchor({}) is None
 
+    @pytest.mark.django_db
+    def test_sync_writes_anchor_with_is_not_none_semantics(
+        self, workspace: Workspace
+    ) -> None:
+        """The sync path uses the same `is not None` check as the
+        handlers: a 0 anchor is written, a missing one is not."""
+        Workspace.objects.filter(id=workspace.id).update(billing_cycle_anchor=None)
+        subscription = {
+            "id": "sub_main",
+            "status": "active",
+            "current_period_end": 0,
+            "items": [{"product_name": "Notipus Pro Plan"}],
+        }
+
+        with _mock_stripe_api([subscription]):
+            BillingService.sync_workspace_from_stripe(CUSTOMER_ID)
+
+        workspace.refresh_from_db()
+        assert workspace.billing_cycle_anchor == 0
+
+        # A subscription without current_period_end leaves the anchor alone
+        Workspace.objects.filter(id=workspace.id).update(
+            billing_cycle_anchor=PERIOD_END
+        )
+        subscription_no_end = {
+            "id": "sub_main",
+            "status": "active",
+            "items": [{"product_name": "Notipus Pro Plan"}],
+        }
+
+        with _mock_stripe_api([subscription_no_end]):
+            BillingService.sync_workspace_from_stripe(CUSTOMER_ID)
+
+        workspace.refresh_from_db()
+        assert workspace.billing_cycle_anchor == PERIOD_END
+
 
 class TestIncompleteStatusMapping:
     """Findings 3+4: incomplete must not grant trial/active access."""
@@ -576,6 +612,92 @@ class TestSubscriptionDeletedScoping:
         assert workspace.stripe_subscription_id == "sub_other"
 
 
+class TestSubscriptionIdClaiming:
+    """Handlers only claim stripe_subscription_id when none is recorded."""
+
+    @pytest.mark.django_db
+    def test_created_for_addon_does_not_displace_primary_id(
+        self, workspace: Workspace
+    ) -> None:
+        """A created event for an add-on subscription must not overwrite
+        the recorded primary subscription id — sync (which derives the
+        id from the active sub) is the authority for changing it."""
+        Workspace.objects.filter(id=workspace.id).update(
+            stripe_subscription_id="sub_main"
+        )
+
+        with patch.object(BillingService, "sync_workspace_from_stripe"):
+            BillingService.handle_subscription_created(
+                {
+                    "id": "sub_addon",
+                    "customer": CUSTOMER_ID,
+                    "status": "active",
+                    "current_period_end": PERIOD_END,
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.stripe_subscription_id == "sub_main"
+
+    @pytest.mark.django_db
+    def test_created_claims_id_when_none_recorded(self, workspace: Workspace) -> None:
+        """With no recorded subscription id, created claims it."""
+        with patch.object(BillingService, "sync_workspace_from_stripe"):
+            BillingService.handle_subscription_created(
+                {
+                    "id": "sub_main",
+                    "customer": CUSTOMER_ID,
+                    "status": "active",
+                    "current_period_end": PERIOD_END,
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.stripe_subscription_id == "sub_main"
+
+    @pytest.mark.django_db
+    def test_updated_claims_id_even_when_sync_fails(self, workspace: Workspace) -> None:
+        """subscription.updated records the subscription id when none is
+        set, so deletion/payment-failure scoping works even if the
+        follow-up sync fails."""
+        with patch.object(
+            BillingService, "sync_workspace_from_stripe", return_value=False
+        ):
+            BillingService.handle_subscription_updated(
+                {
+                    "id": "sub_main",
+                    "customer": CUSTOMER_ID,
+                    "status": "active",
+                    "current_period_end": PERIOD_END,
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.stripe_subscription_id == "sub_main"
+
+    @pytest.mark.django_db
+    def test_updated_does_not_displace_recorded_id(self, workspace: Workspace) -> None:
+        """An updated event for another subscription keeps the primary."""
+        Workspace.objects.filter(id=workspace.id).update(
+            stripe_subscription_id="sub_main"
+        )
+
+        with patch.object(
+            BillingService, "sync_workspace_from_stripe", return_value=False
+        ):
+            BillingService.handle_subscription_updated(
+                {
+                    "id": "sub_addon",
+                    "customer": CUSTOMER_ID,
+                    "status": "active",
+                    "current_period_end": PERIOD_END,
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.stripe_subscription_id == "sub_main"
+
+
 class TestPaymentFailedScoping:
     """Finding 7: only the workspace's own invoice sets past_due."""
 
@@ -607,6 +729,22 @@ class TestPaymentFailedScoping:
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "active"
+
+    @pytest.mark.django_db
+    def test_failed_invoice_without_recorded_sub_id_resyncs_not_past_due(
+        self, workspace: Workspace
+    ) -> None:
+        """With no recorded subscription id we can't attribute the
+        invoice, so the handler re-syncs from Stripe instead of guessing
+        past_due (sync derives the true status and records the id)."""
+        with patch.object(BillingService, "sync_workspace_from_stripe") as mock_sync:
+            BillingService.handle_payment_failed(
+                {"customer": CUSTOMER_ID, "subscription": "sub_whatever"}
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "active"
+        mock_sync.assert_called_once_with(CUSTOMER_ID)
 
     @pytest.mark.django_db
     def test_failed_invoice_for_own_subscription_sets_past_due(
@@ -723,6 +861,94 @@ class TestCheckoutPlanNormalization:
         """Normalization maps display strings to plan keys and rejects
         anything unknown."""
         assert BillingService._normalize_plan_name(raw) == expected
+
+    @pytest.mark.django_db
+    def test_workspace_id_metadata_must_match_session_customer(
+        self, workspace: Workspace, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Forged/stale workspace_id metadata pointing at a workspace
+        that belongs to a different Stripe customer must not update it."""
+        other = Workspace.objects.create(
+            name="Other Workspace",
+            stripe_customer_id="cus_other",
+            subscription_status="trial",
+            subscription_plan="pro",
+        )
+
+        with (
+            patch.object(BillingService, "sync_workspace_from_stripe") as mock_sync,
+            caplog.at_level(logging.WARNING, logger="webhooks.services.billing"),
+        ):
+            BillingService.handle_checkout_completed(
+                {
+                    "customer": CUSTOMER_ID,
+                    "subscription": "sub_new",
+                    "metadata": {
+                        "workspace_id": str(other.id),
+                        "plan_name": "enterprise",
+                    },
+                }
+            )
+
+        other.refresh_from_db()
+        assert other.subscription_plan == "pro"  # untouched
+        assert other.subscription_status == "trial"
+        assert other.stripe_subscription_id == ""
+        mock_sync.assert_not_called()
+        assert any(
+            "no workspace found for checkout session" in record.message.lower()
+            for record in caplog.records
+        )
+
+    @pytest.mark.django_db
+    def test_workspace_without_customer_id_is_claimed_atomically(
+        self, db: None
+    ) -> None:
+        """A workspace that hasn't stored its customer id yet is claimed
+        (id + customer written together) instead of matching zero rows."""
+        fresh = Workspace.objects.create(
+            name="Fresh Workspace",
+            stripe_customer_id="",
+            subscription_status="active",
+            subscription_plan="free",
+        )
+
+        with patch.object(BillingService, "sync_workspace_from_stripe"):
+            BillingService.handle_checkout_completed(
+                {
+                    "customer": "cus_new",
+                    "subscription": "sub_new",
+                    "metadata": {"workspace_id": str(fresh.id), "plan_name": "pro"},
+                }
+            )
+
+        fresh.refresh_from_db()
+        assert fresh.stripe_customer_id == "cus_new"
+        assert fresh.stripe_subscription_id == "sub_new"
+        assert fresh.subscription_plan == "pro"
+        assert fresh.subscription_status == "active"
+
+    @pytest.mark.django_db
+    def test_workspace_id_metadata_with_matching_customer_updates(
+        self, workspace: Workspace
+    ) -> None:
+        """The legitimate path — workspace_id + matching customer —
+        still works."""
+        with patch.object(BillingService, "sync_workspace_from_stripe"):
+            BillingService.handle_checkout_completed(
+                {
+                    "customer": CUSTOMER_ID,
+                    "subscription": "sub_new",
+                    "metadata": {
+                        "workspace_id": str(workspace.id),
+                        "plan_name": "pro",
+                    },
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_plan == "pro"
+        assert workspace.stripe_subscription_id == "sub_new"
 
     def test_sync_plan_extraction_rejects_unknown_product_names(self) -> None:
         """The sync path also refuses to persist unknown plan strings."""
