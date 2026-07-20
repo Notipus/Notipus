@@ -392,7 +392,7 @@ class BillingServiceTest(TestCase):
     @patch("webhooks.services.billing.logger")
     def test_handle_subscription_deleted_success(self, mock_logger, mock_sync):
         """Test successful subscription deletion handling"""
-        subscription_data = {"customer": "cus_test123"}
+        subscription_data = {"id": "sub_test123", "customer": "cus_test123"}
 
         BillingService.handle_subscription_deleted(subscription_data)
 

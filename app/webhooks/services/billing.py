@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 # it maps to "suspended": a non-trial, non-active state that keeps
 # feature access off until Stripe transitions the subscription to
 # active/trialing (payment completed) or incomplete_expired (gave up).
+# "paused" (trial ended without a payment method) likewise means the
+# customer never paid, so it also maps to "suspended".
 STRIPE_STATUS_MAPPING: dict[str, str] = {
     "active": "active",
     "trialing": "trial",
@@ -42,7 +44,35 @@ STRIPE_STATUS_MAPPING: dict[str, str] = {
     "unpaid": "past_due",
     "incomplete": "suspended",
     "incomplete_expired": "cancelled",
+    "paused": "suspended",
 }
+
+
+def map_stripe_status(stripe_status: str) -> str:
+    """Map a Stripe subscription status to an internal workspace status.
+
+    Unknown statuses (e.g. one Stripe adds in a future API version) map
+    to "suspended" with a warning instead of defaulting to "active":
+    granting feature access on a status we don't understand is exactly
+    the failure mode that let never-paid states (incomplete, paused)
+    through before. Suspension is recoverable — the next webhook or sync
+    with a mapped status corrects it.
+
+    Args:
+        stripe_status: Status string from a Stripe subscription.
+
+    Returns:
+        Internal Workspace.STATUS_CHOICES key.
+    """
+    internal_status = STRIPE_STATUS_MAPPING.get(stripe_status)
+    if internal_status is None:
+        logger.warning(
+            f"Unknown Stripe subscription status {stripe_status!r}; "
+            f"treating workspace as suspended"
+        )
+        return "suspended"
+    return internal_status
+
 
 # Redis lock tuning for the per-customer write-then-sync serialization.
 # The lock auto-expires after LOCK_TIMEOUT even if the holder crashed;
@@ -284,7 +314,7 @@ class BillingService:
 
         active_sub = BillingService._get_active_subscription(subscriptions)
         stripe_status = active_sub.get("status", "active")
-        internal_status = STRIPE_STATUS_MAPPING.get(stripe_status, "active")
+        internal_status = map_stripe_status(stripe_status)
         plan_name = BillingService._extract_plan_name_from_subscription(active_sub)
 
         # Build update data
@@ -351,7 +381,7 @@ class BillingService:
         # subscription created in trialing/incomplete must not grant
         # active access (incomplete = first invoice never paid).
         stripe_status = subscription.get("status", "active")
-        internal_status = STRIPE_STATUS_MAPPING.get(stripe_status, "active")
+        internal_status = map_stripe_status(stripe_status)
 
         # Don't set subscription_plan here - sync_workspace_from_stripe will
         # properly extract and normalize the plan name from the Product.
@@ -394,7 +424,7 @@ class BillingService:
         status = subscription.get("status", "active")
 
         # Map Stripe statuses to our internal statuses
-        internal_status = STRIPE_STATUS_MAPPING.get(status, "active")
+        internal_status = map_stripe_status(status)
 
         # Don't set subscription_plan here - sync_workspace_from_stripe will
         # properly extract and normalize the plan name from the Product.
@@ -446,9 +476,19 @@ class BillingService:
                 logger.warning(f"No workspace found for customer {customer_id}")
                 return
 
+            if not deleted_sub_id:
+                # Without an id we can't tell whether this deletion is the
+                # workspace's own subscription — don't cancel on a guess;
+                # let the sync below derive the true state from Stripe.
+                logger.warning(
+                    f"Subscription deleted event for customer {customer_id} "
+                    f"has no subscription id; re-syncing without cancelling"
+                )
+                BillingService.sync_workspace_from_stripe(customer_id)
+                return
+
             if (
-                deleted_sub_id
-                and workspace.stripe_subscription_id
+                workspace.stripe_subscription_id
                 and deleted_sub_id != workspace.stripe_subscription_id
             ):
                 logger.info(

@@ -18,6 +18,7 @@ from webhooks.services.billing import (
     STRIPE_STATUS_MAPPING,
     BillingService,
     StripeSyncLockTimeout,
+    map_stripe_status,
     stripe_sync_lock,
 )
 
@@ -286,6 +287,52 @@ class TestIncompleteStatusMapping:
         """Stripe 'incomplete_expired' remains terminal."""
         assert STRIPE_STATUS_MAPPING["incomplete_expired"] == "cancelled"
 
+    def test_paused_maps_to_suspended(self) -> None:
+        """Stripe 'paused' (trial ended, no payment method) must not
+        grant access."""
+        assert STRIPE_STATUS_MAPPING["paused"] == "suspended"
+
+    def test_unknown_status_maps_to_suspended_with_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A Stripe status we don't know maps to suspended (deny access
+        on the unknown) rather than silently defaulting to active."""
+        with caplog.at_level(logging.WARNING, logger="webhooks.services.billing"):
+            assert map_stripe_status("some_future_status") == "suspended"
+
+        assert any(
+            "unknown stripe subscription status" in record.message.lower()
+            for record in caplog.records
+        )
+
+    def test_known_statuses_map_without_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Mapped statuses pass through the helper unchanged."""
+        with caplog.at_level(logging.WARNING, logger="webhooks.services.billing"):
+            assert map_stripe_status("active") == "active"
+            assert map_stripe_status("trialing") == "trial"
+
+        assert not caplog.records
+
+    @pytest.mark.django_db
+    def test_paused_subscription_suspends_workspace(self, workspace: Workspace) -> None:
+        """subscription.updated with status=paused suspends access."""
+        with patch.object(BillingService, "sync_workspace_from_stripe"):
+            BillingService.handle_subscription_updated(
+                {
+                    "id": "sub_paused",
+                    "customer": CUSTOMER_ID,
+                    "status": "paused",
+                    "current_period_end": PERIOD_END,
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "suspended"
+        assert workspace.is_active is False
+        assert workspace.is_trial is False
+
     @pytest.mark.django_db
     def test_incomplete_subscription_not_active_not_trial(
         self, workspace: Workspace
@@ -469,6 +516,23 @@ class TestSubscriptionDeletedScoping:
         mock_sync.assert_called_once_with(CUSTOMER_ID)
 
     @pytest.mark.django_db
+    def test_deletion_without_subscription_id_does_not_cancel(
+        self, workspace: Workspace
+    ) -> None:
+        """A deletion event missing its subscription id must not cancel
+        the workspace on a guess — it re-syncs from Stripe instead."""
+        Workspace.objects.filter(id=workspace.id).update(
+            stripe_subscription_id="sub_main"
+        )
+
+        with patch.object(BillingService, "sync_workspace_from_stripe") as mock_sync:
+            BillingService.handle_subscription_deleted({"customer": CUSTOMER_ID})
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "active"
+        mock_sync.assert_called_once_with(CUSTOMER_ID)
+
+    @pytest.mark.django_db
     def test_deleting_own_subscription_cancels_workspace(
         self, workspace: Workspace
     ) -> None:
@@ -560,6 +624,26 @@ class TestPaymentFailedScoping:
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "past_due"
+
+    @pytest.mark.django_db
+    def test_past_due_is_a_valid_status_choice(self, workspace: Workspace) -> None:
+        """past_due is written by handle_payment_failed and must be a
+        valid STATUS_CHOICES entry, or any later full_clean()/save() on
+        the workspace would raise. It deliberately does NOT grant
+        access: dunning suspends the workspace until payment succeeds."""
+        Workspace.objects.filter(id=workspace.id).update(
+            stripe_subscription_id="sub_main"
+        )
+
+        BillingService.handle_payment_failed(
+            {"customer": CUSTOMER_ID, "subscription": "sub_main"}
+        )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "past_due"
+        workspace.full_clean()  # choice is valid; must not raise
+        assert workspace.is_active is False
+        assert workspace.is_trial is False
 
     @pytest.mark.django_db
     def test_expanded_subscription_object_is_matched(

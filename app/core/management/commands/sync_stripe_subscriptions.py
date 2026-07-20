@@ -12,7 +12,7 @@ import stripe
 from core.models import Workspace
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from webhooks.services.billing import STRIPE_STATUS_MAPPING, BillingService
+from webhooks.services.billing import BillingService, map_stripe_status
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +196,7 @@ class Command(BaseCommand):
                 results["skipped_no_workspace"] += 1
                 return
 
-            internal_status = STRIPE_STATUS_MAPPING.get(sub.status, "active")
+            internal_status = map_stripe_status(sub.status)
             plan_name = self._normalize_plan_name(self._get_product_name(sub))
 
             changes = self._get_changes(workspace, internal_status, plan_name)

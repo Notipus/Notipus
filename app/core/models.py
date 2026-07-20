@@ -60,6 +60,12 @@ class Workspace(models.Model):
         ("active", "Active"),
         ("trial", "Trial"),
         ("suspended", "Suspended"),
+        # Dunning state, written by billing webhook handlers when a
+        # subscription invoice fails (Stripe past_due/unpaid).
+        # Deliberately NOT in is_active's allowed list: access is
+        # suspended while dunning and restored by the payment-success /
+        # sync handlers once Stripe reports the subscription active.
+        ("past_due", "Past Due"),
         ("cancelled", "Cancelled"),
     )
 
