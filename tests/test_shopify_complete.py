@@ -3,6 +3,7 @@ Comprehensive tests for Shopify modules to achieve 80%+ test coverage
 """
 
 import json
+from decimal import Decimal
 from unittest.mock import Mock, patch
 
 import pytest
@@ -117,21 +118,21 @@ class TestShopifySourcePlugin:
         """Test customer ID extraction from customer field"""
         data = {"customer": {"id": 12345}}
 
-        customer_id = provider._extract_shopify_customer_id(data)
+        customer_id = provider._extract_shopify_customer_id(data, "orders/paid")
         assert customer_id == "12345"
 
     def test_extract_shopify_customer_id_from_order_customer(self, provider):
         """Test customer ID extraction from order.customer field"""
         data = {"order": {"customer": {"id": 67890}}}
 
-        customer_id = provider._extract_shopify_customer_id(data)
+        customer_id = provider._extract_shopify_customer_id(data, "orders/paid")
         assert customer_id == "67890"
 
     def test_extract_shopify_customer_id_from_id_field(self, provider):
-        """Test customer ID extraction from id field"""
+        """Test customer ID extraction from id field for customer topics"""
         data = {"id": 11111}
 
-        customer_id = provider._extract_shopify_customer_id(data)
+        customer_id = provider._extract_shopify_customer_id(data, "customers/update")
         assert customer_id == "11111"
 
     def test_extract_shopify_customer_id_missing_id(self, provider):
@@ -139,34 +140,34 @@ class TestShopifySourcePlugin:
         data = {"some_field": "value"}
 
         with pytest.raises(InvalidDataError, match="Missing required fields"):
-            provider._extract_shopify_customer_id(data)
+            provider._extract_shopify_customer_id(data, "customers/update")
 
     def test_extract_shopify_customer_id_none_id(self, provider):
         """Test customer ID extraction when id is None"""
         data = {"id": None}
 
         with pytest.raises(InvalidDataError, match="Missing required fields"):
-            provider._extract_shopify_customer_id(data)
+            provider._extract_shopify_customer_id(data, "customers/update")
 
     def test_extract_shopify_customer_id_empty_string(self, provider):
         """Test customer ID extraction when id is empty string"""
         data = {"id": ""}
 
         with pytest.raises(InvalidDataError, match="Missing required fields"):
-            provider._extract_shopify_customer_id(data)
+            provider._extract_shopify_customer_id(data, "customers/update")
 
     def test_extract_shopify_customer_id_key_error(self, provider):
-        """Test customer ID extraction with KeyError"""
+        """Test customer ID extraction when customer has no id field"""
         data = {"customer": {"name": "test"}}  # Missing id field
 
         with pytest.raises(InvalidDataError, match="Missing required fields"):
-            provider._extract_shopify_customer_id(data)
+            provider._extract_shopify_customer_id(data, "customers/update")
 
     def test_extract_shopify_customer_id_normal_behavior(self, provider):
         """Test customer ID extraction normal behavior"""
         data = {"customer": {"id": 12345}}
 
-        customer_id = provider._extract_shopify_customer_id(data)
+        customer_id = provider._extract_shopify_customer_id(data, "orders/paid")
         assert customer_id == "12345"
 
     def test_build_shopify_event_data_basic(self, provider):
@@ -215,7 +216,7 @@ class TestShopifySourcePlugin:
         result = provider._build_shopify_event_data(
             "payment_success", "12345", data, "orders/paid"
         )
-        assert result["amount"] == 29.99
+        assert result["amount"] == Decimal("29.99")
 
     def test_build_shopify_event_data_invalid_amount_value_error(self, provider):
         """Test event data building with amount causing ValueError"""
@@ -269,16 +270,15 @@ class TestShopifySourcePlugin:
         assert result["customer_data"]["total_spent"] == "150.00"
 
     def test_parse_webhook_unsupported_topic(self, provider):
-        """Test parsing webhook with unsupported topic"""
+        """Test that unsupported topics are acknowledged, not rejected"""
         mock_request = Mock()
         mock_request.content_type = "application/json"
         mock_request.headers = {"X-Shopify-Topic": "unsupported/topic"}
         mock_request.data = json.dumps({"id": 123}).encode()
 
-        with pytest.raises(
-            InvalidDataError, match="Unsupported webhook topic: unsupported/topic"
-        ):
-            provider.parse_webhook(mock_request)
+        # Unknown topics are logged and ignored (HTTP 200) so Shopify
+        # does not disable the webhook subscription
+        assert provider.parse_webhook(mock_request) is None
 
     def test_parse_webhook_test_webhook_with_x_shopify_test_true(self, provider):
         """Test parsing test webhook with X-Shopify-Test header set to true"""
@@ -370,15 +370,14 @@ class TestShopifySourcePlugin:
         assert result is False
 
     def test_validate_webhook_invalid_body_type(self, provider):
-        """Test webhook validation with invalid body type"""
+        """Test webhook validation returns False for non-bytes body"""
         mock_request = Mock()
         mock_request.headers = {"X-Shopify-Hmac-SHA256": "test_hmac"}
         mock_request.body = "not bytes"  # Should be bytes
 
-        with pytest.raises(
-            TypeError, match="Expected bytes or bytearray for request body"
-        ):
-            provider.validate_webhook(mock_request)
+        # Must not raise a bare TypeError (which would become a 500);
+        # unexpected body types simply fail validation
+        assert provider.validate_webhook(mock_request) is False
 
     @patch("hmac.compare_digest")
     def test_validate_webhook_success(self, mock_compare_digest, provider):
@@ -687,7 +686,7 @@ class TestFulfillmentWebhookParsing:
 
         assert result is not None
         assert result["type"] == "order_created"
-        assert result["amount"] == 149.99
+        assert result["amount"] == Decimal("149.99")
 
 
 class TestDomainNormalization:

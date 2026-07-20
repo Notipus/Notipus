@@ -441,6 +441,8 @@ class TestShopifyConnectCallbackView:
         assert (
             integration.integration_settings["shop_domain"] == "teststore.myshopify.com"
         )
+        # Webhook secret must be stored so HMAC validation can succeed
+        assert integration.webhook_secret == "test_secret"
 
     @override_settings(
         SHOPIFY_CLIENT_ID="test_client_id",

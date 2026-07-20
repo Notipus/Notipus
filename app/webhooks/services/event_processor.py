@@ -42,6 +42,7 @@ class EventProcessor:
         "invoice_paid",
         "payment_action_required",
         "checkout_completed",
+        "checkout_started",
         # Subscription events
         "subscription_created",
         "subscription_updated",
@@ -70,6 +71,7 @@ class EventProcessor:
         "webhook_received",
         # Logistics events
         "order_created",
+        "order_cancelled",
         "order_fulfilled",
         "fulfillment_created",
         "fulfillment_updated",
@@ -222,6 +224,7 @@ class EventProcessor:
             "trial_ending",
             "payment_action_required",
             "order_created",
+            "order_cancelled",
             "order_fulfilled",
             "fulfillment_created",
             "fulfillment_updated",
