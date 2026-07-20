@@ -9,12 +9,12 @@
     "dev": "bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
   },
   "devDependencies": {
-    "@fortawesome/fontawesome-free": "^7.1.0",
-    "@tabler/icons-webfont": "^3.36.1",
-    "@tailwindcss/cli": "^4.1.18",
-    "autoprefixer": "^10.4.23",
-    "postcss": "^8.5.6",
-    "tailwindcss": "^4.1.18"
+    "@fortawesome/fontawesome-free": "^7.3.1",
+    "@tabler/icons-webfont": "^3.45.0",
+    "@tailwindcss/cli": "^4.3.3",
+    "autoprefixer": "^10.5.4",
+    "postcss": "^8.5.20",
+    "tailwindcss": "^4.3.3"
   },
   "dependencies": {
     "@shopify/app": "^3.58.2",
