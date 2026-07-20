@@ -987,7 +987,13 @@ class TestChargifyAmountParsing:
         self, provider: ChargifySourcePlugin
     ) -> None:
         """Test that cents are converted to an exact Decimal dollar amount."""
-        assert provider._parse_amount_cents("2999") == Decimal("29.99")
+        assert provider._parse_amount_cents("2999", "USD") == Decimal("29.99")
+
+    def test_zero_decimal_currency_amount_not_divided(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test that zero-decimal currency amounts stay in whole units."""
+        assert provider._parse_amount_cents("1000", "JPY") == Decimal("1000")
 
     @pytest.mark.parametrize("amount", [None, ""])
     def test_missing_amount_rejected(
@@ -1000,12 +1006,12 @@ class TestChargifyAmountParsing:
             amount: Missing amount value.
         """
         with pytest.raises(InvalidDataError, match="Missing amount"):
-            provider._parse_amount_cents(amount)
+            provider._parse_amount_cents(amount, "USD")
 
     def test_invalid_amount_rejected(self, provider: ChargifySourcePlugin) -> None:
         """Test that non-numeric amounts raise InvalidDataError."""
         with pytest.raises(InvalidDataError, match="Invalid amount format"):
-            provider._parse_amount_cents("12.3.4")
+            provider._parse_amount_cents("12.3.4", "USD")
 
 
 @pytest.mark.django_db

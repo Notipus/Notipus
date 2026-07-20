@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from unittest.mock import Mock, patch
 
 from core.models import Integration, Workspace
@@ -204,7 +205,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("unknown_event", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_handle_stripe_billing_missing_amount_paid(self):
         """Test handling payment events with missing amount_paid."""
@@ -212,7 +213,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("payment_success", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_handle_stripe_billing_missing_plan_amount(self):
         """Test handling subscription created with missing plan amount."""
@@ -220,7 +221,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("subscription_created", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_extract_stripe_event_info_unsupported_event(self):
         """Test extracting info for unsupported event type returns None.

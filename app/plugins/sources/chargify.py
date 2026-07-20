@@ -20,6 +20,7 @@ from plugins.sources.base import (
     InvalidDataError,
     mask_sensitive_headers,
 )
+from webhooks.utils.currency import from_minor_units
 
 logger = logging.getLogger(__name__)
 
@@ -510,17 +511,48 @@ class ChargifySourcePlugin(BaseSourcePlugin):
 
         return None
 
-    def _parse_amount_cents(self, amount_cents: Any) -> Decimal:
-        """Convert an amount in cents to a Decimal dollar amount.
+    def _extract_currency(self, data: dict[str, Any]) -> str:
+        """Extract the currency code from a Chargify payload.
 
-        Shared by all payment handlers so amount validation cannot drift
-        between them.
+        Reads the subscription currency first, then the transaction
+        currency. Falls back to USD with a warning when the payload
+        carries neither, so a missing field cannot crash the parser.
 
         Args:
-            amount_cents: Amount in cents (typically a string form field).
+            data: Form data dictionary.
 
         Returns:
-            Amount in dollars as a Decimal.
+            Upper-cased ISO 4217 currency code.
+        """
+        currency = data.get("payload[subscription][currency]") or data.get(
+            "payload[transaction][currency]"
+        )
+        if currency:
+            return str(currency).upper()
+
+        logger.warning(
+            "Chargify payload missing currency; falling back to USD",
+            extra={
+                "subscription_id": data.get("payload[subscription][id]", ""),
+                "transaction_id": data.get("payload[transaction][id]", ""),
+            },
+        )
+        return "USD"
+
+    def _parse_amount_cents(self, amount_cents: Any, currency: str) -> Decimal:
+        """Convert an amount in minor units to a major-unit Decimal.
+
+        Shared by all payment handlers so amount validation cannot drift
+        between them. The currency determines the conversion factor
+        (100 for USD/EUR, 1 for zero-decimal currencies like JPY).
+
+        Args:
+            amount_cents: Amount in minor units (typically a string form
+                field).
+            currency: ISO 4217 currency code for the amount.
+
+        Returns:
+            Amount in major units as a Decimal.
 
         Raises:
             InvalidDataError: If the amount is missing or not a number.
@@ -529,7 +561,8 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             raise InvalidDataError("Missing amount")
 
         try:
-            return Decimal(str(amount_cents)) / Decimal(100)
+            amount: Decimal = from_minor_units(str(amount_cents), currency)
+            return amount
         except (InvalidOperation, ValueError, TypeError) as e:
             raise InvalidDataError(f"Invalid amount format: {amount_cents}") from e
 
@@ -545,8 +578,9 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         Raises:
             InvalidDataError: If required fields are missing.
         """
+        currency = self._extract_currency(data)
         amount = self._parse_amount_cents(
-            data.get("payload[transaction][amount_in_cents]")
+            data.get("payload[transaction][amount_in_cents]"), currency
         )
 
         customer_data = self.get_customer_data(
@@ -573,7 +607,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "type": "payment_success",
             "customer_id": data["payload[subscription][customer][id]"],
             "amount": float(amount),
-            "currency": "USD",  # Chargify amounts are in USD
+            "currency": currency,
             "status": "success",
             "provider": "chargify",
             "metadata": {
@@ -602,8 +636,9 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         Raises:
             InvalidDataError: If required fields are missing.
         """
+        currency = self._extract_currency(data)
         amount = self._parse_amount_cents(
-            data.get("payload[transaction][amount_in_cents]")
+            data.get("payload[transaction][amount_in_cents]"), currency
         )
 
         customer_data = self.get_customer_data(
@@ -625,7 +660,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "type": "payment_failure",
             "customer_id": data["payload[subscription][customer][id]"],
             "amount": float(amount),
-            "currency": "USD",  # Chargify amounts are in USD
+            "currency": currency,
             "status": "failed",
             "provider": "chargify",
             "metadata": {

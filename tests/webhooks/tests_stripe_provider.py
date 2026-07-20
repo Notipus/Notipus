@@ -17,6 +17,7 @@ parsing event data, and triggering appropriate billing service handlers
 for subscription management and payment processing.
 """
 
+from decimal import Decimal
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -148,7 +149,7 @@ class StripeProviderTest(TestCase):
         }
 
         result = self.provider._build_stripe_event_data(
-            "payment_success", "cus_123", data, 20.00
+            "payment_success", "cus_123", data, Decimal("20.00")
         )
 
         expected = {
@@ -171,7 +172,7 @@ class StripeProviderTest(TestCase):
         data = {"id": "in_123", "status": "succeeded", "created": 1234567890}
 
         result = self.provider._build_stripe_event_data(
-            "payment_success", "cus_123", data, 20.00
+            "payment_success", "cus_123", data, Decimal("20.00")
         )
 
         self.assertEqual(result["currency"], "USD")
@@ -183,7 +184,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("unknown_event", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_handle_stripe_billing_missing_amount(self) -> None:
         """Test handling payment events with missing amount returns 0."""
@@ -191,7 +192,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("payment_success", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_handle_stripe_billing_missing_plan_amount(self) -> None:
         """Test handling subscription created with missing plan amount."""
@@ -199,7 +200,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("subscription_created", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_handle_stripe_billing_converts_cents_to_dollars(self) -> None:
         """Test that billing amounts are converted from cents to dollars."""
@@ -207,7 +208,8 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("payment_success", data)
 
-        self.assertEqual(amount, 25.00)
+        self.assertIsInstance(amount, Decimal)
+        self.assertEqual(amount, Decimal("25.00"))
 
     def test_handle_stripe_billing_payment_success_uses_amount_paid(self) -> None:
         """Test that payment_success uses amount_paid, not amount_due."""
@@ -218,7 +220,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("payment_success", data)
 
-        self.assertEqual(amount, 50.00)
+        self.assertEqual(amount, Decimal("50.00"))
 
     def test_extract_stripe_event_info_subscription_created(self) -> None:
         """Test extracting event info for subscription created."""
@@ -629,7 +631,8 @@ class StripeProviderTest(TestCase):
         amount = self.provider._handle_stripe_billing("subscription_updated", data)
 
         self.assertEqual(data.get("_change_direction"), "upgrade")
-        self.assertEqual(amount, 100.00)
+        self.assertIsInstance(amount, Decimal)
+        self.assertEqual(amount, Decimal("100.00"))
 
     def test_extract_subscription_amount_sums_items_with_quantity(self) -> None:
         """Test that item amounts are summed with quantities."""

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from webhooks.utils.currency import format_money
+
 
 class EventCategory(Enum):
     """High-level categories of events.
@@ -259,17 +261,24 @@ class PaymentInfo:
     def format_amount_with_arr(self) -> str:
         """Format amount with ARR if applicable.
 
+        Both the base amount and the ARR are rendered in the payment's
+        own currency (e.g. "€299.00/mo = €3,588 ARR").
+
         Returns:
             Formatted string like "$299.00/mo = $3,588 ARR".
         """
         arr = self.get_arr()
-        if self.interval == "monthly" and arr:
-            return f"{self.currency} {self.amount:,.2f}/mo = ${arr:,.0f} ARR"
-        elif self.interval == "annual" and arr:
-            return f"{self.currency} {self.amount:,.2f}/yr ARR"
-        elif self.interval == "quarterly" and arr:
-            return f"{self.currency} {self.amount:,.2f}/qtr = ${arr:,.0f} ARR"
-        return f"{self.currency} {self.amount:,.2f}"
+        amount_str: str = format_money(self.amount, self.currency)
+        # get_arr() returns None only when the interval is not recurring;
+        # an ARR of 0 is still applicable (e.g. a $0 monthly plan), so
+        # check for None rather than truthiness.
+        if self.interval == "monthly" and arr is not None:
+            return f"{amount_str}/mo = {format_money(arr, self.currency, 0)} ARR"
+        elif self.interval == "annual" and arr is not None:
+            return f"{amount_str}/yr ARR"
+        elif self.interval == "quarterly" and arr is not None:
+            return f"{amount_str}/qtr = {format_money(arr, self.currency, 0)} ARR"
+        return amount_str
 
 
 @dataclass
