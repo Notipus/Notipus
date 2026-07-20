@@ -13,7 +13,11 @@ from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpRequest
 from plugins.base import PluginCapability, PluginMetadata, PluginType
-from plugins.sources.base import BaseSourcePlugin, InvalidDataError
+from plugins.sources.base import (
+    BaseSourcePlugin,
+    InvalidDataError,
+    mask_sensitive_headers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +103,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             extra={
                 "content_type": request.content_type,
                 "form_data": (request.POST.dict() if request.POST else None),
-                "headers": dict(request.headers),
+                "headers": mask_sensitive_headers(request.headers),
             },
         )
 
@@ -811,7 +815,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             extra={
                 "content_type": request.content_type,
                 "form_data": (request.POST.dict() if request.POST else None),
-                "headers": dict(request.headers),
+                "headers": mask_sensitive_headers(request.headers),
             },
         )
 

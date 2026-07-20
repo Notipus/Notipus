@@ -19,6 +19,7 @@ from plugins.sources.base import (
     BaseSourcePlugin,
     CustomerNotFoundError,
     InvalidDataError,
+    mask_sensitive_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,23 +196,15 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         Returns:
             True if webhook is valid, False otherwise.
         """
-        from django.conf import settings as django_settings
-
         try:
-            # For development/testing ONLY: allow bypassing validation when
-            # webhook secret is empty. This MUST NOT work in production.
+            # Never bypass validation: an empty webhook secret means we
+            # cannot verify the signature, so reject (even with DEBUG=True).
             if not self.webhook_secret:
-                if not django_settings.DEBUG:
-                    logger.error(
-                        "SECURITY: Webhook secret not configured in production! "
-                        "Rejecting webhook to prevent unauthorized access."
-                    )
-                    return False
-                logger.warning(
-                    "Webhook secret not configured - bypassing validation for "
-                    "development. This would be rejected in production."
+                logger.error(
+                    "SECURITY: Webhook secret not configured! "
+                    "Rejecting webhook to prevent unauthorized access."
                 )
-                return True
+                return False
 
             # Validate timestamp first
             if not self._validate_webhook_timestamp(request):
@@ -234,7 +227,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     "has_signature": bool(signature),
                     "signature_type": "sha256" if use_sha256 else "md5",
                     "content_type": request.content_type,
-                    "headers": dict(request.headers),
+                    "headers": mask_sensitive_headers(request.headers),
                 },
             )
 
@@ -268,7 +261,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     hashlib.md5,
                 ).hexdigest()
 
-            # Log raw data for debugging
+            # Log validation context for debugging (never signature values)
             logger.debug(
                 "Webhook signature details",
                 extra={
@@ -276,8 +269,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     "body_length": len(body),
                     "secret_length": len(self.webhook_secret),
                     "signature_type": "sha256" if use_sha256 else "md5",
-                    "expected_signature": expected_signature,
-                    "received_signature": signature,
                 },
             )
 
@@ -290,8 +281,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     extra={
                         "webhook_id": webhook_id,
                         "signature_type": "sha256" if use_sha256 else "md5",
-                        "expected_signature": expected_signature,
-                        "received_signature": signature,
                     },
                 )
 
@@ -660,7 +649,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             extra={
                 "content_type": request.content_type,
                 "form_data": (request.POST.dict() if request.POST else None),
-                "headers": dict(request.headers),
+                "headers": mask_sensitive_headers(request.headers),
             },
         )
 

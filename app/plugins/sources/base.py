@@ -6,6 +6,7 @@ external services, validating signatures and parsing event data.
 
 import logging
 from abc import abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -14,6 +15,42 @@ from django.http import HttpRequest
 from plugins.base import BasePlugin, PluginMetadata
 
 logger = logging.getLogger(__name__)
+
+# Webhook signature headers whose values must never be logged.
+# Mirrors the masking policy of WebhookStorageService._extract_safe_headers.
+_SENSITIVE_HEADERS: frozenset[str] = frozenset(
+    {
+        "stripe-signature",
+        "x-chargify-webhook-signature",
+        "x-chargify-webhook-signature-hmac-sha-256",
+    }
+)
+_SENSITIVE_HEADER_PREFIXES: tuple[str, ...] = ("x-shopify-hmac",)
+
+
+def mask_sensitive_headers(headers: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy of request headers with signature values masked.
+
+    Signature headers (Stripe-Signature, X-Chargify-Webhook-Signature*,
+    X-Shopify-Hmac-*) are replaced with "[PRESENT]" so their values never
+    leak into log sinks.
+
+    Args:
+        headers: Request headers mapping (e.g. ``request.headers``).
+
+    Returns:
+        Dictionary of headers safe for logging.
+    """
+    masked: dict[str, Any] = {}
+    for name, value in headers.items():
+        lowered = name.lower()
+        if lowered in _SENSITIVE_HEADERS or lowered.startswith(
+            _SENSITIVE_HEADER_PREFIXES
+        ):
+            masked[name] = "[PRESENT]"
+        else:
+            masked[name] = value
+    return masked
 
 
 # Exceptions for source plugins
