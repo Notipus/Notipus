@@ -344,6 +344,25 @@ class TestHeadlineCurrencyFormatting:
 
         assert "/mo" in result.headline
 
+    def test_quarterly_upgrade_headline_uses_qtr_suffix(
+        self, builder: NotificationBuilder, customer_data: dict[str, Any]
+    ) -> None:
+        """Test that quarterly billing renders the unified /qtr suffix."""
+        event_data = {
+            "type": "subscription_updated",
+            "provider": "stripe",
+            "amount": 300.0,
+            "currency": "USD",
+            "metadata": {
+                "change_direction": "upgrade",
+                "billing_period": "quarterly",
+            },
+        }
+
+        result = builder.build(event_data, customer_data)
+
+        assert "/qtr" in result.headline
+
 
 class TestArrCurrencyDisplay:
     """ARR display must use the same currency on both sides."""
