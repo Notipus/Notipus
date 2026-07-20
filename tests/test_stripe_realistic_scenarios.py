@@ -143,7 +143,7 @@ class TestTrialSignupIntegration:
 
         # Handle billing - should detect trial and return 0 amount
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 0.0  # No payment for trials
+        assert amount == Decimal("0.00")  # No payment for trials
         assert data.get("_is_trial") is True  # Trial flag should be set
 
         # Transform event type for trials (as done in parse_webhook)
@@ -328,8 +328,11 @@ class TestTrialSignupIntegration:
         # Payment info should be None for trials
         assert notification.payment is None, "Trials should not have payment info"
 
-        # Amount in event data should be 0
+        # Amount in the event dict is a float at the JSON boundary
+        # (the Redis pending-event queue serializes it), so assert the
+        # type alongside the value.
         assert event_data["amount"] == 0.0
+        assert isinstance(event_data["amount"], float)
 
     def test_zero_amount_invoice_filtered_before_notification(
         self,
