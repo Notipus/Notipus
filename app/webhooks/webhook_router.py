@@ -470,10 +470,18 @@ def _process_webhook(
             integration.webhook_verified_at = timezone.now()
             integration.save(update_fields=["webhook_verified_at"])
 
-        # Handle test webhooks
+        # A None parse means no processing is needed: either a provider
+        # test ping (Stripe/Shopify) or an event the plugin deliberately
+        # acknowledges without processing (e.g. Chargify's logged-and-
+        # skipped event types). Both must be acknowledged with a 200.
         if not event_data:
+            logger.info(
+                f"{provider_name} webhook acknowledged without processing "
+                "(test ping or intentionally skipped event type)"
+            )
             response = JsonResponse(
-                create_success_response("Test webhook received"), status=200
+                create_success_response("Webhook received (no notification required)"),
+                status=200,
             )
             _add_rate_limit_headers(response, rate_limit_info)
             return response

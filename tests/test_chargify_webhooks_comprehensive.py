@@ -6,12 +6,33 @@ Chargify provider.
 """
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import RequestFactory
 from plugins.sources.base import InvalidDataError
 from plugins.sources.chargify import ChargifySourcePlugin
+
+
+def _mock_chargify_request(
+    form_data: dict[str, str], webhook_id: str = "webhook_123"
+) -> MagicMock:
+    """Build a mock Chargify webhook request.
+
+    Args:
+        form_data: Form-encoded webhook payload.
+        webhook_id: Value for the X-Chargify-Webhook-Id header.
+
+    Returns:
+        MagicMock mimicking a Django HttpRequest.
+    """
+    mock_request = MagicMock()
+    mock_request.content_type = "application/x-www-form-urlencoded"
+    mock_request.headers = {"X-Chargify-Webhook-Id": webhook_id}
+    mock_request.POST.dict.return_value = form_data
+    return mock_request
 
 
 class TestChargifyWebhookValidation:
@@ -231,10 +252,16 @@ class TestChargifyWebhookParsing:
 
         result = provider.parse_webhook(mock_request)
 
-        assert result["type"] == "subscription_state_change"
+        # A change into a cancellation-like state is normalized to the
+        # subscription_canceled type the event processor understands,
+        # with the raw Chargify state preserved in status/metadata.
+        assert result["type"] == "subscription_canceled"
         assert result["status"] == "canceled"
+        assert result["provider"] == "chargify"
+        assert result["metadata"]["new_state"] == "canceled"
         assert result["metadata"]["previous_state"] == "active"
         assert result["metadata"]["cancel_at_period_end"] is True
+        assert result["metadata"]["chargify_event"] == "subscription_state_change"
 
     def test_invalid_content_type_rejected(self, provider, request_factory):
         """Test rejection of invalid content type"""
@@ -272,8 +299,14 @@ class TestChargifyWebhookParsing:
         with pytest.raises(InvalidDataError, match="Missing customer ID"):
             provider.parse_webhook(mock_request)
 
-    def test_unsupported_event_type_rejected(self, provider, request_factory):
-        """Test rejection of unsupported event types"""
+    def test_unknown_event_type_logged_and_skipped(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test that unknown event types are logged and skipped, not rejected.
+
+        A 400 for a legitimate Chargify event would make Chargify retry
+        the webhook forever, so unknown events must be acknowledged.
+        """
         form_data = {
             "event": "unsupported_event",
             "payload[subscription][customer][id]": "cust_456",
@@ -286,8 +319,7 @@ class TestChargifyWebhookParsing:
         }
         mock_request.POST.dict.return_value = form_data
 
-        with pytest.raises(InvalidDataError, match="Unsupported event type"):
-            provider.parse_webhook(mock_request)
+        assert provider.parse_webhook(mock_request) is None
 
 
 class TestChargifyWebhookDeduplication:
@@ -394,6 +426,47 @@ class TestChargifyWebhookTimestampValidation:
 
         assert provider._validate_webhook_timestamp(mock_request) is False
 
+    def test_slightly_future_timestamp_rejected(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test that a timestamp 4 minutes in the future is rejected.
+
+        The tolerance window is one-sided: 4 minutes would be accepted
+        for a webhook from the past, but future-dated webhooks only get
+        a small clock-skew allowance.
+        """
+        future_time = datetime.now(timezone.utc) + timedelta(minutes=4)
+        timestamp = future_time.isoformat().replace("+00:00", "Z")
+
+        mock_request = MagicMock()
+        mock_request.headers = {"X-Chargify-Webhook-Timestamp": timestamp}
+
+        assert provider._validate_webhook_timestamp(mock_request) is False
+
+    def test_clock_skew_future_timestamp_accepted(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test that a timestamp within the clock-skew allowance is accepted."""
+        future_time = datetime.now(timezone.utc) + timedelta(seconds=30)
+        timestamp = future_time.isoformat().replace("+00:00", "Z")
+
+        mock_request = MagicMock()
+        mock_request.headers = {"X-Chargify-Webhook-Timestamp": timestamp}
+
+        assert provider._validate_webhook_timestamp(mock_request) is True
+
+    def test_past_timestamp_within_tolerance_accepted(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test that a 4-minute-old timestamp is still accepted."""
+        past_time = datetime.now(timezone.utc) - timedelta(minutes=4)
+        timestamp = past_time.isoformat().replace("+00:00", "Z")
+
+        mock_request = MagicMock()
+        mock_request.headers = {"X-Chargify-Webhook-Timestamp": timestamp}
+
+        assert provider._validate_webhook_timestamp(mock_request) is True
+
     def test_missing_timestamp_accepted(self, provider, request_factory):
         """Test that missing timestamp is accepted (optional field)"""
         mock_request = MagicMock()
@@ -471,6 +544,36 @@ class TestChargifyShopifyOrderMatching:
         for memo in test_cases:
             result = provider._parse_shopify_order_ref(memo)
             assert result is None, f"Should return None for memo: {memo}"
+
+    @pytest.mark.parametrize(
+        "memo",
+        [
+            "Payment for reorder created 2024-01-15",
+            "Preorder deposit received 2024-01-15",
+            "Backorder notice sent on 2023-12-01",
+        ],
+    )
+    def test_order_substring_false_positives_rejected(
+        self, provider: ChargifySourcePlugin, memo: str
+    ) -> None:
+        """Test that 'reorder'/'preorder' and dates do not match as order refs.
+
+        Args:
+            provider: Chargify plugin under test.
+            memo: Memo text containing an 'order' substring but no order ref.
+        """
+        assert provider._parse_shopify_order_ref(memo) is None
+
+    def test_short_order_number_rejected(self, provider: ChargifySourcePlugin) -> None:
+        """Test that generic order refs with fewer than 4 digits are rejected."""
+        assert provider._parse_shopify_order_ref("Payment for order 123") is None
+
+    def test_order_with_separator_extracted(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test that order refs with '#' or ':' separators still match."""
+        assert provider._parse_shopify_order_ref("Charge for order #12345") == "12345"
+        assert provider._parse_shopify_order_ref("Charge for order: 6789") == "6789"
 
 
 class TestChargifyErrorHandling:
@@ -607,7 +710,7 @@ class TestChargifySourcePluginIntegration:
             ("payment_failure", "payment_failure"),
             ("renewal_success", "payment_success"),
             ("renewal_failure", "payment_failure"),
-            ("subscription_state_change", "subscription_state_change"),
+            ("subscription_state_change", "subscription_updated"),
         ]
 
         for input_event, expected_output in test_cases:
@@ -619,3 +722,334 @@ class TestChargifySourcePluginIntegration:
         # This would test the entire flow from validation to data extraction
         # Implementation depends on your specific webhook router setup
         pass
+
+
+class TestChargifyEventRouting:
+    """Test that every advertised Chargify event type is routable.
+
+    Previously ~15 advertised events fell through to an InvalidDataError,
+    which the router turned into a 400 and Chargify retried forever.
+    Now every event either parses into an internal event or is logged
+    and skipped (None, acknowledged with a 200 by the router).
+    """
+
+    @pytest.fixture
+    def provider(self) -> ChargifySourcePlugin:
+        """Create a Chargify provider instance for testing."""
+        return ChargifySourcePlugin(webhook_secret="test_secret")
+
+    @pytest.fixture
+    def subscription_form_data(self) -> dict[str, str]:
+        """Subscription-scoped form data shared by lifecycle events."""
+        return {
+            "payload[subscription][id]": "sub_12345",
+            "payload[subscription][state]": "active",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[subscription][customer][email]": "test@example.com",
+            "payload[subscription][customer][organization]": "Acme Corp",
+            "payload[subscription][product][name]": "Premium Plan",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+    @pytest.mark.parametrize(
+        ("chargify_event", "internal_type"),
+        [
+            ("subscription_created", "subscription_created"),
+            ("subscription_updated", "subscription_updated"),
+            ("subscription_cancelled", "subscription_canceled"),
+            ("subscription_expired", "subscription_canceled"),
+        ],
+    )
+    def test_subscription_lifecycle_events_processed(
+        self,
+        provider: ChargifySourcePlugin,
+        subscription_form_data: dict[str, str],
+        chargify_event: str,
+        internal_type: str,
+    ) -> None:
+        """Test that subscription lifecycle events parse into internal events.
+
+        Args:
+            provider: Chargify plugin under test.
+            subscription_form_data: Base subscription payload.
+            chargify_event: Chargify event name posted to the webhook.
+            internal_type: Expected internal event type.
+        """
+        form_data = {"event": chargify_event, **subscription_form_data}
+        result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+        assert result is not None
+        assert result["type"] == internal_type
+        assert result["provider"] == "chargify"
+        assert result["customer_id"] == "cust_456"
+        assert result["metadata"]["subscription_id"] == "sub_12345"
+        assert result["metadata"]["plan_name"] == "Premium Plan"
+        assert result["metadata"]["chargify_event"] == chargify_event
+        assert result["event_id"] == "webhook_123"
+
+    @pytest.mark.parametrize(
+        "chargify_event",
+        sorted(ChargifySourcePlugin.ACKNOWLEDGED_EVENT_TYPES),
+    )
+    def test_acknowledged_events_logged_and_skipped(
+        self, provider: ChargifySourcePlugin, chargify_event: str
+    ) -> None:
+        """Test that known-but-unprocessed events return None (200), not 400.
+
+        Args:
+            provider: Chargify plugin under test.
+            chargify_event: Chargify event name posted to the webhook.
+        """
+        form_data = {
+            "event": chargify_event,
+            "payload[subscription][customer][id]": "cust_456",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        assert provider.parse_webhook(_mock_chargify_request(form_data)) is None
+
+    def test_every_advertised_event_is_routable(
+        self,
+        provider: ChargifySourcePlugin,
+        subscription_form_data: dict[str, str],
+    ) -> None:
+        """Test that no EVENT_TYPE_MAPPING key raises an unsupported error.
+
+        Every emitted event type must also be one the event processor
+        accepts: an unknown type raises ValueError downstream, which the
+        router turns into a 5xx and Chargify retries forever.
+
+        Args:
+            provider: Chargify plugin under test.
+            subscription_form_data: Base subscription payload.
+        """
+        from webhooks.services.event_processor import EventProcessor
+
+        # Exercise a cancellation-like state as well as the default path
+        for state in ("active", "canceled", "expired"):
+            for chargify_event in provider.EVENT_TYPE_MAPPING:
+                form_data = {
+                    "event": chargify_event,
+                    **subscription_form_data,
+                    "payload[subscription][state]": state,
+                    "payload[transaction][amount_in_cents]": "2999",
+                }
+                result = provider.parse_webhook(_mock_chargify_request(form_data))
+                assert result is not None, f"Event not routed: {chargify_event}"
+                assert result["provider"] == "chargify", (
+                    f"Missing provider field for: {chargify_event}"
+                )
+                assert result["type"] in EventProcessor.VALID_EVENT_TYPES, (
+                    f"{chargify_event} (state={state}) emitted "
+                    f"unsupported type: {result['type']}"
+                )
+
+    def test_mapping_values_are_valid_event_types(self) -> None:
+        """Test that every EVENT_TYPE_MAPPING value is a supported type."""
+        from webhooks.services.event_processor import EventProcessor
+
+        for (
+            chargify_event,
+            internal_type,
+        ) in ChargifySourcePlugin.EVENT_TYPE_MAPPING.items():
+            assert internal_type in EventProcessor.VALID_EVENT_TYPES, (
+                f"{chargify_event} maps to unsupported type: {internal_type}"
+            )
+
+    @pytest.mark.parametrize(
+        ("state", "expected_type"),
+        [
+            ("active", "subscription_updated"),
+            ("past_due", "subscription_updated"),
+            ("canceled", "subscription_canceled"),
+            ("cancelled", "subscription_canceled"),
+            ("expired", "subscription_canceled"),
+        ],
+    )
+    def test_state_change_type_normalization(
+        self,
+        provider: ChargifySourcePlugin,
+        subscription_form_data: dict[str, str],
+        state: str,
+        expected_type: str,
+    ) -> None:
+        """Test that state changes normalize to supported internal types.
+
+        Args:
+            provider: Chargify plugin under test.
+            subscription_form_data: Base subscription payload.
+            state: New Chargify subscription state.
+            expected_type: Expected normalized internal event type.
+        """
+        form_data = {
+            "event": "subscription_state_change",
+            **subscription_form_data,
+            "payload[subscription][state]": state,
+        }
+
+        result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+        assert result is not None
+        assert result["type"] == expected_type
+        # The raw Chargify state is preserved
+        assert result["status"] == state
+        assert result["metadata"]["new_state"] == state
+
+
+class TestChargifySparsePayloads:
+    """Test parsers against payloads with legitimately missing fields."""
+
+    @pytest.fixture
+    def provider(self) -> ChargifySourcePlugin:
+        """Create a Chargify provider instance for testing."""
+        return ChargifySourcePlugin(webhook_secret="test_secret")
+
+    def test_payment_failure_for_one_off_charge(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test payment_failure without subscription id or product name.
+
+        A one-off charge has no subscription, so those fields must
+        default instead of raising KeyError (which became a 500 and an
+        infinite Chargify retry loop).
+        """
+        form_data = {
+            "event": "payment_failure",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[subscription][customer][email]": "test@example.com",
+            "payload[transaction][id]": "txn_789",
+            "payload[transaction][amount_in_cents]": "2999",
+            "payload[transaction][failure_message]": "Card declined",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+        assert result is not None
+        assert result["type"] == "payment_failure"
+        assert result["amount"] == 29.99
+        assert result["metadata"]["subscription_id"] == ""
+        assert result["metadata"]["plan_name"] == ""
+        assert result["metadata"]["failure_reason"] == "Card declined"
+
+    def test_payment_failure_invalid_amount_is_clean_error(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test that a malformed amount raises InvalidDataError, not ValueError."""
+        form_data = {
+            "event": "payment_failure",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[transaction][amount_in_cents]": "not_a_number",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        with pytest.raises(InvalidDataError, match="Invalid amount format"):
+            provider.parse_webhook(_mock_chargify_request(form_data))
+
+    def test_billing_date_change_without_product_name(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test subscription_billing_date_change without a product name.
+
+        Billing date changes legitimately omit the product name; the
+        parser must default it rather than raising KeyError.
+        """
+        form_data = {
+            "event": "subscription_billing_date_change",
+            "payload[subscription][id]": "sub_12345",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[subscription][customer][email]": "test@example.com",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+        assert result is not None
+        assert result["type"] == "subscription_updated"
+        assert result["status"] == "unknown"
+        assert result["provider"] == "chargify"
+        assert result["metadata"]["plan_name"] == ""
+        assert result["metadata"]["subscription_id"] == "sub_12345"
+        assert result["metadata"]["chargify_event"] == (
+            "subscription_billing_date_change"
+        )
+
+
+class TestChargifyAmountParsing:
+    """Test the shared _parse_amount_cents helper."""
+
+    @pytest.fixture
+    def provider(self) -> ChargifySourcePlugin:
+        """Create a Chargify provider instance for testing."""
+        return ChargifySourcePlugin(webhook_secret="test_secret")
+
+    def test_valid_amount_returns_decimal_dollars(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test that cents are converted to an exact Decimal dollar amount."""
+        assert provider._parse_amount_cents("2999") == Decimal("29.99")
+
+    @pytest.mark.parametrize("amount", [None, ""])
+    def test_missing_amount_rejected(
+        self, provider: ChargifySourcePlugin, amount: Any
+    ) -> None:
+        """Test that missing amounts raise InvalidDataError.
+
+        Args:
+            provider: Chargify plugin under test.
+            amount: Missing amount value.
+        """
+        with pytest.raises(InvalidDataError, match="Missing amount"):
+            provider._parse_amount_cents(amount)
+
+    def test_invalid_amount_rejected(self, provider: ChargifySourcePlugin) -> None:
+        """Test that non-numeric amounts raise InvalidDataError."""
+        with pytest.raises(InvalidDataError, match="Invalid amount format"):
+            provider._parse_amount_cents("12.3.4")
+
+
+@pytest.mark.django_db
+class TestChargifySkippedEventRouterResponse:
+    """Router-level test for acknowledged-but-skipped Chargify events."""
+
+    def test_acknowledged_event_returns_200_with_neutral_message(
+        self, client: Any
+    ) -> None:
+        """Test that a skipped event is acknowledged with a 200 and an
+        accurate message (not the misleading test-ping wording).
+        """
+        from urllib.parse import urlencode
+
+        from core.models import Integration, Workspace
+
+        workspace = Workspace.objects.create(
+            name="Test Workspace", shop_domain="test.myshopify.com"
+        )
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="chargify",
+            webhook_secret="test-chargify-secret",
+            is_active=True,
+        )
+
+        with patch(
+            "plugins.sources.chargify.ChargifySourcePlugin.validate_webhook",
+            return_value=True,
+        ):
+            response = client.post(
+                f"/webhook/customer/{workspace.uuid}/chargify/",
+                data=urlencode(
+                    {
+                        "event": "invoice_paid",
+                        "payload[subscription][customer][id]": "cust_1",
+                        "created_at": "2024-01-15T10:30:00Z",
+                    }
+                ),
+                content_type="application/x-www-form-urlencoded",
+                HTTP_X_CHARGIFY_WEBHOOK_ID="webhook_skip_1",
+            )
+
+        assert response.status_code == 200
+        assert response.json()["message"] == (
+            "Webhook received (no notification required)"
+        )
