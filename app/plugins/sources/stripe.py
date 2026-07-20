@@ -6,6 +6,7 @@ using the official Stripe SDK.
 """
 
 import logging
+from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 import stripe
@@ -18,6 +19,7 @@ from plugins.sources.base import (
     InvalidDataError,
     mask_sensitive_headers,
 )
+from webhooks.utils.currency import from_minor_units
 
 logger = logging.getLogger(__name__)
 
@@ -326,20 +328,35 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return "downgrade"
         return "other"
 
-    def _handle_stripe_billing(self, event_type: str, data: dict[str, Any]) -> float:
-        """Handle billing service calls and return amount in dollars.
+    def _handle_stripe_billing(self, event_type: str, data: dict[str, Any]) -> Decimal:
+        """Handle billing service calls and return amount in major units.
 
-        Stripe amounts are in cents, so we divide by 100 to get dollars.
+        Stripe sends amounts in each currency's minor unit, so the
+        payload's currency drives the conversion: 100 minor units per
+        dollar/euro, but 1 per yen (zero-decimal currencies) and 1000
+        per dinar (three-decimal currencies).
 
         Args:
             event_type: The normalized event type.
             data: Event data dictionary.
 
         Returns:
-            Amount in dollars as a float.
+            Amount in major units as a Decimal.
         """
-        amount_cents = self._get_amount_and_dispatch_billing(event_type, data)
-        return float(amount_cents) / 100.0
+        amount_minor = self._get_amount_and_dispatch_billing(event_type, data)
+        amount: Decimal = from_minor_units(amount_minor, self._event_currency(data))
+        return amount
+
+    def _event_currency(self, data: dict[str, Any]) -> str:
+        """Extract the currency code from a Stripe payload.
+
+        Args:
+            data: Raw event data (invoice, subscription, or session).
+
+        Returns:
+            Upper-cased ISO 4217 currency code, defaulting to USD.
+        """
+        return str(data.get("currency") or "USD").upper()
 
     def _get_amount_and_dispatch_billing(
         self, event_type: str, data: dict[str, Any]
@@ -543,7 +560,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         event_type: str,
         customer_id: str,
         data: dict[str, Any],
-        amount: float,
+        amount: Decimal,
         idempotency_key: str | None = None,
         event_id: str | None = None,
     ) -> dict[str, Any]:
@@ -553,7 +570,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             event_type: The normalized event type.
             customer_id: Customer identifier.
             data: Raw event data.
-            amount: Payment amount in dollars.
+            amount: Payment amount in major currency units.
             idempotency_key: Stripe request idempotency key for deduplication.
             event_id: Stripe event id (``evt_...``) from the outer event
                 envelope, used for exact deduplication. Distinct from
@@ -571,8 +588,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
             "event_id": event_id,
             "status": data.get("status"),
             "created_at": data.get("created"),
-            "currency": str(data.get("currency", "USD")).upper(),
-            "amount": amount,
+            "currency": self._event_currency(data),
+            # float() at the boundary: event dicts are JSON-serialized
+            # (Redis pending-event queue), which rejects Decimal.
+            "amount": float(amount),
             "metadata": {},
             "idempotency_key": idempotency_key,
         }
@@ -635,7 +654,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if data.get("_trial_days"):
             metadata["trial_days"] = data["_trial_days"]
         if data.get("_plan_amount_cents"):
-            metadata["plan_amount"] = data["_plan_amount_cents"] / 100
+            # float() keeps event metadata JSON-serializable (Redis queue)
+            metadata["plan_amount"] = float(
+                from_minor_units(data["_plan_amount_cents"], self._event_currency(data))
+            )
 
     def _add_subscription_metadata(
         self, metadata: dict[str, Any], event_type: str, data: dict[str, Any]
@@ -672,7 +694,14 @@ class StripeSourcePlugin(BaseSourcePlugin):
             prev_attrs = data.get("_previous_attributes", {})
             prev_plan = prev_attrs.get("plan", {})
             if prev_plan and prev_plan.get("amount") is not None:
-                metadata["previous_amount"] = prev_plan["amount"] / 100
+                # Prefer the previous plan's own currency if it changed
+                currency = str(
+                    prev_plan.get("currency") or self._event_currency(data)
+                ).upper()
+                # float() keeps event metadata JSON-serializable (Redis queue)
+                metadata["previous_amount"] = float(
+                    from_minor_units(prev_plan["amount"], currency)
+                )
 
     def _get_name_from_structured_fields(self, item: dict[str, Any]) -> str | None:
         """Try to get plan name from structured Stripe line item fields.

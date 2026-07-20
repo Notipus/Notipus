@@ -11,6 +11,7 @@ The tests verify:
 - Final Slack message content and structure using RichNotification
 """
 
+from decimal import Decimal
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -229,7 +230,7 @@ class TestTrialSignupIntegration:
 
         # Handle billing - should NOT detect trial, return actual amount
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 26.60  # Actual payment amount
+        assert amount == Decimal("26.60")  # Actual payment amount
         assert data.get("_is_trial") is None  # Not a trial
 
         # Build event data
@@ -558,7 +559,7 @@ class TestTrialConversionIntegration:
 
         # Handle billing - should detect trial conversion
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 26.60
+        assert amount == Decimal("26.60")
         assert data.get("_is_trial_conversion") is True
 
         # Build event data
@@ -589,7 +590,7 @@ class TestTrialConversionIntegration:
         assert event_type == "payment_success"
 
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 26.60
+        assert amount == Decimal("26.60")
         assert data.get("_is_trial_conversion") is None
 
         event_data = stripe_plugin._build_stripe_event_data(
@@ -705,7 +706,7 @@ class TestSubscriptionUpgradeIntegration:
 
         # Handle billing - should detect upgrade
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 49.00
+        assert amount == Decimal("49.00")
         assert data.get("_change_direction") == "upgrade"
 
         # Build event data

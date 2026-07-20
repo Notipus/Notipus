@@ -18,6 +18,7 @@ from webhooks.models.rich_notification import (
     PersonInfo,
     RichNotification,
 )
+from webhooks.utils.currency import format_money
 
 from .insight_detector import InsightDetector
 from .utils import get_display_name
@@ -115,6 +116,37 @@ EVENT_SEVERITY_MAP: dict[str, NotificationSeverity] = {
     "fulfillment_updated": NotificationSeverity.INFO,
     "shipment_delivered": NotificationSeverity.SUCCESS,
 }
+
+# Billing period to headline interval suffix mapping. Unknown or missing
+# periods fall back to "/mo" explicitly (most subscriptions are monthly).
+INTERVAL_SUFFIX_MAP: dict[str, str] = {
+    "monthly": "/mo",
+    "month": "/mo",
+    "annual": "/yr",
+    "annually": "/yr",
+    "yearly": "/yr",
+    "year": "/yr",
+    "quarterly": "/quarter",
+    "quarter": "/quarter",
+    "weekly": "/wk",
+    "week": "/wk",
+    "daily": "/day",
+    "day": "/day",
+}
+
+
+def _interval_suffix(billing_period: Any) -> str:
+    """Map a billing period to a headline interval suffix.
+
+    Args:
+        billing_period: Billing period value from event metadata
+            (e.g. "monthly", "annual"), or None.
+
+    Returns:
+        Interval suffix such as "/mo" or "/yr", defaulting to "/mo".
+    """
+    return INTERVAL_SUFFIX_MAP.get(str(billing_period or "").lower(), "/mo")
+
 
 # Event type to headline icon mapping (semantic names)
 EVENT_ICON_MAP: dict[str, str] = {
@@ -412,6 +444,7 @@ class NotificationBuilder:
         event_type = event_data.get("type", "")
         amount = event_data.get("amount")
         metadata = event_data.get("metadata", {})
+        currency = event_data.get("currency") or "USD"
 
         # Event-focused headlines (company/customer info shown in body)
         if event_type == "payment_success":
@@ -419,15 +452,16 @@ class NotificationBuilder:
             if metadata.get("is_trial_conversion"):
                 return "Trial converted!"
             if amount:
-                return f"${amount:,.2f} received"
+                return f"{format_money(amount, currency)} received"
             return "Payment received"
 
         elif event_type == "payment_failure":
             attempt_count = metadata.get("attempt_count")
             if amount and attempt_count and attempt_count > 1:
-                return f"${amount:,.2f} payment failed (retry #{attempt_count})"
+                money = format_money(amount, currency)
+                return f"{money} payment failed (retry #{attempt_count})"
             elif amount:
-                return f"${amount:,.2f} payment failed"
+                return f"{format_money(amount, currency)} payment failed"
             return "Payment failed"
 
         elif event_type == "subscription_created":
@@ -438,27 +472,32 @@ class NotificationBuilder:
             direction = metadata.get("change_direction", "")
             plan_name = metadata.get("plan_name")
             previous_amount = metadata.get("previous_amount")
+            suffix = _interval_suffix(metadata.get("billing_period"))
 
             if direction == "upgrade":
                 # Show plan name if available (Chargify), otherwise amount change
                 if plan_name and amount:
-                    return f"Upgraded to {plan_name} (${amount:,.2f}/mo)"
+                    money = format_money(amount, currency)
+                    return f"Upgraded to {plan_name} ({money}{suffix})"
                 elif previous_amount and amount:
-                    old = f"${previous_amount:,.2f}"
-                    new = f"${amount:,.2f}"
-                    return f"Upgraded: {old}/mo to {new}/mo"
+                    old = format_money(previous_amount, currency)
+                    new = format_money(amount, currency)
+                    return f"Upgraded: {old}{suffix} to {new}{suffix}"
                 elif amount:
-                    return f"Subscription upgraded to ${amount:,.2f}/mo"
+                    money = format_money(amount, currency)
+                    return f"Subscription upgraded to {money}{suffix}"
                 return "Subscription upgraded"
             elif direction == "downgrade":
                 if plan_name and amount:
-                    return f"Downgraded to {plan_name} (${amount:,.2f}/mo)"
+                    money = format_money(amount, currency)
+                    return f"Downgraded to {plan_name} ({money}{suffix})"
                 elif previous_amount and amount:
-                    old = f"${previous_amount:,.2f}"
-                    new = f"${amount:,.2f}"
-                    return f"Downgraded: {old}/mo to {new}/mo"
+                    old = format_money(previous_amount, currency)
+                    new = format_money(amount, currency)
+                    return f"Downgraded: {old}{suffix} to {new}{suffix}"
                 elif amount:
-                    return f"Subscription downgraded to ${amount:,.2f}/mo"
+                    money = format_money(amount, currency)
+                    return f"Subscription downgraded to {money}{suffix}"
                 return "Subscription downgraded"
             return "Subscription updated"
 
@@ -476,18 +515,19 @@ class NotificationBuilder:
             metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             if order_number and amount:
-                return f"New order #{order_number} (${amount:,.2f})"
+                return f"New order #{order_number} ({format_money(amount, currency)})"
             elif order_number:
                 return f"New order #{order_number}"
             elif amount:
-                return f"New order (${amount:,.2f})"
+                return f"New order ({format_money(amount, currency)})"
             return "New order"
 
         elif event_type == "order_cancelled":
             metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             if order_number and amount:
-                return f"Order #{order_number} canceled (${amount:,.2f})"
+                money = format_money(amount, currency)
+                return f"Order #{order_number} canceled ({money})"
             elif order_number:
                 return f"Order #{order_number} canceled"
             return "Order canceled"
