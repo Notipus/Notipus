@@ -4,11 +4,21 @@ This module analyzes payment events and customer data to detect significant
 milestones and generate contextual insights for notifications.
 """
 
+import calendar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from django.core.cache import cache
 from webhooks.models.rich_notification import InsightInfo
+
+# How long the "anniversary fired" dedup marker lives. Must be longer than
+# the +/- ANNIVERSARY_TOLERANCE_DAYS detection window so a customer paying
+# multiple times inside the window only celebrates once per anniversary.
+ANNIVERSARY_DEDUP_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
+
+# A payment within this many days of the true anniversary date counts.
+ANNIVERSARY_TOLERANCE_DAYS = 3
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -98,6 +108,7 @@ class InsightDetector:
         """
         # Priority order for milestone detection
         detectors = [
+            self._detect_initial_payment_failure,
             self._detect_trial_started,
             self._detect_trial_converted,
             self._detect_first_payment,
@@ -226,14 +237,60 @@ class InsightDetector:
             text="New trial - Welcome aboard!",
         )
 
+    def _detect_initial_payment_failure(
+        self, event_data: dict[str, Any], customer_data: dict[str, Any]
+    ) -> InsightInfo | None:
+        """Detect a payment failure folded into an aggregated event.
+
+        When a subscription is created with an immediately-declining card,
+        Stripe queues subscription.created and invoice.payment_failed under
+        the same idempotency key. The aggregation keeps the subscription
+        event as the notification but preserves the failure details in
+        metadata (see PendingEventQueue._aggregate_events). Surface that
+        failure prominently so it is never silently dropped.
+
+        Args:
+            event_data: Event data dictionary.
+            customer_data: Customer data dictionary (unused but required for interface).
+
+        Returns:
+            InsightInfo describing the failed payment or None.
+        """
+        _ = customer_data  # unused
+        metadata = event_data.get("metadata", {})
+        if not metadata.get("has_payment_failure"):
+            return None
+
+        text = "Payment failed"
+        failure_reason = metadata.get("failure_reason")
+        decline_code = metadata.get("decline_code")
+        if failure_reason:
+            text += f": {failure_reason}"
+        elif decline_code:
+            text += f": {decline_code}"
+
+        attempt_count = metadata.get("attempt_count")
+        if attempt_count and attempt_count >= 2:
+            text += f" (attempt #{attempt_count})"
+
+        next_attempt = metadata.get("next_payment_attempt")
+        if next_attempt:
+            next_date = datetime.fromtimestamp(next_attempt, tz=timezone.utc).strftime(
+                "%b %-d"
+            )
+            text += f" · Next retry {next_date}"
+
+        return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
+
     def _detect_trial_converted(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
     ) -> InsightInfo | None:
         """Detect if this payment converted a trial.
 
-        When a payment arrives and there was a pending trial_ending event
-        for the same customer, show "Trial converted" instead of separate
-        notifications.
+        Stateless: the Stripe parser flags the first paid invoice after a
+        trial (invoice period_start at the subscription's trial_end) with
+        ``is_trial_conversion`` metadata, so no cross-event cache marker is
+        needed even though trial_will_end fires ~3 days earlier.
 
         Args:
             event_data: Event data dictionary.
@@ -243,18 +300,12 @@ class InsightDetector:
             InsightInfo for trial converted or None.
         """
         _ = customer_data  # unused
-        # Late import to avoid circular dependency
-        from webhooks.services.event_consolidation import event_consolidation_service
-
         event_type = event_data.get("type", "")
         if event_type not in ("payment_success", "invoice_paid"):
             return None
 
-        # Check if there's a pending trial_ending for this customer
-        workspace_id = event_data.get("workspace_id", "")
-        customer_id = event_data.get("customer_id", "")
-
-        if event_consolidation_service.has_pending_trial(workspace_id, customer_id):
+        metadata = event_data.get("metadata", {})
+        if metadata.get("is_trial_conversion"):
             return InsightInfo(
                 icon=self.ICONS["trial_converted"],
                 text="Trial converted to paid subscription",
@@ -284,13 +335,18 @@ class InsightDetector:
         )
         new_ltv = previous_ltv + current_amount
 
-        # Check which milestone was crossed
-        for milestone in self.config.ltv_milestones:
-            if previous_ltv < milestone <= new_ltv:
-                return InsightInfo(
-                    icon=self.ICONS["ltv_milestone"],
-                    text=f"Crossed ${milestone:,.0f} lifetime!",
-                )
+        # Celebrate the LARGEST milestone crossed by this payment (a big
+        # payment can cross several at once - one Slack message per event).
+        crossed = [
+            milestone
+            for milestone in self.config.ltv_milestones
+            if previous_ltv < milestone <= new_ltv
+        ]
+        if crossed:
+            return InsightInfo(
+                icon=self.ICONS["ltv_milestone"],
+                text=f"Crossed ${max(crossed):,.0f} lifetime!",
+            )
 
         return None
 
@@ -314,26 +370,36 @@ class InsightDetector:
             pass
         return None
 
-    def _get_months_active(self, created_date: datetime) -> int:
-        """Calculate months active from creation date.
+    def _add_months(self, date: datetime, months: int) -> datetime:
+        """Return the date shifted forward by a number of calendar months.
+
+        Clamps the day when the target month is shorter (e.g. a customer
+        created Jan 31 has a Feb 28/29 monthly anniversary).
 
         Args:
-            created_date: Customer creation datetime.
+            date: Base datetime.
+            months: Number of months to add.
 
         Returns:
-            Number of months active.
+            Shifted datetime.
         """
-        # Use timezone-aware now if created_date is timezone-aware
-        if created_date.tzinfo is not None:
-            now = datetime.now(timezone.utc)
-        else:
-            now = datetime.now()
-        return (now - created_date).days // 30
+        total_months = date.month - 1 + months
+        year = date.year + total_months // 12
+        month = total_months % 12 + 1
+        # Clamp day to the last day of the target month
+        days_in_month = calendar.monthrange(year, month)[1]
+        return date.replace(year=year, month=month, day=min(date.day, days_in_month))
 
     def _detect_anniversary(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
     ) -> InsightInfo | None:
         """Detect customer anniversary milestones.
+
+        Computes each configured anniversary's TRUE calendar date from the
+        customer's creation date and fires only when the payment lands
+        within +/- ANNIVERSARY_TOLERANCE_DAYS of it. A cache-backed dedup
+        marker ensures a customer paying multiple times inside the window
+        (e.g. weekly) celebrates each anniversary exactly once.
 
         Args:
             event_data: Event data dictionary.
@@ -345,6 +411,11 @@ class InsightDetector:
         if event_data.get("type", "") != "payment_success":
             return None
 
+        customer_id = event_data.get("customer_id", "")
+        if not customer_id:
+            # Cannot attribute (or dedup) an anniversary without a customer
+            return None
+
         created_at = customer_data.get("created_at") or customer_data.get(
             "subscription_start"
         )
@@ -352,18 +423,49 @@ class InsightDetector:
         if not created_date:
             return None
 
-        months_active = self._get_months_active(created_date)
+        if created_date.tzinfo is not None:
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.now()
 
         for anniversary_month in self.config.anniversary_months:
-            if abs(months_active - anniversary_month) <= 0.5:
-                years = anniversary_month // 12
-                if years == 1:
-                    text = "1 year anniversary!"
-                else:
-                    text = f"{years} year anniversary!"
-                return InsightInfo(icon=self.ICONS["anniversary"], text=text)
+            anniversary_date = self._add_months(created_date, anniversary_month)
+            days_off = (now.date() - anniversary_date.date()).days
+            if abs(days_off) > ANNIVERSARY_TOLERANCE_DAYS:
+                continue
+
+            if not self._claim_anniversary(
+                event_data.get("workspace_id", ""), customer_id, anniversary_month
+            ):
+                return None  # Already celebrated this anniversary
+
+            years = anniversary_month // 12
+            if years == 1:
+                text = "1 year anniversary!"
+            else:
+                text = f"{years} year anniversary!"
+            return InsightInfo(icon=self.ICONS["anniversary"], text=text)
 
         return None
+
+    def _claim_anniversary(
+        self, workspace_id: str, customer_id: str, anniversary_month: int
+    ) -> bool:
+        """Atomically claim an anniversary celebration for a customer.
+
+        Uses cache.add (SETNX on Redis) so concurrent payments inside the
+        detection window cannot both celebrate the same anniversary.
+
+        Args:
+            workspace_id: The workspace UUID (may be empty).
+            customer_id: The customer identifier.
+            anniversary_month: The anniversary being claimed, in months.
+
+        Returns:
+            True if this event won the claim and should celebrate.
+        """
+        dedup_key = f"anniversary_sent:{workspace_id}:{customer_id}:{anniversary_month}"
+        return bool(cache.add(dedup_key, True, timeout=ANNIVERSARY_DEDUP_TTL_SECONDS))
 
     def _detect_payment_growth(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]

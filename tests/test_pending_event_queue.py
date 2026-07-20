@@ -210,6 +210,157 @@ class TestPendingEventQueueAggregation:
         assert customer["first_name"] == "John"  # From first event
         assert customer["last_name"] == "Doe"  # From second event
 
+    def test_aggregate_copies_full_winning_event(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that the winner's amount/external_id/currency are used.
+
+        When a later event wins the priority contest, the ENTIRE event must
+        be copied - not just type and metadata. Otherwise the notification
+        reports the first event's amount ($29.99) while the customer
+        actually paid the winner's amount ($500).
+        """
+        stored_items = [
+            {
+                "event_data": {
+                    "type": "invoice_paid",
+                    "customer_id": "cus_123",
+                    "amount": 29.99,
+                    "currency": "EUR",
+                    "external_id": "in_first",
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+            {
+                "event_data": {
+                    "type": "payment_success",
+                    "customer_id": "cus_123",
+                    "amount": 500.00,
+                    "currency": "USD",
+                    "external_id": "in_second",
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["type"] == "payment_success"
+        assert event["amount"] == 500.00
+        assert event["currency"] == "USD"
+        assert event["external_id"] == "in_second"
+
+    def test_aggregate_surfaces_payment_failure_with_subscription_created(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that a payment_failure in the bucket is never silently dropped.
+
+        A subscription created with an immediately-declining card queues
+        subscription.created + invoice.payment_failed under the same
+        idempotency key. The aggregated notification keeps the subscription
+        as the primary event but must surface the failure details.
+        """
+        stored_items = [
+            {
+                "event_data": {
+                    "type": "subscription_created",
+                    "customer_id": "cus_123",
+                    "amount": 49.00,
+                    "external_id": "sub_abc",
+                    "metadata": {"subscription_id": "sub_abc"},
+                },
+                "customer_data": {"email": ""},
+            },
+            {
+                "event_data": {
+                    "type": "payment_failure",
+                    "customer_id": "cus_123",
+                    "amount": 49.00,
+                    "external_id": "in_fail",
+                    "metadata": {
+                        "failure_reason": "Your card was declined",
+                        "decline_code": "insufficient_funds",
+                        "attempt_count": 1,
+                        "next_payment_attempt": 1740182400,
+                    },
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        # Subscription is still the primary notification...
+        assert event["type"] == "subscription_created"
+        # ...but the failure is folded into its metadata, not dropped
+        metadata = event["metadata"]
+        assert metadata["has_payment_failure"] is True
+        assert metadata["failure_reason"] == "Your card was declined"
+        assert metadata["decline_code"] == "insufficient_funds"
+        assert metadata["attempt_count"] == 1
+        assert metadata["next_payment_attempt"] == 1740182400
+        assert metadata["failed_amount"] == 49.00
+        # Winner's own metadata is preserved alongside
+        assert metadata["subscription_id"] == "sub_abc"
+        # Email still merged from the failure event
+        assert customer["email"] == "test@example.com"
+
+    def test_aggregate_failure_merge_does_not_mutate_stored_metadata(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that merging failure details doesn't mutate the stored items."""
+        winner_metadata = {"subscription_id": "sub_abc"}
+        stored_items = [
+            {
+                "event_data": {
+                    "type": "subscription_created",
+                    "metadata": winner_metadata,
+                },
+                "customer_data": {},
+            },
+            {
+                "event_data": {
+                    "type": "payment_failure",
+                    "metadata": {"failure_reason": "Card declined"},
+                },
+                "customer_data": {},
+            },
+        ]
+
+        queue._aggregate_events(stored_items)
+
+        assert "has_payment_failure" not in winner_metadata
+
+    def test_aggregate_lone_payment_failure_stays_failure(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that a bucket of only failure events notifies as a failure."""
+        stored_items = [
+            {
+                "event_data": {
+                    "type": "payment_failure",
+                    "customer_id": "cus_123",
+                    "amount": 49.00,
+                    "metadata": {"failure_reason": "Card declined"},
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+            {
+                "event_data": {
+                    "type": "invoice_paid",
+                    "customer_id": "cus_123",
+                    "amount": 0,
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["type"] == "payment_failure"
+        assert event["metadata"]["failure_reason"] == "Card declined"
+        assert "has_payment_failure" not in event["metadata"]
+
     def test_aggregate_copies_metadata_from_preferred_type(
         self, queue: PendingEventQueue
     ) -> None:
