@@ -763,6 +763,10 @@ class StripeAPI:
                     "status": sub.status,
                     "current_period_start": _safe_getattr(sub, "current_period_start"),
                     "current_period_end": _safe_getattr(sub, "current_period_end"),
+                    # trial_end can diverge from current_period_end (support
+                    # extends a trial, custom billing_cycle_anchor), so callers
+                    # that compute trial expiry must get the real field.
+                    "trial_end": _safe_getattr(sub, "trial_end"),
                     "cancel_at_period_end": _safe_getattr(
                         sub, "cancel_at_period_end", False
                     ),

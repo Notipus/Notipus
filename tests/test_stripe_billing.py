@@ -962,6 +962,24 @@ class TestStripeAPISubscriptions:
         assert result[0]["status"] == "active"
 
     @patch("core.services.stripe.stripe.Subscription.list")
+    def test_get_customer_subscriptions_surfaces_trial_end(
+        self, mock_list: MagicMock, stripe_api: StripeAPI
+    ) -> None:
+        """trial_end must be surfaced so sync_workspace_from_stripe can
+        write the real trial expiry instead of current_period_end (they
+        diverge when support extends a trial)."""
+        mock_subscription = self._build_mock_subscription()
+        mock_subscription.status = "trialing"
+        mock_subscription.trial_end = 1710003600
+        list_response = Mock()
+        list_response.auto_paging_iter.return_value = iter([mock_subscription])
+        mock_list.return_value = list_response
+
+        result = stripe_api.get_customer_subscriptions("cus_test123")
+
+        assert result[0]["trial_end"] == 1710003600
+
+    @patch("core.services.stripe.stripe.Subscription.list")
     def test_get_customer_subscriptions_paginates_across_pages(
         self, mock_list: MagicMock, stripe_api: StripeAPI
     ) -> None:

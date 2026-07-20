@@ -92,6 +92,13 @@ class Workspace(models.Model):
     stripe_customer_id: models.CharField = models.CharField(
         max_length=255, blank=True, default=""
     )
+    # The Stripe subscription this workspace's billing state is derived from.
+    # Lets webhook handlers ignore events for other subscriptions on the same
+    # customer (e.g. add-ons, one-off invoices) instead of cancelling or
+    # flagging the workspace on any subscription-shaped event.
+    stripe_subscription_id: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
     payment_method_added: models.BooleanField = models.BooleanField(default=False)
 
     class Meta:

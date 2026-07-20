@@ -7,28 +7,139 @@ Handlers distinguish expected no-ops (missing customer id, no matching
 workspace) from unexpected errors: expected no-ops are logged and return
 normally, while unexpected errors (e.g. database failures) propagate so
 the webhook view returns 5xx and Stripe redelivers the event.
+
+Handlers that write webhook-derived state and then re-sync from Stripe
+serialize per customer via a short Redis lock (see ``stripe_sync_lock``)
+so concurrent webhooks can't interleave their write-then-sync sequences
+and leave the workspace on stale data.
 """
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, cast
 
 import stripe
 from core.models import Workspace
 from core.services.stripe import StripeAPI
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
-# Map Stripe statuses to our internal statuses
+# Map Stripe statuses to our internal statuses.
+#
+# "incomplete" means the first invoice was never paid (card declined,
+# SCA abandoned) — it is neither a trial nor an active subscription, so
+# it maps to "suspended": a non-trial, non-active state that keeps
+# feature access off until Stripe transitions the subscription to
+# active/trialing (payment completed) or incomplete_expired (gave up).
 STRIPE_STATUS_MAPPING: dict[str, str] = {
     "active": "active",
     "trialing": "trial",
     "past_due": "past_due",
     "canceled": "cancelled",
     "unpaid": "past_due",
-    "incomplete": "trial",
+    "incomplete": "suspended",
     "incomplete_expired": "cancelled",
 }
+
+# Redis lock tuning for the per-customer write-then-sync serialization.
+# The lock auto-expires after LOCK_TIMEOUT even if the holder crashed;
+# waiters give up after LOCK_BLOCKING and let Stripe redeliver the event.
+_SYNC_LOCK_TIMEOUT_SECONDS = 30
+_SYNC_LOCK_BLOCKING_SECONDS = 10
+
+# Plan keys accepted for Workspace.subscription_plan.
+_VALID_PLAN_KEYS = frozenset(key for key, _label in Workspace.STRIPE_PLANS)
+
+
+class StripeSyncLockTimeout(Exception):
+    """Raised when the per-customer billing lock can't be acquired in time.
+
+    Propagates out of the webhook handler so the view returns 5xx and
+    Stripe redelivers the event once the concurrent handler finishes.
+    """
+
+
+def _get_lock_client() -> Any | None:
+    """Return the raw Redis client backing the default cache, if any.
+
+    Returns:
+        A Redis client supporting ``lock()``, or None when the cache
+        backend is not Redis (e.g. DummyCache in tests) so callers can
+        fail open.
+    """
+    try:
+        client = cache.client.get_client()  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    # Don't treat MagicMocks from broadly-patched test caches as clients.
+    if "Mock" in client.__class__.__name__:
+        return None
+    if not hasattr(client, "lock"):
+        return None
+    return client
+
+
+@contextmanager
+def stripe_sync_lock(customer_id: str) -> Iterator[None]:
+    """Serialize billing writes for one Stripe customer.
+
+    Wraps a handler's write-then-sync sequence in a short Redis lock keyed
+    on the customer id (one workspace per Stripe customer) so two
+    concurrent webhooks can't interleave — e.g. webhook A's late
+    ``sync_workspace_from_stripe`` overwriting webhook B's newer plan.
+
+    Fails open (runs unlocked) when Redis is unavailable, since processing
+    the webhook slightly racily beats dropping it. If the lock is held by
+    another handler for longer than the blocking timeout, raises
+    StripeSyncLockTimeout so the webhook 5xxs and Stripe redelivers.
+
+    Args:
+        customer_id: The Stripe customer ID to serialize on.
+
+    Yields:
+        None. The handler body runs while the lock is held.
+
+    Raises:
+        StripeSyncLockTimeout: Lock held by another handler beyond the
+            blocking timeout.
+    """
+    client = _get_lock_client()
+    if client is None:
+        yield
+        return
+
+    lock = client.lock(
+        f"stripe_sync_lock:{customer_id}",
+        timeout=_SYNC_LOCK_TIMEOUT_SECONDS,
+        blocking_timeout=_SYNC_LOCK_BLOCKING_SECONDS,
+    )
+    try:
+        acquired = lock.acquire()
+    except Exception as e:
+        # Redis hiccup mid-acquire: fail open rather than dropping the event.
+        logger.warning(
+            f"Could not acquire stripe sync lock for {customer_id}: {e!s}; "
+            f"proceeding without lock"
+        )
+        yield
+        return
+
+    if not acquired:
+        raise StripeSyncLockTimeout(
+            f"Timed out waiting for stripe sync lock for customer {customer_id}"
+        )
+
+    try:
+        yield
+    finally:
+        try:
+            lock.release()
+        except Exception as e:
+            # Lock will expire on its own after the timeout.
+            logger.warning(f"Error releasing stripe sync lock: {e!s}")
 
 
 class BillingService:
@@ -56,13 +167,56 @@ class BillingService:
         return subscriptions[0]
 
     @staticmethod
+    def _extract_billing_anchor(sub_data: dict[str, Any]) -> int | None:
+        """Extract the billing cycle anchor from subscription data.
+
+        Every write site uses ``current_period_end`` (the next renewal
+        timestamp). Writing ``current_period_start`` anywhere would let a
+        late-retried ``subscription.created`` webhook regress the anchor
+        to a past timestamp after a ``subscription.updated`` already wrote
+        the future one.
+
+        Args:
+            sub_data: Subscription data from a Stripe webhook or API call.
+
+        Returns:
+            Unix timestamp of the period end, or None if absent.
+        """
+        return cast(int | None, sub_data.get("current_period_end"))
+
+    @staticmethod
+    def _normalize_plan_name(raw_plan_name: str) -> str | None:
+        """Normalize a plan display string to a STRIPE_PLANS key.
+
+        Converts values like "Enterprise Plan", "Notipus Pro Plan", or
+        "PRO" to their canonical plan keys, and rejects anything that
+        doesn't map to a known plan so arbitrary (user-suppliable)
+        display strings never reach ``Workspace.subscription_plan``.
+
+        Args:
+            raw_plan_name: Plan name string, e.g. from checkout metadata.
+
+        Returns:
+            A valid plan key ("free"/"basic"/"pro"/"enterprise"), or None
+            when the value doesn't normalize to a known plan.
+        """
+        normalized = (
+            raw_plan_name.lower().replace("notipus ", "").replace(" plan", "").strip()
+        )
+        if normalized in _VALID_PLAN_KEYS:
+            return normalized
+        return None
+
+    @staticmethod
     def _extract_plan_name_from_subscription(
         subscription: dict[str, Any],
     ) -> str | None:
         """Extract plan name from subscription items.
 
         Prefers Product metadata.plan_name (most reliable) over
-        normalizing the product name string.
+        normalizing the product name string. Either source is validated
+        against the STRIPE_PLANS choices; unrecognized values are
+        rejected rather than written verbatim.
 
         Args:
             subscription: Subscription dictionary with items.
@@ -76,20 +230,18 @@ class BillingService:
         first_item = subscription["items"][0]
 
         # Prefer plan_name from Product metadata (most reliable)
-        plan_name = first_item.get("plan_name")
-        if plan_name:
-            return cast(str, plan_name)
+        for raw_name in (first_item.get("plan_name"), first_item.get("product_name")):
+            if not raw_name:
+                continue
+            plan_name = BillingService._normalize_plan_name(raw_name)
+            if plan_name:
+                return plan_name
+            logger.warning(
+                f"Unrecognized plan name {raw_name!r} on subscription "
+                f"{subscription.get('id')}; ignoring"
+            )
 
-        # Fall back to normalizing product name
-        product_name = first_item.get("product_name", "")
-        if not product_name:
-            return None
-
-        # Convert "Notipus Pro Plan" or "Pro Plan" to "pro"
-        normalized: str = (
-            product_name.lower().replace("notipus ", "").replace(" plan", "").strip()
-        )
-        return normalized
+        return None
 
     @staticmethod
     def sync_workspace_from_stripe(customer_id: str) -> bool:
@@ -141,13 +293,23 @@ class BillingService:
         if plan_name:
             update_data["subscription_plan"] = plan_name
 
-        if active_sub.get("current_period_end"):
-            update_data["billing_cycle_anchor"] = active_sub["current_period_end"]
+        if active_sub.get("id"):
+            update_data["stripe_subscription_id"] = active_sub["id"]
 
-        if stripe_status == "trialing" and active_sub.get("current_period_end"):
-            update_data["trial_end_date"] = datetime.fromtimestamp(
-                active_sub["current_period_end"], tz=timezone.utc
+        billing_anchor = BillingService._extract_billing_anchor(active_sub)
+        if billing_anchor:
+            update_data["billing_cycle_anchor"] = billing_anchor
+
+        if stripe_status == "trialing":
+            # trial_end is authoritative; current_period_end only usually
+            # coincides with it (support-extended trials diverge).
+            trial_end = active_sub.get("trial_end") or active_sub.get(
+                "current_period_end"
             )
+            if trial_end:
+                update_data["trial_end_date"] = datetime.fromtimestamp(
+                    trial_end, tz=timezone.utc
+                )
 
         Workspace.objects.filter(id=workspace.id).update(**update_data)
 
@@ -185,20 +347,37 @@ class BillingService:
         if not customer_id:
             return
 
+        # Map the real Stripe status instead of assuming "active": a
+        # subscription created in trialing/incomplete must not grant
+        # active access (incomplete = first invoice never paid).
+        stripe_status = subscription.get("status", "active")
+        internal_status = STRIPE_STATUS_MAPPING.get(stripe_status, "active")
+
         # Don't set subscription_plan here - sync_workspace_from_stripe will
         # properly extract and normalize the plan name from the Product.
         # Previously this was setting plan_id (a Price ID) which is wrong.
-        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
-            subscription_status="active",
-            billing_cycle_anchor=subscription.get("current_period_start"),
-        )
+        update_data: dict[str, Any] = {"subscription_status": internal_status}
 
-        if updated_count > 0:
-            logger.info(f"Subscription created for customer {customer_id}, syncing...")
-            # Sync full state from Stripe (properly extracts plan name)
-            BillingService.sync_workspace_from_stripe(customer_id)
-        else:
-            logger.warning(f"No workspace found for customer {customer_id}")
+        billing_anchor = BillingService._extract_billing_anchor(subscription)
+        if billing_anchor is not None:
+            update_data["billing_cycle_anchor"] = billing_anchor
+
+        if subscription.get("id"):
+            update_data["stripe_subscription_id"] = subscription["id"]
+
+        with stripe_sync_lock(customer_id):
+            updated_count = Workspace.objects.filter(
+                stripe_customer_id=customer_id
+            ).update(**update_data)
+
+            if updated_count > 0:
+                logger.info(
+                    f"Subscription created for customer {customer_id}, syncing..."
+                )
+                # Sync full state from Stripe (properly extracts plan name)
+                BillingService.sync_workspace_from_stripe(customer_id)
+            else:
+                logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
     def handle_subscription_updated(subscription: dict[str, Any]) -> None:
@@ -223,26 +402,34 @@ class BillingService:
         update_data: dict[str, Any] = {"subscription_status": internal_status}
 
         # Update billing cycle anchor if present
-        if subscription.get("current_period_end"):
-            update_data["billing_cycle_anchor"] = subscription.get("current_period_end")
+        billing_anchor = BillingService._extract_billing_anchor(subscription)
+        if billing_anchor is not None:
+            update_data["billing_cycle_anchor"] = billing_anchor
 
-        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
-            **update_data
-        )
+        with stripe_sync_lock(customer_id):
+            updated_count = Workspace.objects.filter(
+                stripe_customer_id=customer_id
+            ).update(**update_data)
 
-        if updated_count > 0:
-            logger.info(
-                f"Updated subscription status to {internal_status} "
-                f"for customer {customer_id}, syncing..."
-            )
-            # Sync full state from Stripe (properly extracts plan name)
-            BillingService.sync_workspace_from_stripe(customer_id)
-        else:
-            logger.warning(f"No workspace found for customer {customer_id}")
+            if updated_count > 0:
+                logger.info(
+                    f"Updated subscription status to {internal_status} "
+                    f"for customer {customer_id}, syncing..."
+                )
+                # Sync full state from Stripe (properly extracts plan name)
+                BillingService.sync_workspace_from_stripe(customer_id)
+            else:
+                logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
     def handle_subscription_deleted(subscription: dict[str, Any]) -> None:
         """Handle subscription deleted/cancelled event.
+
+        Only cancels the workspace when the deleted subscription is the
+        one the workspace's billing state is derived from — a customer
+        cancelling an add-on subscription must not lose main-product
+        access. Either way the workspace is re-synced from Stripe so the
+        final state reflects any remaining live subscription.
 
         Args:
             subscription: Subscription data from Stripe webhook.
@@ -251,14 +438,34 @@ class BillingService:
         if not customer_id:
             return
 
-        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
-            subscription_status="cancelled"
-        )
+        deleted_sub_id = subscription.get("id")
 
-        if updated_count > 0:
+        with stripe_sync_lock(customer_id):
+            workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
+            if workspace is None:
+                logger.warning(f"No workspace found for customer {customer_id}")
+                return
+
+            if (
+                deleted_sub_id
+                and workspace.stripe_subscription_id
+                and deleted_sub_id != workspace.stripe_subscription_id
+            ):
+                logger.info(
+                    f"Deleted subscription {deleted_sub_id} does not match "
+                    f"workspace subscription {workspace.stripe_subscription_id} "
+                    f"for customer {customer_id}; re-syncing without cancelling"
+                )
+                BillingService.sync_workspace_from_stripe(customer_id)
+                return
+
+            Workspace.objects.filter(id=workspace.id).update(
+                subscription_status="cancelled"
+            )
             logger.info(f"Marked subscription as cancelled for customer {customer_id}")
-        else:
-            logger.warning(f"No workspace found for customer {customer_id}")
+            # Reconcile: if another live subscription exists on Stripe
+            # (e.g. the recorded id was stale), sync restores it.
+            BillingService.sync_workspace_from_stripe(customer_id)
 
     @staticmethod
     def handle_payment_success(invoice: dict[str, Any]) -> None:
@@ -289,8 +496,30 @@ class BillingService:
             logger.warning(f"No workspace found for customer {customer_id}")
 
     @staticmethod
+    def _extract_invoice_subscription_id(invoice: dict[str, Any]) -> str | None:
+        """Extract the subscription id an invoice belongs to, if any.
+
+        Args:
+            invoice: Invoice data from Stripe webhook. The ``subscription``
+                field may be an id string, an expanded object, or absent
+                (one-off invoices).
+
+        Returns:
+            Subscription id string, or None for one-off invoices.
+        """
+        invoice_sub = invoice.get("subscription")
+        if isinstance(invoice_sub, dict):
+            invoice_sub = invoice_sub.get("id")
+        return cast(str | None, invoice_sub) or None
+
+    @staticmethod
     def handle_payment_failed(invoice: dict[str, Any]) -> None:
         """Handle failed payment event.
+
+        Only marks the workspace past_due when the failed invoice belongs
+        to the workspace's own subscription. One-off (ad-hoc/portal)
+        invoices are ignored — nothing would ever restore "active" when
+        such an invoice is later paid, voided, or forgotten.
 
         Args:
             invoice: Invoice data from Stripe webhook.
@@ -300,16 +529,32 @@ class BillingService:
             logger.error("Missing customer ID in invoice data")
             return
 
-        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
-            subscription_status="past_due"
-        )
-
-        if updated_count > 0:
-            logger.warning(
-                f"Updated payment status to past_due for customer {customer_id}"
+        invoice_sub_id = BillingService._extract_invoice_subscription_id(invoice)
+        if invoice_sub_id is None:
+            logger.info(
+                f"Ignoring failed one-off invoice for customer {customer_id} "
+                f"(no subscription attached)"
             )
-        else:
+            return
+
+        workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
+        if workspace is None:
             logger.warning(f"No workspace found for customer {customer_id}")
+            return
+
+        if (
+            workspace.stripe_subscription_id
+            and invoice_sub_id != workspace.stripe_subscription_id
+        ):
+            logger.info(
+                f"Ignoring failed invoice for subscription {invoice_sub_id} "
+                f"(workspace subscription is {workspace.stripe_subscription_id}) "
+                f"for customer {customer_id}"
+            )
+            return
+
+        Workspace.objects.filter(id=workspace.id).update(subscription_status="past_due")
+        logger.warning(f"Updated payment status to past_due for customer {customer_id}")
 
     @staticmethod
     def handle_checkout_completed(session: dict[str, Any]) -> None:
@@ -327,9 +572,9 @@ class BillingService:
             return
 
         # Extract metadata with workspace and plan info
-        metadata = session.get("metadata", {})
+        metadata = session.get("metadata", {}) or {}
         workspace_id = metadata.get("workspace_id") or metadata.get("organization_id")
-        plan_name = metadata.get("plan_name")
+        raw_plan_name = metadata.get("plan_name")
 
         subscription_id = session.get("subscription")
 
@@ -339,31 +584,47 @@ class BillingService:
             "payment_method_added": True,
         }
 
-        if plan_name:
-            update_data["subscription_plan"] = plan_name
+        # Checkout metadata is client-influenced: normalize through the
+        # STRIPE_PLANS choices and refuse anything unrecognized instead
+        # of persisting arbitrary display strings via .update() (which
+        # bypasses model validation).
+        plan_name: str | None = None
+        if raw_plan_name:
+            plan_name = BillingService._normalize_plan_name(raw_plan_name)
+            if plan_name:
+                update_data["subscription_plan"] = plan_name
+            else:
+                logger.warning(
+                    f"Ignoring unrecognized plan_name {raw_plan_name!r} in "
+                    f"checkout session metadata for customer {customer_id}"
+                )
 
-        # Find workspace by customer ID or workspace ID from metadata
-        if workspace_id:
-            updated_count = Workspace.objects.filter(id=workspace_id).update(
-                **update_data
-            )
-        else:
-            updated_count = Workspace.objects.filter(
-                stripe_customer_id=customer_id
-            ).update(**update_data)
+        if subscription_id:
+            update_data["stripe_subscription_id"] = subscription_id
 
-        if updated_count > 0:
-            logger.info(
-                f"Checkout completed for customer {customer_id}, "
-                f"subscription: {subscription_id}, plan: {plan_name}"
-            )
-            # Verify/sync full state from Stripe (catches any drift)
-            BillingService.sync_workspace_from_stripe(customer_id)
-        else:
-            logger.warning(
-                f"No workspace found for checkout session. "
-                f"Customer: {customer_id}, Workspace ID: {workspace_id}"
-            )
+        with stripe_sync_lock(customer_id):
+            # Find workspace by customer ID or workspace ID from metadata
+            if workspace_id:
+                updated_count = Workspace.objects.filter(id=workspace_id).update(
+                    **update_data
+                )
+            else:
+                updated_count = Workspace.objects.filter(
+                    stripe_customer_id=customer_id
+                ).update(**update_data)
+
+            if updated_count > 0:
+                logger.info(
+                    f"Checkout completed for customer {customer_id}, "
+                    f"subscription: {subscription_id}, plan: {plan_name}"
+                )
+                # Verify/sync full state from Stripe (catches any drift)
+                BillingService.sync_workspace_from_stripe(customer_id)
+            else:
+                logger.warning(
+                    f"No workspace found for checkout session. "
+                    f"Customer: {customer_id}, Workspace ID: {workspace_id}"
+                )
 
     @staticmethod
     def handle_trial_ending(subscription: dict[str, Any]) -> None:
