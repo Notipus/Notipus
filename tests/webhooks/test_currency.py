@@ -204,6 +204,60 @@ class TestStripeCurrencyParsing:
         assert metadata["previous_currency"] == "EUR"
         assert metadata["previous_billing_period"] == "annual"
 
+    def test_zero_trial_plan_amount_kept_in_metadata(
+        self, plugin: StripeSourcePlugin
+    ) -> None:
+        """Test that a $0 trial plan amount is surfaced, not dropped."""
+        data: dict[str, Any] = {
+            "currency": "usd",
+            "_is_trial": True,
+            "_plan_amount_cents": 0,
+        }
+        metadata: dict[str, Any] = {}
+
+        plugin._add_trial_metadata(metadata, data)
+
+        assert metadata["plan_amount"] == 0.0
+
+    def test_nested_plan_currency_used_when_top_level_missing(
+        self, plugin: StripeSourcePlugin
+    ) -> None:
+        """Test that a subscription without top-level currency reads the
+        plan's currency and converts accordingly."""
+        data: dict[str, Any] = {
+            "id": "sub_test",
+            "customer": "cus_test",
+            "status": "active",
+            "plan": {"amount": 5000, "currency": "jpy", "interval": "month"},
+        }
+
+        amount = plugin._handle_stripe_billing("subscription_created", data)
+
+        assert plugin._event_currency(data) == "JPY"
+        assert amount == Decimal("5000")
+
+    def test_nested_item_price_currency_used_as_fallback(
+        self, plugin: StripeSourcePlugin
+    ) -> None:
+        """Test that item price currency is found for multi-item
+        subscriptions with no top-level or plan currency."""
+        data: dict[str, Any] = {
+            "plan": None,
+            "items": {
+                "data": [
+                    {"price": {"unit_amount": 2999, "currency": "eur"}},
+                ]
+            },
+        }
+
+        assert plugin._event_currency(data) == "EUR"
+
+    def test_missing_currency_everywhere_defaults_to_usd(
+        self, plugin: StripeSourcePlugin
+    ) -> None:
+        """Test that USD remains the default with no currency anywhere."""
+        assert plugin._event_currency({"plan": {"amount": 1000}}) == "USD"
+
 
 class TestChargifyCurrencyParsing:
     """Chargify parser must thread the payload currency through."""
@@ -383,6 +437,23 @@ class TestHeadlineCurrencyFormatting:
         result = builder.build(event_data, customer_data)
 
         assert "/qtr" in result.headline
+
+    def test_zero_amount_payment_headline_renders_amount(
+        self, builder: NotificationBuilder, customer_data: dict[str, Any]
+    ) -> None:
+        """Test that a $0 payment renders "$0.00 received", not the
+        amountless fallback."""
+        event_data = {
+            "type": "payment_success",
+            "provider": "stripe",
+            "amount": 0.0,
+            "currency": "USD",
+            "metadata": {},
+        }
+
+        result = builder.build(event_data, customer_data)
+
+        assert result.headline == "$0.00 received"
 
     def test_upgrade_headline_uses_previous_currency_for_old_side(
         self, builder: NotificationBuilder, customer_data: dict[str, Any]

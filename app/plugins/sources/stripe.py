@@ -350,13 +350,53 @@ class StripeSourcePlugin(BaseSourcePlugin):
     def _event_currency(self, data: dict[str, Any]) -> str:
         """Extract the currency code from a Stripe payload.
 
+        Invoices and checkout sessions carry a top-level ``currency``,
+        but some subscription payloads only carry it on the nested plan
+        or item prices, so those are checked before defaulting to USD.
+
         Args:
             data: Raw event data (invoice, subscription, or session).
 
         Returns:
             Upper-cased ISO 4217 currency code, defaulting to USD.
         """
-        return str(data.get("currency") or "USD").upper()
+        currency = data.get("currency") or self._nested_plan_currency(data)
+        return str(currency or "USD").upper()
+
+    def _nested_plan_currency(self, data: dict[str, Any]) -> str | None:
+        """Find a currency on a subscription's plan or item prices.
+
+        Checks the top-level plan (legacy single-item subscriptions),
+        then each item's plan and price objects.
+
+        Args:
+            data: Raw subscription event data.
+
+        Returns:
+            Currency code string, or None if not present anywhere.
+        """
+        plan = data.get("plan")
+        if isinstance(plan, dict) and plan.get("currency"):
+            return str(plan["currency"])
+
+        items = data.get("items")
+        if not isinstance(items, dict):
+            return None
+        items_data = items.get("data")
+        if not isinstance(items_data, list):
+            return None
+
+        for item in items_data:
+            if not isinstance(item, dict):
+                continue
+            item_plan = item.get("plan")
+            if isinstance(item_plan, dict) and item_plan.get("currency"):
+                return str(item_plan["currency"])
+            price = item.get("price")
+            if isinstance(price, dict) and price.get("currency"):
+                return str(price["currency"])
+
+        return None
 
     def _get_amount_and_dispatch_billing(
         self, event_type: str, data: dict[str, Any]
@@ -653,10 +693,13 @@ class StripeSourcePlugin(BaseSourcePlugin):
             metadata["trial_end"] = data["_trial_end"]
         if data.get("_trial_days"):
             metadata["trial_days"] = data["_trial_days"]
-        if data.get("_plan_amount_cents"):
+        # "is not None" so a $0 trial plan amount (e.g. a free tier) is
+        # still surfaced in metadata rather than silently dropped.
+        plan_amount_cents = data.get("_plan_amount_cents")
+        if plan_amount_cents is not None:
             # float() keeps event metadata JSON-serializable (Redis queue)
             metadata["plan_amount"] = float(
-                from_minor_units(data["_plan_amount_cents"], self._event_currency(data))
+                from_minor_units(plan_amount_cents, self._event_currency(data))
             )
 
     def _add_subscription_metadata(

@@ -457,16 +457,18 @@ class NotificationBuilder:
             # Check for trial conversion (first real payment after trial)
             if metadata.get("is_trial_conversion"):
                 return "Trial converted!"
-            if amount:
+            # "is not None" so $0 payments (trial confirmations, promo
+            # comps) still render as "$0.00 received".
+            if amount is not None:
                 return f"{format_money(amount, currency)} received"
             return "Payment received"
 
         elif event_type == "payment_failure":
             attempt_count = metadata.get("attempt_count")
-            if amount and attempt_count and attempt_count > 1:
+            if amount is not None and attempt_count and attempt_count > 1:
                 money = format_money(amount, currency)
                 return f"{money} payment failed (retry #{attempt_count})"
-            elif amount:
+            elif amount is not None:
                 return f"{format_money(amount, currency)} payment failed"
             return "Payment failed"
 
@@ -487,28 +489,31 @@ class NotificationBuilder:
                 or metadata.get("billing_period")
             )
 
+            # "is not None" throughout so $0 amounts (e.g. a $299 -> $0
+            # cancel-in-place downgrade or a $0 -> $99 upgrade from a
+            # free tier) keep the "from X to Y" framing.
             if direction == "upgrade":
                 # Show plan name if available (Chargify), otherwise amount change
-                if plan_name and amount:
+                if plan_name and amount is not None:
                     money = format_money(amount, currency)
                     return f"Upgraded to {plan_name} ({money}{suffix})"
-                elif previous_amount and amount:
+                elif previous_amount is not None and amount is not None:
                     old = format_money(previous_amount, prev_currency)
                     new = format_money(amount, currency)
                     return f"Upgraded: {old}{prev_suffix} to {new}{suffix}"
-                elif amount:
+                elif amount is not None:
                     money = format_money(amount, currency)
                     return f"Subscription upgraded to {money}{suffix}"
                 return "Subscription upgraded"
             elif direction == "downgrade":
-                if plan_name and amount:
+                if plan_name and amount is not None:
                     money = format_money(amount, currency)
                     return f"Downgraded to {plan_name} ({money}{suffix})"
-                elif previous_amount and amount:
+                elif previous_amount is not None and amount is not None:
                     old = format_money(previous_amount, prev_currency)
                     new = format_money(amount, currency)
                     return f"Downgraded: {old}{prev_suffix} to {new}{suffix}"
-                elif amount:
+                elif amount is not None:
                     money = format_money(amount, currency)
                     return f"Subscription downgraded to {money}{suffix}"
                 return "Subscription downgraded"
