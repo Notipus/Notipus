@@ -17,6 +17,7 @@ Thread Safety:
 - Timer scheduling uses threading.Lock for in-process safety
 """
 
+import copy
 import json
 import logging
 import threading
@@ -443,10 +444,11 @@ class PendingEventQueue:
         result_event = winner["event_data"].copy()
         # Always give the result its own metadata dict: a shared reference
         # (or a None/missing value) must never leak into later mutation by
-        # _merge_payment_failure.
-        winner_metadata = result_event.get("metadata")
+        # _merge_payment_failure or downstream consumers. Deep copy because
+        # metadata can hold nested structures (e.g. Shopify line_items).
+        winner_metadata = winner["event_data"].get("metadata")
         result_event["metadata"] = (
-            dict(winner_metadata) if isinstance(winner_metadata, dict) else {}
+            copy.deepcopy(winner_metadata) if isinstance(winner_metadata, dict) else {}
         )
         result_customer = winner["customer_data"].copy()
 

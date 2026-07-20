@@ -308,8 +308,16 @@ class TestPendingEventQueueAggregation:
     def test_aggregate_failure_merge_does_not_mutate_stored_metadata(
         self, queue: PendingEventQueue
     ) -> None:
-        """Test that merging failure details doesn't mutate the stored items."""
-        winner_metadata = {"subscription_id": "sub_abc"}
+        """Test that the aggregated metadata is deep-copied, not shared.
+
+        Metadata can contain nested structures (e.g. Shopify line_items),
+        so a shallow copy would still share the inner lists/dicts - any
+        later mutation of the result would corrupt the stored item.
+        """
+        winner_metadata = {
+            "subscription_id": "sub_abc",
+            "line_items": [{"title": "Widget", "quantity": 1}],
+        }
         stored_items = [
             {
                 "event_data": {
@@ -327,9 +335,16 @@ class TestPendingEventQueueAggregation:
             },
         ]
 
-        queue._aggregate_events(stored_items)
+        event, customer = queue._aggregate_events(stored_items)
 
+        # Top-level merge must not leak into the stored item
         assert "has_payment_failure" not in winner_metadata
+
+        # Nested structures must be independent copies too
+        event["metadata"]["line_items"][0]["title"] = "MUTATED"
+        event["metadata"]["line_items"].append({"title": "extra"})
+
+        assert winner_metadata["line_items"] == [{"title": "Widget", "quantity": 1}]
 
     def test_aggregate_failure_merge_with_absent_winner_metadata(
         self, queue: PendingEventQueue

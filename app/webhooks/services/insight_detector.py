@@ -273,31 +273,32 @@ class InsightDetector:
         if attempt_count and attempt_count >= 2:
             text += f" (attempt #{attempt_count})"
 
-        next_retry = self._format_retry_date(metadata.get("next_payment_attempt"))
+        next_retry = self._format_short_date(metadata.get("next_payment_attempt"))
         if next_retry:
             text += f" · Next retry {next_retry}"
 
         return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
 
-    def _format_retry_date(self, next_attempt: Any) -> str | None:
-        """Format a next-payment-attempt timestamp as a short date.
+    def _format_short_date(self, timestamp: Any) -> str | None:
+        """Format a unix timestamp as a short human date (e.g. "Feb 22").
 
-        Portable (no glibc-only ``%-d`` strftime code) and tolerant of
-        non-integer timestamp values from provider payloads.
+        Single formatting path for all insight dates. Portable (no
+        glibc-only ``%-d`` strftime code) and tolerant of non-integer
+        timestamp values from provider payloads.
 
         Args:
-            next_attempt: Unix timestamp (int, float, or numeric string).
+            timestamp: Unix timestamp (int, float, or numeric string).
 
         Returns:
             Short date string like "Feb 22", or None if unparseable.
         """
-        if next_attempt is None:
+        if timestamp is None:
             return None
         try:
-            retry_dt = datetime.fromtimestamp(int(next_attempt), tz=timezone.utc)
+            dt = datetime.fromtimestamp(int(timestamp), tz=timezone.utc)
         except (ValueError, TypeError, OverflowError, OSError):
             return None
-        return f"{retry_dt.strftime('%b')} {retry_dt.day}"
+        return f"{dt.strftime('%b')} {dt.day}"
 
     def _detect_trial_converted(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
@@ -592,20 +593,14 @@ class InsightDetector:
         # Use Stripe's attempt_count from metadata (most reliable for Stripe)
         attempt_count = metadata.get("attempt_count")
         if attempt_count is not None and attempt_count >= 1:
-            next_attempt = metadata.get("next_payment_attempt")
+            next_date = self._format_short_date(metadata.get("next_payment_attempt"))
             if attempt_count >= 2:
                 text = f"Retry #{attempt_count}"
-                if next_attempt:
-                    next_date = datetime.fromtimestamp(
-                        next_attempt, tz=timezone.utc
-                    ).strftime("%b %-d")
+                if next_date:
                     text += f" · Next attempt {next_date}"
                 return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
             # First attempt with next retry scheduled
-            if next_attempt:
-                next_date = datetime.fromtimestamp(
-                    next_attempt, tz=timezone.utc
-                ).strftime("%b %-d")
+            if next_date:
                 return InsightInfo(
                     icon=self.ICONS["failed_attempt"],
                     text=f"Next retry {next_date}",

@@ -1060,3 +1060,63 @@ class TestFailedAttemptsWithAttemptCount:
 
         assert result is not None
         assert "Attempt #3" in result.text
+
+    def test_string_next_attempt_timestamp_formatted(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that a numeric-string next_payment_attempt still formats."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 2,
+                "next_payment_attempt": "1740182400",  # Feb 22 2025, as string
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #2" in result.text
+        assert "Next attempt Feb 22" in result.text
+
+    def test_invalid_next_attempt_timestamp_does_not_crash(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that garbage next_payment_attempt drops the date, not the insight."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 2,
+                "next_payment_attempt": "soon",
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #2" in result.text
+        assert "Next attempt" not in result.text
+
+    def test_invalid_timestamp_attempt_1_falls_back_to_reason(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that attempt 1 with a bad timestamp falls back to the reason."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 1,
+                "failure_reason": "Card declined",
+                "next_payment_attempt": "not-a-timestamp",
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Card declined" in result.text
