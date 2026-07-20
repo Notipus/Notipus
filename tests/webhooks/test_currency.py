@@ -390,3 +390,15 @@ class TestArrCurrencyDisplay:
         payment = PaymentInfo(amount=10000.0, currency="JPY", interval="monthly")
 
         assert payment.format_amount_with_arr() == "¥10,000/mo = ¥120,000 ARR"
+
+    def test_zero_amount_recurring_keeps_interval_and_arr(self) -> None:
+        """Test that a $0 monthly plan still renders /mo and $0 ARR."""
+        payment = PaymentInfo(amount=0.0, currency="USD", interval="monthly")
+
+        assert payment.format_amount_with_arr() == "$0.00/mo = $0 ARR"
+
+    def test_non_recurring_amount_has_no_arr(self) -> None:
+        """Test that one-time payments render the bare amount only."""
+        payment = PaymentInfo(amount=50.0, currency="USD", interval=None)
+
+        assert payment.format_amount_with_arr() == "$50.00"

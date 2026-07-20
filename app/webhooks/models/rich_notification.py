@@ -269,11 +269,14 @@ class PaymentInfo:
         """
         arr = self.get_arr()
         amount_str: str = format_money(self.amount, self.currency)
-        if self.interval == "monthly" and arr:
+        # get_arr() returns None only when the interval is not recurring;
+        # an ARR of 0 is still applicable (e.g. a $0 monthly plan), so
+        # check for None rather than truthiness.
+        if self.interval == "monthly" and arr is not None:
             return f"{amount_str}/mo = {format_money(arr, self.currency, 0)} ARR"
-        elif self.interval == "annual" and arr:
+        elif self.interval == "annual" and arr is not None:
             return f"{amount_str}/yr ARR"
-        elif self.interval == "quarterly" and arr:
+        elif self.interval == "quarterly" and arr is not None:
             return f"{amount_str}/qtr = {format_money(arr, self.currency, 0)} ARR"
         return amount_str
 
