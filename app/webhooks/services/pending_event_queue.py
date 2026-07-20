@@ -17,11 +17,12 @@ Thread Safety:
 - Timer scheduling uses threading.Lock for in-process safety
 """
 
+import copy
 import json
 import logging
 import threading
 import time
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from core.models import Integration, Workspace
 from django.conf import settings
@@ -385,15 +386,42 @@ class PendingEventQueue:
         except Exception as e:
             logger.warning(f"Failed to release lock {lock_key}: {e}")
 
+    # Event type priority for aggregation (higher = preferred)
+    TYPE_PRIORITY: ClassVar[dict[str, int]] = {
+        "trial_started": 100,
+        "subscription_created": 90,
+        "subscription_updated": 80,
+        "subscription_deleted": 80,
+        "checkout_completed": 70,
+        "payment_failure": 60,  # Never dropped: folded into winner's metadata
+        "payment_success": 50,
+        "invoice_paid": 40,
+    }
+
+    # Failure details preserved when a payment_failure loses the priority
+    # contest (e.g. to subscription_created in the same idempotency bucket)
+    FAILURE_METADATA_FIELDS: ClassVar[tuple[str, ...]] = (
+        "failure_reason",
+        "decline_code",
+        "attempt_count",
+        "next_payment_attempt",
+    )
+
     def _aggregate_events(
         self, stored_items: list[dict[str, Any]]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Combine multiple events, prioritizing best data.
 
         Priority rules:
-        - event_type: Prefer subscription_created/trial_started over invoice events
-        - customer_email: Take from ANY event that has it (invoice events have it)
-        - Other fields: Take from first event, update if better data found
+        - event: The FULL event (type, amount, external_id, currency,
+          metadata, ...) is taken from the highest-priority event so the
+          notification never mixes fields from unrelated events.
+        - customer_email: Take from ANY event that has it (invoice events
+          have it, subscription events don't).
+        - payment_failure: Never silently dropped. If a failure shares the
+          bucket with a higher-priority event (e.g. subscription created
+          with an immediately-declining card), its details are merged into
+          the winner's metadata so one richer notification surfaces both.
 
         Args:
             stored_items: List of stored items with event_data and customer_data.
@@ -404,25 +432,29 @@ class PendingEventQueue:
         if not stored_items:
             return {}, {}
 
-        # Start with first item as base
-        result_event = stored_items[0]["event_data"].copy()
-        result_customer = stored_items[0]["customer_data"].copy()
+        # Pick the highest-priority event as the winner (first wins ties)
+        # and copy it in FULL - amount, external_id, currency and metadata
+        # must all come from the same event, not from stored_items[0].
+        winner = max(
+            stored_items,
+            key=lambda item: self.TYPE_PRIORITY.get(
+                item["event_data"].get("type", ""), 0
+            ),
+        )
+        result_event = winner["event_data"].copy()
+        # Always give the result its own metadata dict: a shared reference
+        # (or a None/missing value) must never leak into later mutation by
+        # _merge_payment_failure or downstream consumers. Deep copy because
+        # metadata can hold nested structures (e.g. Shopify line_items).
+        winner_metadata = winner["event_data"].get("metadata")
+        result_event["metadata"] = (
+            copy.deepcopy(winner_metadata) if isinstance(winner_metadata, dict) else {}
+        )
+        result_customer = winner["customer_data"].copy()
 
-        # Event type priority (higher = preferred)
-        type_priority = {
-            "trial_started": 100,
-            "subscription_created": 90,
-            "subscription_updated": 80,
-            "subscription_deleted": 80,
-            "checkout_completed": 70,
-            "payment_success": 50,
-            "invoice_paid": 40,
-            "payment_failure": 60,  # Important, keep if present
-        }
-
-        best_type_priority = type_priority.get(result_event.get("type", ""), 0)
-
-        for item in stored_items[1:]:
+        for item in stored_items:
+            if item is winner:
+                continue
             event_data = item["event_data"]
             customer_data = item["customer_data"]
 
@@ -439,22 +471,12 @@ class PendingEventQueue:
             if event_data.get("customer_email") and not result_customer.get("email"):
                 result_customer["email"] = event_data["customer_email"]
 
-            # Priority: prefer subscription/trial events for the notification type
-            event_type = event_data.get("type", "")
-            event_priority = type_priority.get(event_type, 0)
-
-            if event_priority > best_type_priority:
-                result_event["type"] = event_type
-                best_type_priority = event_priority
-
-                # Copy metadata from the preferred event type
-                if event_data.get("metadata"):
-                    result_event["metadata"] = event_data["metadata"]
-
             # Merge other customer data if missing
             for field in ["first_name", "last_name", "company_name"]:
                 if customer_data.get(field) and not result_customer.get(field):
                     result_customer[field] = customer_data[field]
+
+        self._merge_payment_failure(result_event, stored_items)
 
         logger.info(
             f"Aggregated {len(stored_items)} events: type={result_event.get('type')}, "
@@ -464,6 +486,58 @@ class PendingEventQueue:
         self._warn_if_missing_email(result_event, result_customer, stored_items)
 
         return result_event, result_customer
+
+    def _merge_payment_failure(
+        self,
+        result_event: dict[str, Any],
+        stored_items: list[dict[str, Any]],
+    ) -> None:
+        """Fold a losing payment_failure's details into the winning event.
+
+        When subscription.created and invoice.payment_failed share an
+        idempotency bucket, the subscription event wins the type contest but
+        the failure must still be surfaced. Marks the winner's metadata with
+        ``has_payment_failure`` plus the failure details so the notification
+        (via InsightDetector) reports "new subscription - but the initial
+        payment failed" instead of a bare "New subscription!".
+
+        Args:
+            result_event: Aggregated event data (mutated).
+            stored_items: Original list of stored items.
+        """
+        if result_event.get("type") == "payment_failure":
+            return  # The failure IS the notification
+
+        failure_items = [
+            item
+            for item in stored_items
+            if item["event_data"].get("type") == "payment_failure"
+        ]
+        if not failure_items:
+            return
+
+        failure_event = failure_items[0]["event_data"]
+        failure_metadata = failure_event.get("metadata")
+        if not isinstance(failure_metadata, dict):
+            failure_metadata = {}
+
+        metadata = result_event.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result_event["metadata"] = metadata
+
+        metadata["has_payment_failure"] = True
+        for field in self.FAILURE_METADATA_FIELDS:
+            if failure_metadata.get(field) is not None:
+                metadata[field] = failure_metadata[field]
+        # `is not None` (not truthiness): a legitimate 0.0 must be kept
+        if failure_event.get("amount") is not None:
+            metadata["failed_amount"] = failure_event["amount"]
+
+        logger.info(
+            f"Merged payment_failure into {result_event.get('type')} notification "
+            f"(reason: {failure_metadata.get('failure_reason', 'unknown')})"
+        )
 
     def _warn_if_missing_email(
         self,
@@ -526,13 +600,22 @@ class PendingEventQueue:
         workspace_id = str(workspace.uuid) if workspace else ""
         external_id = event_data.get("external_id", "")
 
+        # Add workspace_id to event_data for insight detection (tenant-scoped
+        # anniversary dedup), mirroring webhook_router._process_immediately
+        event_data["workspace_id"] = workspace_id
+
         # Check if this event should be suppressed due to consolidation
-        # (e.g., $0 trial invoices)
+        # (e.g., $0 trial invoices). Suppression is scoped to the
+        # transaction-level correlator so an unrelated second transaction
+        # for the same customer is never suppressed.
         should_notify = event_consolidation_service.should_send_notification(
             event_type=event_type,
             customer_id=customer_id,
             workspace_id=workspace_id,
             amount=event_data.get("amount"),
+            correlation_id=event_consolidation_service.extract_correlation_id(
+                event_data
+            ),
         )
 
         if not should_notify:
