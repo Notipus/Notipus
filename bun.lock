@@ -6,7 +6,7 @@
       "name": "notipus",
       "dependencies": {
         "@shopify/app": "^3.58.2",
-        "@shopify/cli": "^3.89.0",
+        "@shopify/cli": "^4.5.2",
       },
       "devDependencies": {
         "@fortawesome/fontawesome-free": "^7.3.1",
@@ -21,25 +21,25 @@
   "packages": {
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.1.3", "", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^4.0.0" } }, "sha512-3yWxPTq3UQ/FY9p1ErPxIyfT64elWaMvM9lIHnaqpyft63tkxodF5aUElYHrdisWve5cETkh1+KBw1yJuW0aRw=="],
 
-    "@ast-grep/napi": ["@ast-grep/napi@0.33.0", "", { "optionalDependencies": { "@ast-grep/napi-darwin-arm64": "0.33.0", "@ast-grep/napi-darwin-x64": "0.33.0", "@ast-grep/napi-linux-arm64-gnu": "0.33.0", "@ast-grep/napi-linux-arm64-musl": "0.33.0", "@ast-grep/napi-linux-x64-gnu": "0.33.0", "@ast-grep/napi-linux-x64-musl": "0.33.0", "@ast-grep/napi-win32-arm64-msvc": "0.33.0", "@ast-grep/napi-win32-ia32-msvc": "0.33.0", "@ast-grep/napi-win32-x64-msvc": "0.33.0" } }, "sha512-6heRMmomhSD0dkummRQ+R4xWXXmc41OaDPoPI49mKJXPyvwJPdPZUcQjXdIitOVL4uJV+qM2ZBucDPENDBSixw=="],
+    "@ast-grep/napi": ["@ast-grep/napi@0.43.0", "", { "optionalDependencies": { "@ast-grep/napi-darwin-arm64": "0.43.0", "@ast-grep/napi-darwin-x64": "0.43.0", "@ast-grep/napi-linux-arm64-gnu": "0.43.0", "@ast-grep/napi-linux-arm64-musl": "0.43.0", "@ast-grep/napi-linux-x64-gnu": "0.43.0", "@ast-grep/napi-linux-x64-musl": "0.43.0", "@ast-grep/napi-win32-arm64-msvc": "0.43.0", "@ast-grep/napi-win32-ia32-msvc": "0.43.0", "@ast-grep/napi-win32-x64-msvc": "0.43.0" } }, "sha512-dPugC04xwgk3gJl17jJvTjVjx1IXtWI9EcEQ0szlh0jg1UfvGDdZJo9/S9Pk7gzGBNd2bW8hIL3dG6K4T8PEJA=="],
 
-    "@ast-grep/napi-darwin-arm64": ["@ast-grep/napi-darwin-arm64@0.33.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-FsBQiBNGbqeU6z2sjFgnV6MXuBa0wYUb4PViMnqsKLeWiO7kRii5crmXLCtdTD2hufXTG6Rll8X46AkYOAwGGQ=="],
+    "@ast-grep/napi-darwin-arm64": ["@ast-grep/napi-darwin-arm64@0.43.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-JBWYRNJsQ/8yfcMDARFxcl1fVZ6+kv3sHB+ClKgSCe9DNoLvGQfqGr9UGRrNOModvXY6cX+c87iAPqPGftUUiw=="],
 
-    "@ast-grep/napi-darwin-x64": ["@ast-grep/napi-darwin-x64@0.33.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-rWo1wG7fc7K20z9ExIeN6U4QqjHhoQSpBDDnmxKTR0nIwPfyMq338sS4sWZomutxprcZDtWrekxH1lXjNvfuiA=="],
+    "@ast-grep/napi-darwin-x64": ["@ast-grep/napi-darwin-x64@0.43.0", "", { "os": "darwin", "cpu": "x64" }, "sha512-oqE/bC/uAEctnAbzqobplidExsPym4CQq7JDVD9HpkHpDHzMzPBF69whv/Qu0ZwrkXr48GCMKO5G6p+OB5n+kQ=="],
 
-    "@ast-grep/napi-linux-arm64-gnu": ["@ast-grep/napi-linux-arm64-gnu@0.33.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-3ZnA2k57kxfvLg4s9+6rHaCx1FbWt0EF8fumJMf5nwevu7GbVOOhCkzAetZe80FBgZuIOSR4IS2QMj9ZHI0UdQ=="],
+    "@ast-grep/napi-linux-arm64-gnu": ["@ast-grep/napi-linux-arm64-gnu@0.43.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-yJSRPxwwrvVW94J2rtaatcixSAGWcSaHNbAh6soXD6HXgq6I7uMc+cyMnJstFL789yd6Pu3QIhTlpD9VY0oYhw=="],
 
-    "@ast-grep/napi-linux-arm64-musl": ["@ast-grep/napi-linux-arm64-musl@0.33.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-oUGZgCaVCijFgvC+X52ttgoWUqgrIsSVJZgn+1VBY3n4mpzcoYAghFomSUbRTBUL2ebvZweA33Klqks4okY61w=="],
+    "@ast-grep/napi-linux-arm64-musl": ["@ast-grep/napi-linux-arm64-musl@0.43.0", "", { "os": "linux", "cpu": "arm64" }, "sha512-mknXLDsf66HvT/JEl18ZQSvR7/qWgWfqh3eHuVRqD2lE6cKBDXRnAzx9ZNZkUnL2Z5ph54Yk8dKVu09k45cegA=="],
 
-    "@ast-grep/napi-linux-x64-gnu": ["@ast-grep/napi-linux-x64-gnu@0.33.0", "", { "os": "linux", "cpu": "x64" }, "sha512-QTAkfxQSsOGRza0hnkeAgJDQqR00iDerRNq42dOGIzgF+Kse491By3UmBEMG4oCbv17yYcBBlknQkzKSKtigjw=="],
+    "@ast-grep/napi-linux-x64-gnu": ["@ast-grep/napi-linux-x64-gnu@0.43.0", "", { "os": "linux", "cpu": "x64" }, "sha512-KM6M5KKFsHG9Y7VKCKnMsWQQ1sYwj/SPdyr91SKp66AeFJ5xMtXb13WVQ3Joe9NEsi84dzzOBIJgMddz+UMvQw=="],
 
-    "@ast-grep/napi-linux-x64-musl": ["@ast-grep/napi-linux-x64-musl@0.33.0", "", { "os": "linux", "cpu": "x64" }, "sha512-PW6bZO7MyQsBNZv0idI/Ah6ak66T8LqZ21wBGjtQp9NDGViOtkLeu+eJJGaZjMqUdidKHKgmMKXksZHl2m8ulQ=="],
+    "@ast-grep/napi-linux-x64-musl": ["@ast-grep/napi-linux-x64-musl@0.43.0", "", { "os": "linux", "cpu": "x64" }, "sha512-NfjI74m7CEEOsLi7ZkYwcxY10CfKIHPHRrr9aqMulmnrC4FGvxQMk1qpDrTqkjmEd8LdZt3PsPrmBa8AZCErew=="],
 
-    "@ast-grep/napi-win32-arm64-msvc": ["@ast-grep/napi-win32-arm64-msvc@0.33.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-ijmFQcFc32JOIQlSfnhDJpb3qFb2RhrRqfeY0EHHN1xRSGwZHfsHTSS66nKR2sREmxTIMgxXOtylKicbyyMVKA=="],
+    "@ast-grep/napi-win32-arm64-msvc": ["@ast-grep/napi-win32-arm64-msvc@0.43.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-8qwXz3oogh834bXmNLtgsQYsuQi4ZDu4e1He/q+ENhVfjIr4IZRAUc1CoKZgWn+ZSE+B0NJJIxT8Vre2l0Q1Lg=="],
 
-    "@ast-grep/napi-win32-ia32-msvc": ["@ast-grep/napi-win32-ia32-msvc@0.33.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-NNIb2VK3Z2BwKp0QJSw8gkhwOUp85SgTsxJ38p+wIUAA/KzAKCJOmyOaZ301qGHt4gL+jTHgTIvJJX+9eT/REg=="],
+    "@ast-grep/napi-win32-ia32-msvc": ["@ast-grep/napi-win32-ia32-msvc@0.43.0", "", { "os": "win32", "cpu": "ia32" }, "sha512-wUI/B9QNPzi0K7LlyO7eWvwhqFChM6+O4r5dfBfnOlkP1s/AZ04FdYaC9KAZiODE4FCWbeHbfO03RYOdWeF6eg=="],
 
-    "@ast-grep/napi-win32-x64-msvc": ["@ast-grep/napi-win32-x64-msvc@0.33.0", "", { "os": "win32", "cpu": "x64" }, "sha512-gW7viQQjdPA1HoCkpCqoonC81TOwcpP828w/XqZFE/L6uhD8SF2usul8KNBQOiX3O7/fqYEOnbtWMCrwZIqG1Q=="],
+    "@ast-grep/napi-win32-x64-msvc": ["@ast-grep/napi-win32-x64-msvc@0.43.0", "", { "os": "win32", "cpu": "x64" }, "sha512-GsGIwYiThKiK9XPGBEguZAs4aIBgv6+DgosBs6ve2a3L390AaLqitoc+bbRz4Eu51URlFKmNP7TtvnAJbMi8QQ=="],
 
     "@babel/runtime": ["@babel/runtime@7.28.6", "", {}, "sha512-05WQkdpL9COIMz4LjTxGpPNCdlpyimKppYNoJ5Di5EUObifl8t4tuLuUBBZEpoLYOmfvIWrsp9fCl0HoPRVTdA=="],
 
@@ -55,7 +55,7 @@
 
     "@bugsnag/safe-json-stringify": ["@bugsnag/safe-json-stringify@6.1.0", "", {}, "sha512-ImA35rnM7bGr+J30R979FQ95BhRB4UO1KfJA0J2sVqc8nwnrS9hhE5mkTmQWMs8Vh1Da+hkLKs5jJB4JjNZp4A=="],
 
-    "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.25.12", "", { "os": "aix", "cpu": "ppc64" }, "sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA=="],
+    "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.28.1", "", { "os": "aix", "cpu": "ppc64" }, "sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ=="],
 
     "@esbuild/android-arm": ["@esbuild/android-arm@0.19.8", "", { "os": "android", "cpu": "arm" }, "sha512-31E2lxlGM1KEfivQl8Yf5aYU/mflz9g06H6S15ITUFQueMFtFjESRMoDSkvMo8thYvLBax+VKTPlpnx+sPicOA=="],
 
@@ -89,15 +89,15 @@
 
     "@esbuild/linux-x64": ["@esbuild/linux-x64@0.19.8", "", { "os": "linux", "cpu": "x64" }, "sha512-lytMAVOM3b1gPypL2TRmZ5rnXl7+6IIk8uB3eLsV1JwcizuolblXRrc5ShPrO9ls/b+RTp+E6gbsuLWHWi2zGg=="],
 
-    "@esbuild/netbsd-arm64": ["@esbuild/netbsd-arm64@0.25.12", "", { "os": "none", "cpu": "arm64" }, "sha512-xXwcTq4GhRM7J9A8Gv5boanHhRa/Q9KLVmcyXHCTaM4wKfIpWkdXiMog/KsnxzJ0A1+nD+zoecuzqPmCRyBGjg=="],
+    "@esbuild/netbsd-arm64": ["@esbuild/netbsd-arm64@0.28.1", "", { "os": "none", "cpu": "arm64" }, "sha512-oks0DYbLwWMmaakTsCb+zL4E+aHRVLom9IJZOAthMQEPiQmydXHkziYEsGYRx0uNV/IjEKGAV941JzH02pflqw=="],
 
     "@esbuild/netbsd-x64": ["@esbuild/netbsd-x64@0.19.8", "", { "os": "none", "cpu": "x64" }, "sha512-hvWVo2VsXz/8NVt1UhLzxwAfo5sioj92uo0bCfLibB0xlOmimU/DeAEsQILlBQvkhrGjamP0/el5HU76HAitGw=="],
 
-    "@esbuild/openbsd-arm64": ["@esbuild/openbsd-arm64@0.25.12", "", { "os": "openbsd", "cpu": "arm64" }, "sha512-fF96T6KsBo/pkQI950FARU9apGNTSlZGsv1jZBAlcLL1MLjLNIWPBkj5NlSz8aAzYKg+eNqknrUJ24QBybeR5A=="],
+    "@esbuild/openbsd-arm64": ["@esbuild/openbsd-arm64@0.28.1", "", { "os": "openbsd", "cpu": "arm64" }, "sha512-MEFJe5C3R8pwXdZ5Y21oo6m7ePiS0d9pWucn99O/wvyJZChoIQKrQDxKrGeW8F5+T0okTHesAmDeiHDTIq0V/Q=="],
 
     "@esbuild/openbsd-x64": ["@esbuild/openbsd-x64@0.19.8", "", { "os": "openbsd", "cpu": "x64" }, "sha512-/7Y7u77rdvmGTxR83PgaSvSBJCC2L3Kb1M/+dmSIvRvQPXXCuC97QAwMugBNG0yGcbEGfFBH7ojPzAOxfGNkwQ=="],
 
-    "@esbuild/openharmony-arm64": ["@esbuild/openharmony-arm64@0.25.12", "", { "os": "none", "cpu": "arm64" }, "sha512-rm0YWsqUSRrjncSXGA7Zv78Nbnw4XL6/dzr20cyrQf7ZmRcsovpcRBdhD43Nuk3y7XIoW2OxMVvwuRvk9XdASg=="],
+    "@esbuild/openharmony-arm64": ["@esbuild/openharmony-arm64@0.28.1", "", { "os": "none", "cpu": "arm64" }, "sha512-ge+Z7EXFNt2BO1oAMsVpiQ8EwndV9i1xXerAeTIK7AtPs3bKFXQM7nlRxDSIUIMeueR1CNXxqztLzdNeReKBJg=="],
 
     "@esbuild/sunos-x64": ["@esbuild/sunos-x64@0.19.8", "", { "os": "sunos", "cpu": "x64" }, "sha512-9Lc4s7Oi98GqFA4HzA/W2JHIYfnXbUYgekUP/Sm4BG9sfLjyv6GKKHKKVs83SMicBF2JwAX6A1PuOLMqpD001w=="],
 
@@ -209,7 +209,7 @@
 
     "@shopify/app": ["@shopify/app@3.58.2", "", { "dependencies": { "@luckycatfactory/esbuild-graphql-loader": "3.8.1", "@oclif/core": "3.19.6", "@shopify/cli-kit": "3.58.2", "@shopify/create-app": "3.58.2", "@shopify/function-runner": "4.1.1", "@shopify/plugin-cloudflare": "3.58.2", "@shopify/polaris": "12.10.0", "@shopify/polaris-icons": "8.0.0", "@shopify/theme-check-node": "2.2.2", "abort-controller": "3.0.0", "body-parser": "1.20.2", "chokidar": "3.5.3", "diff": "5.1.0", "esbuild": "0.19.8", "express": "4.18.2", "graphql-request": "5.2.0", "h3": "0.7.21", "http-proxy": "1.18.1", "micromatch": "4.0.5", "react": "18.2.0", "react-dom": "18.2.0", "serve-static": "1.15.0", "ws": "8.13.0" }, "peerDependencies": { "ink": "4.4.1" }, "os": [ "linux", "win32", "darwin", ] }, "sha512-JEuLDxfG6TfDsrxX7Jky3yRaFCp0bQHYaxnLw/ON2W78G23ubtxIrgGRiyxVgpZJmQ/QV4YHobj73iQs2mHbPw=="],
 
-    "@shopify/cli": ["@shopify/cli@3.89.0", "", { "dependencies": { "@ast-grep/napi": "0.33.0", "esbuild": "0.25.12", "global-agent": "3.0.0" }, "os": [ "linux", "win32", "darwin", ], "bin": { "shopify": "bin/run.js" } }, "sha512-Tgwt2/3PMUvCKcp0D8dgNu31alWitoeOQh1oYMItWNBCar1F5YwnTL6wvplJwgIB0/AKbanydd0ioD298lyjGg=="],
+    "@shopify/cli": ["@shopify/cli@4.5.2", "", { "dependencies": { "@ast-grep/napi": "0.43.0", "esbuild": "0.28.1", "global-agent": "3.0.0" }, "os": [ "linux", "win32", "darwin", ], "bin": { "shopify": "bin/run.js" } }, "sha512-QgZf7z9jB3y7neNgn2SoT93m1dXORgJWh/Rbj862QZtNeLFLw3nwWuSqiBcPwfYSqyYiTtqu1nYyVduC5oOlsA=="],
 
     "@shopify/cli-kit": ["@shopify/cli-kit@3.58.2", "", { "dependencies": { "@bugsnag/js": "7.21.0", "@iarna/toml": "2.2.5", "@oclif/core": "3.19.6", "@opentelemetry/api": "1.6.0", "@opentelemetry/core": "1.17.1", "@opentelemetry/exporter-metrics-otlp-http": "0.43.0", "@opentelemetry/resources": "1.17.1", "@opentelemetry/sdk-metrics": "1.17.1", "@opentelemetry/semantic-conventions": "1.17.1", "@types/archiver": "5.3.2", "abort-controller": "3.0.0", "ansi-escapes": "6.2.0", "archiver": "5.3.2", "bottleneck": "2.19.5", "chalk": "5.3.0", "change-case": "4.1.2", "color-json": "3.0.5", "commondir": "1.0.1", "conf": "11.0.2", "cross-zip": "4.0.0", "deepmerge": "4.3.1", "del": "6.1.1", "dotenv": "16.4.5", "env-paths": "3.0.0", "execa": "7.2.0", "fast-glob": "3.3.1", "figures": "5.0.0", "find-process": "1.4.7", "find-up": "6.3.0", "find-versions": "5.1.0", "form-data": "4.0.0", "fs-extra": "11.1.0", "fuzzy": "0.1.3", "get-port-please": "3.0.1", "gradient-string": "2.0.2", "graphql": "16.8.1", "graphql-request": "5.2.0", "ink": "4.4.1", "is-interactive": "2.0.0", "js-yaml": "4.1.0", "kill-port-process": "3.1.0", "latest-version": "7.0.0", "liquidjs": "10.9.2", "lodash": "4.17.21", "macaddress": "0.5.3", "minimatch": "9.0.3", "mrmime": "1.0.1", "node-abort-controller": "3.1.1", "node-fetch": "3.3.2", "open": "8.4.2", "pathe": "1.1.1", "react": "18.2.0", "semver": "7.5.4", "simple-git": "3.19.1", "source-map-support": "0.5.21", "stacktracey": "2.1.8", "strip-ansi": "7.1.0", "supports-hyperlinks": "3.0.0", "tempy": "3.0.0", "term-size": "3.0.2", "terminal-link": "3.0.0", "ts-error": "1.0.6", "unique-string": "3.0.0", "zod": "3.22.3" }, "os": [ "linux", "win32", "darwin", ] }, "sha512-D509CEIB5egusm2O3+30RiT/Vm+eLaanGpPVk8PhstVGEM7pnNdE2O7b7CtBddEHCRvoFWg1ldP1h0g6jixwCw=="],
 
@@ -1451,7 +1451,7 @@
 
     "@pnpm/network.ca-file/graceful-fs": ["graceful-fs@4.2.10", "", {}, "sha512-9ByhssR2fPVsNZj478qUUbKfmL0+t5BDVyjShtyZZLiK7ZDAArFFfopyOTj0M05wE2tJPisA4iTnnXl2YoPvOA=="],
 
-    "@shopify/cli/esbuild": ["esbuild@0.25.12", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.25.12", "@esbuild/android-arm": "0.25.12", "@esbuild/android-arm64": "0.25.12", "@esbuild/android-x64": "0.25.12", "@esbuild/darwin-arm64": "0.25.12", "@esbuild/darwin-x64": "0.25.12", "@esbuild/freebsd-arm64": "0.25.12", "@esbuild/freebsd-x64": "0.25.12", "@esbuild/linux-arm": "0.25.12", "@esbuild/linux-arm64": "0.25.12", "@esbuild/linux-ia32": "0.25.12", "@esbuild/linux-loong64": "0.25.12", "@esbuild/linux-mips64el": "0.25.12", "@esbuild/linux-ppc64": "0.25.12", "@esbuild/linux-riscv64": "0.25.12", "@esbuild/linux-s390x": "0.25.12", "@esbuild/linux-x64": "0.25.12", "@esbuild/netbsd-arm64": "0.25.12", "@esbuild/netbsd-x64": "0.25.12", "@esbuild/openbsd-arm64": "0.25.12", "@esbuild/openbsd-x64": "0.25.12", "@esbuild/openharmony-arm64": "0.25.12", "@esbuild/sunos-x64": "0.25.12", "@esbuild/win32-arm64": "0.25.12", "@esbuild/win32-ia32": "0.25.12", "@esbuild/win32-x64": "0.25.12" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg=="],
+    "@shopify/cli/esbuild": ["esbuild@0.28.1", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.28.1", "@esbuild/android-arm": "0.28.1", "@esbuild/android-arm64": "0.28.1", "@esbuild/android-x64": "0.28.1", "@esbuild/darwin-arm64": "0.28.1", "@esbuild/darwin-x64": "0.28.1", "@esbuild/freebsd-arm64": "0.28.1", "@esbuild/freebsd-x64": "0.28.1", "@esbuild/linux-arm": "0.28.1", "@esbuild/linux-arm64": "0.28.1", "@esbuild/linux-ia32": "0.28.1", "@esbuild/linux-loong64": "0.28.1", "@esbuild/linux-mips64el": "0.28.1", "@esbuild/linux-ppc64": "0.28.1", "@esbuild/linux-riscv64": "0.28.1", "@esbuild/linux-s390x": "0.28.1", "@esbuild/linux-x64": "0.28.1", "@esbuild/netbsd-arm64": "0.28.1", "@esbuild/netbsd-x64": "0.28.1", "@esbuild/openbsd-arm64": "0.28.1", "@esbuild/openbsd-x64": "0.28.1", "@esbuild/openharmony-arm64": "0.28.1", "@esbuild/sunos-x64": "0.28.1", "@esbuild/win32-arm64": "0.28.1", "@esbuild/win32-ia32": "0.28.1", "@esbuild/win32-x64": "0.28.1" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw=="],
 
     "@shopify/cli-kit/ansi-escapes": ["ansi-escapes@6.2.0", "", { "dependencies": { "type-fest": "^3.0.0" } }, "sha512-kzRaCqXnpzWs+3z5ABPQiVke+iq0KXkHo8xiWV4RPTi5Yli0l97BEQuhXV1s7+aSU/fu1kUuxgS4MsQ0fRuygw=="],
 
@@ -1663,49 +1663,49 @@
 
     "@shopify/cli-kit/supports-hyperlinks/supports-color": ["supports-color@7.2.0", "", { "dependencies": { "has-flag": "^4.0.0" } }, "sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw=="],
 
-    "@shopify/cli/esbuild/@esbuild/android-arm": ["@esbuild/android-arm@0.25.12", "", { "os": "android", "cpu": "arm" }, "sha512-VJ+sKvNA/GE7Ccacc9Cha7bpS8nyzVv0jdVgwNDaR4gDMC/2TTRc33Ip8qrNYUcpkOHUT5OZ0bUcNNVZQ9RLlg=="],
+    "@shopify/cli/esbuild/@esbuild/android-arm": ["@esbuild/android-arm@0.28.1", "", { "os": "android", "cpu": "arm" }, "sha512-0k2F129Xdio1TdJfzJ8sy1Q47vUD2NnwdhiAf7drUN1EBTfPf4hsFCtmMgu/6m8JSzsBrlmVjudMBQqOfG8usQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/android-arm64": ["@esbuild/android-arm64@0.25.12", "", { "os": "android", "cpu": "arm64" }, "sha512-6AAmLG7zwD1Z159jCKPvAxZd4y/VTO0VkprYy+3N2FtJ8+BQWFXU+OxARIwA46c5tdD9SsKGZ/1ocqBS/gAKHg=="],
+    "@shopify/cli/esbuild/@esbuild/android-arm64": ["@esbuild/android-arm64@0.28.1", "", { "os": "android", "cpu": "arm64" }, "sha512-34EGEbCIAgosYz6goLcopX6Mo7NyGv9tfwEM2/7Ce2VcVRk568iSvniGWcUXIy7wEDR1wzolcxcriFVrWYcwBg=="],
 
-    "@shopify/cli/esbuild/@esbuild/android-x64": ["@esbuild/android-x64@0.25.12", "", { "os": "android", "cpu": "x64" }, "sha512-5jbb+2hhDHx5phYR2By8GTWEzn6I9UqR11Kwf22iKbNpYrsmRB18aX/9ivc5cabcUiAT/wM+YIZ6SG9QO6a8kg=="],
+    "@shopify/cli/esbuild/@esbuild/android-x64": ["@esbuild/android-x64@0.28.1", "", { "os": "android", "cpu": "x64" }, "sha512-dbwY7ltSMDWsRatcRpCnES4F+im88OCUgGZjy52shC7GqHRE/cYlxNbB4Z4UpJswpcc4Qxd2oE/ufM0p61IKng=="],
 
-    "@shopify/cli/esbuild/@esbuild/darwin-arm64": ["@esbuild/darwin-arm64@0.25.12", "", { "os": "darwin", "cpu": "arm64" }, "sha512-N3zl+lxHCifgIlcMUP5016ESkeQjLj/959RxxNYIthIg+CQHInujFuXeWbWMgnTo4cp5XVHqFPmpyu9J65C1Yg=="],
+    "@shopify/cli/esbuild/@esbuild/darwin-arm64": ["@esbuild/darwin-arm64@0.28.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-TZbWkQY7kvTAXbXUT7uVACR5cMHsDiSz9z7ZKAX/RTq/WJEk3QyRr0wZpNhBDX+/0CtdqUIJlOiodQcta6tY3Q=="],
 
-    "@shopify/cli/esbuild/@esbuild/darwin-x64": ["@esbuild/darwin-x64@0.25.12", "", { "os": "darwin", "cpu": "x64" }, "sha512-HQ9ka4Kx21qHXwtlTUVbKJOAnmG1ipXhdWTmNXiPzPfWKpXqASVcWdnf2bnL73wgjNrFXAa3yYvBSd9pzfEIpA=="],
+    "@shopify/cli/esbuild/@esbuild/darwin-x64": ["@esbuild/darwin-x64@0.28.1", "", { "os": "darwin", "cpu": "x64" }, "sha512-zfdzgK9ACBNZLI/CyHTOx81SyNbM6YXn7rxSgX97VjyiPl9W1i4Ka4fgKECEoFCKGpvBj5qArWIGgQjOwkgskQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/freebsd-arm64": ["@esbuild/freebsd-arm64@0.25.12", "", { "os": "freebsd", "cpu": "arm64" }, "sha512-gA0Bx759+7Jve03K1S0vkOu5Lg/85dou3EseOGUes8flVOGxbhDDh/iZaoek11Y8mtyKPGF3vP8XhnkDEAmzeg=="],
+    "@shopify/cli/esbuild/@esbuild/freebsd-arm64": ["@esbuild/freebsd-arm64@0.28.1", "", { "os": "freebsd", "cpu": "arm64" }, "sha512-wG2EA8ENdEI0qhkSZMjfqrdY+ziCYCPMmtZjjIwOmXFjmyzEHn+UUxk5of+SYsjtfs3VpnlC7QLzSI5hY/rOAw=="],
 
-    "@shopify/cli/esbuild/@esbuild/freebsd-x64": ["@esbuild/freebsd-x64@0.25.12", "", { "os": "freebsd", "cpu": "x64" }, "sha512-TGbO26Yw2xsHzxtbVFGEXBFH0FRAP7gtcPE7P5yP7wGy7cXK2oO7RyOhL5NLiqTlBh47XhmIUXuGciXEqYFfBQ=="],
+    "@shopify/cli/esbuild/@esbuild/freebsd-x64": ["@esbuild/freebsd-x64@0.28.1", "", { "os": "freebsd", "cpu": "x64" }, "sha512-i7dZ9vQgnvSCzi/rYCXNgtF/U+eKZNJBzu3eTQbRgHnM7tNSizLOkRFAl3qzVc/Op/u5YkHHa4pf/3DOYHthLQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-arm": ["@esbuild/linux-arm@0.25.12", "", { "os": "linux", "cpu": "arm" }, "sha512-lPDGyC1JPDou8kGcywY0YILzWlhhnRjdof3UlcoqYmS9El818LLfJJc3PXXgZHrHCAKs/Z2SeZtDJr5MrkxtOw=="],
+    "@shopify/cli/esbuild/@esbuild/linux-arm": ["@esbuild/linux-arm@0.28.1", "", { "os": "linux", "cpu": "arm" }, "sha512-qVXBOHQS+d5Y722GwJzJUtOLlX7km3CraOaGormF1pDtPd2C/l1SHRPgjLunLGe51Sh5YYWKMFDyV4SxgMQYTQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-arm64": ["@esbuild/linux-arm64@0.25.12", "", { "os": "linux", "cpu": "arm64" }, "sha512-8bwX7a8FghIgrupcxb4aUmYDLp8pX06rGh5HqDT7bB+8Rdells6mHvrFHHW2JAOPZUbnjUpKTLg6ECyzvas2AQ=="],
+    "@shopify/cli/esbuild/@esbuild/linux-arm64": ["@esbuild/linux-arm64@0.28.1", "", { "os": "linux", "cpu": "arm64" }, "sha512-yHs+0uc8+nvEAfAfxrWQKK5peSNzBc4PegcMO0EJ2hT71uA7vB8Ihg2e77R2P7SG5uYjPbHlLLmve4LLLRCf0g=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-ia32": ["@esbuild/linux-ia32@0.25.12", "", { "os": "linux", "cpu": "ia32" }, "sha512-0y9KrdVnbMM2/vG8KfU0byhUN+EFCny9+8g202gYqSSVMonbsCfLjUO+rCci7pM0WBEtz+oK/PIwHkzxkyharA=="],
+    "@shopify/cli/esbuild/@esbuild/linux-ia32": ["@esbuild/linux-ia32@0.28.1", "", { "os": "linux", "cpu": "ia32" }, "sha512-d1z4ZuP0ajrfz/FhGT4vv278rX8KnPPJx8i5+AtK7TYbx9Le9F1hyzurZpkEyjkGa9dUGhQow4C1NmeGvqxN2w=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-loong64": ["@esbuild/linux-loong64@0.25.12", "", { "os": "linux", "cpu": "none" }, "sha512-h///Lr5a9rib/v1GGqXVGzjL4TMvVTv+s1DPoxQdz7l/AYv6LDSxdIwzxkrPW438oUXiDtwM10o9PmwS/6Z0Ng=="],
+    "@shopify/cli/esbuild/@esbuild/linux-loong64": ["@esbuild/linux-loong64@0.28.1", "", { "os": "linux", "cpu": "none" }, "sha512-M5sRjUVZrkm1OAPR3dlOYzNmN+loZKGVi1VUQGrwuqLcbR6qeAz+famMhjASeH3YVKvZz+zT1jlh/keC3Rj/lg=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-mips64el": ["@esbuild/linux-mips64el@0.25.12", "", { "os": "linux", "cpu": "none" }, "sha512-iyRrM1Pzy9GFMDLsXn1iHUm18nhKnNMWscjmp4+hpafcZjrr2WbT//d20xaGljXDBYHqRcl8HnxbX6uaA/eGVw=="],
+    "@shopify/cli/esbuild/@esbuild/linux-mips64el": ["@esbuild/linux-mips64el@0.28.1", "", { "os": "linux", "cpu": "none" }, "sha512-mRObBZeHh2OxcBFPWE/FjylkRgZdYuiTR3vaTozquCGOH14iP9oN4x4Ge81CoIDYQrXmIxpFumJBu5MtZpnQJQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-ppc64": ["@esbuild/linux-ppc64@0.25.12", "", { "os": "linux", "cpu": "ppc64" }, "sha512-9meM/lRXxMi5PSUqEXRCtVjEZBGwB7P/D4yT8UG/mwIdze2aV4Vo6U5gD3+RsoHXKkHCfSxZKzmDssVlRj1QQA=="],
+    "@shopify/cli/esbuild/@esbuild/linux-ppc64": ["@esbuild/linux-ppc64@0.28.1", "", { "os": "linux", "cpu": "ppc64" }, "sha512-slScBsMAb3GFDcdrCgLwZtPYRoH2H/youv10QiZyRjmsP48fznoveWytSgCI/R0ZcUgpc0ZhIUEx6LHts8yrfQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-riscv64": ["@esbuild/linux-riscv64@0.25.12", "", { "os": "linux", "cpu": "none" }, "sha512-Zr7KR4hgKUpWAwb1f3o5ygT04MzqVrGEGXGLnj15YQDJErYu/BGg+wmFlIDOdJp0PmB0lLvxFIOXZgFRrdjR0w=="],
+    "@shopify/cli/esbuild/@esbuild/linux-riscv64": ["@esbuild/linux-riscv64@0.28.1", "", { "os": "linux", "cpu": "none" }, "sha512-kw0owk1o0GFETUJyW0jc0G4Yzs0BHZn0JDZ8JRT088vjJYX777BAs1fDGxAC+q831qOs2DTC96mNsG2opdfyyQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-s390x": ["@esbuild/linux-s390x@0.25.12", "", { "os": "linux", "cpu": "s390x" }, "sha512-MsKncOcgTNvdtiISc/jZs/Zf8d0cl/t3gYWX8J9ubBnVOwlk65UIEEvgBORTiljloIWnBzLs4qhzPkJcitIzIg=="],
+    "@shopify/cli/esbuild/@esbuild/linux-s390x": ["@esbuild/linux-s390x@0.28.1", "", { "os": "linux", "cpu": "s390x" }, "sha512-/lAIjX8aYFRByhh6L5rYtPEDRqa9de/4V/juOXcta5frjvzXO4/sqEtyytse0g3zZFuWu5cDN0MkLz2qRDD2Ag=="],
 
-    "@shopify/cli/esbuild/@esbuild/linux-x64": ["@esbuild/linux-x64@0.25.12", "", { "os": "linux", "cpu": "x64" }, "sha512-uqZMTLr/zR/ed4jIGnwSLkaHmPjOjJvnm6TVVitAa08SLS9Z0VM8wIRx7gWbJB5/J54YuIMInDquWyYvQLZkgw=="],
+    "@shopify/cli/esbuild/@esbuild/linux-x64": ["@esbuild/linux-x64@0.28.1", "", { "os": "linux", "cpu": "x64" }, "sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA=="],
 
-    "@shopify/cli/esbuild/@esbuild/netbsd-x64": ["@esbuild/netbsd-x64@0.25.12", "", { "os": "none", "cpu": "x64" }, "sha512-Ld5pTlzPy3YwGec4OuHh1aCVCRvOXdH8DgRjfDy/oumVovmuSzWfnSJg+VtakB9Cm0gxNO9BzWkj6mtO1FMXkQ=="],
+    "@shopify/cli/esbuild/@esbuild/netbsd-x64": ["@esbuild/netbsd-x64@0.28.1", "", { "os": "none", "cpu": "x64" }, "sha512-aeL6lAnN89Hz43Mlh1G8ARasbuoYvSITDEx0tHh5b7jJnHcssqgjy9Yx430GDpmCa6OyrKoS0aNRjKundRizGg=="],
 
-    "@shopify/cli/esbuild/@esbuild/openbsd-x64": ["@esbuild/openbsd-x64@0.25.12", "", { "os": "openbsd", "cpu": "x64" }, "sha512-MZyXUkZHjQxUvzK7rN8DJ3SRmrVrke8ZyRusHlP+kuwqTcfWLyqMOE3sScPPyeIXN/mDJIfGXvcMqCgYKekoQw=="],
+    "@shopify/cli/esbuild/@esbuild/openbsd-x64": ["@esbuild/openbsd-x64@0.28.1", "", { "os": "openbsd", "cpu": "x64" }, "sha512-i/ZLIOafE0Z8cI/XANJAixoJL/uRAoS2xOA3rb0xN+KK0K177cMAsQYkzHtBrtMXAKuAc7HGgcWiZ/sRC1Nxgw=="],
 
-    "@shopify/cli/esbuild/@esbuild/sunos-x64": ["@esbuild/sunos-x64@0.25.12", "", { "os": "sunos", "cpu": "x64" }, "sha512-3wGSCDyuTHQUzt0nV7bocDy72r2lI33QL3gkDNGkod22EsYl04sMf0qLb8luNKTOmgF/eDEDP5BFNwoBKH441w=="],
+    "@shopify/cli/esbuild/@esbuild/sunos-x64": ["@esbuild/sunos-x64@0.28.1", "", { "os": "sunos", "cpu": "x64" }, "sha512-BEjgtECkL3vY+SaSQ6nzVfiALUeFxpawyp8Jmf5PtYhf1Ug40N1h/hxlhts+f1FvSvarEigdxS3BlSMI2PJLcQ=="],
 
-    "@shopify/cli/esbuild/@esbuild/win32-arm64": ["@esbuild/win32-arm64@0.25.12", "", { "os": "win32", "cpu": "arm64" }, "sha512-rMmLrur64A7+DKlnSuwqUdRKyd3UE7oPJZmnljqEptesKM8wx9J8gx5u0+9Pq0fQQW8vqeKebwNXdfOyP+8Bsg=="],
+    "@shopify/cli/esbuild/@esbuild/win32-arm64": ["@esbuild/win32-arm64@0.28.1", "", { "os": "win32", "cpu": "arm64" }, "sha512-lCv9eK/H6ZJWbE7bh2nw54CZ9M2nupBxJcTsdk/QQnWkdSjKGuxmmH8/GWrlT1eMmZfn4dGcCjRte397WqfQXA=="],
 
-    "@shopify/cli/esbuild/@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.25.12", "", { "os": "win32", "cpu": "ia32" }, "sha512-HkqnmmBoCbCwxUKKNPBixiWDGCpQGVsrQfJoVGYLPT41XWF8lHuE5N6WhVia2n4o5QK5M4tYr21827fNhi4byQ=="],
+    "@shopify/cli/esbuild/@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.28.1", "", { "os": "win32", "cpu": "ia32" }, "sha512-zvb/mB2bSCoJOpoCBgYKKpX6YM6mJBlBUVUtVj41DlZJVEB6/0CKlRYxP5wWl1C1ILiCoAU5wZZ4q1P3qeS6Eg=="],
 
-    "@shopify/cli/esbuild/@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
+    "@shopify/cli/esbuild/@esbuild/win32-x64": ["@esbuild/win32-x64@0.28.1", "", { "os": "win32", "cpu": "x64" }, "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A=="],
 
     "@shopify/theme-check-common/cross-fetch/node-fetch": ["node-fetch@2.7.0", "", { "dependencies": { "whatwg-url": "^5.0.0" }, "peerDependencies": { "encoding": "^0.1.0" }, "optionalPeers": ["encoding"] }, "sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A=="],
 
