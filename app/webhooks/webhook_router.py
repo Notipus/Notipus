@@ -130,13 +130,19 @@ def create_error_response(error: Exception, status_code: int = 500) -> dict:
     }
 
 
-def _handle_rate_limiting(workspace: Workspace) -> Optional[JsonResponse]:
+def _handle_rate_limiting(
+    workspace: Optional[Workspace],
+) -> tuple[Optional[JsonResponse], Optional[Dict[str, Any]]]:
     """
     Handle rate limiting for workspace.
-    Returns response if rate limited, None otherwise.
+
+    Returns a tuple of (error_response, rate_limit_info). error_response
+    is a 429 JsonResponse if the workspace is rate limited, None otherwise.
+    rate_limit_info is returned when the request is allowed so callers can
+    reuse it for response headers without consuming additional quota.
     """
     if not workspace:
-        return None
+        return None, None
 
     try:
         rate_limit_info = rate_limiter.enforce_rate_limit(workspace)
@@ -144,7 +150,7 @@ def _handle_rate_limiting(workspace: Workspace) -> Optional[JsonResponse]:
             f"Rate limit check passed for workspace {workspace.uuid}: "
             f"{rate_limit_info['current_usage']}/{rate_limit_info['limit']}"
         )
-        return None  # No rate limiting
+        return None, rate_limit_info  # No rate limiting
     except RateLimitException as e:
         logger.warning(f"Rate limit exceeded for workspace {workspace.uuid}: {str(e)}")
         error_response = create_error_response(e, 429)
@@ -163,18 +169,7 @@ def _handle_rate_limiting(workspace: Workspace) -> Optional[JsonResponse]:
         for header_name, header_value in rate_limit_headers.items():
             response[header_name] = header_value
 
-        return response
-
-
-def _validate_and_parse_webhook(
-    request: HttpRequest, provider: Any
-) -> Optional[Dict[str, Any]]:
-    """Validate and parse webhook. Returns None for test webhooks."""
-    if not provider.validate_webhook(request):
-        raise WebhookSignatureError()
-
-    event_data = provider.parse_webhook(request)
-    return cast("Dict[str, Any] | None", event_data)
+        return response, None
 
 
 def _add_rate_limit_headers(
@@ -396,28 +391,42 @@ def _process_webhook(
     request: HttpRequest,
     provider: Any,
     provider_name: str,
-    workspace: Workspace = None,
+    workspace: Workspace | None = None,
     integration: Integration | None = None,
+    log_provider_name: str | None = None,
 ) -> JsonResponse:
     """
     Common webhook processing logic with standardized error handling
     and rate limiting.
 
+    Validates the webhook signature FIRST - before rate limiting, payload
+    logging, and storage - so unauthenticated requests cannot consume
+    workspace quota or persist attacker-controlled data.
+
     Uses workspace-specific Slack integration for notifications.
     """
     try:
-        # Handle rate limiting
-        rate_limit_response = _handle_rate_limiting(workspace)
+        # Validate webhook signature before any side effects
+        if not provider.validate_webhook(request):
+            raise WebhookSignatureError()
+
+        # Enforce workspace rate limits on authenticated requests only.
+        # A single enforce_rate_limit call increments usage once and
+        # returns the info reused for response headers.
+        rate_limit_response, rate_limit_info = _handle_rate_limiting(workspace)
         if rate_limit_response:
             return rate_limit_response
 
-        # Get rate limit info for headers
-        rate_limit_info = None
-        if workspace:
-            rate_limit_info = rate_limiter.enforce_rate_limit(workspace)
+        # Log/store raw webhook payload only for authenticated,
+        # non-rate-limited requests
+        _log_webhook_payload(
+            request,
+            log_provider_name or provider_name,
+            str(workspace.uuid) if workspace else None,
+        )
 
-        # Validate and parse webhook
-        event_data = _validate_and_parse_webhook(request, provider)
+        # Parse webhook (returns None for test webhooks)
+        event_data = cast("Dict[str, Any] | None", provider.parse_webhook(request))
 
         # Stamp first successful webhook verification
         if integration is not None and integration.webhook_verified_at is None:
@@ -467,9 +476,6 @@ def customer_shopify_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
     """Handle customer-specific Shopify webhook requests with rate limiting"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "shopify", organization_uuid)
-
     logger.info(
         f"Processing customer Shopify webhook for workspace {organization_uuid}",
         extra={
@@ -495,7 +501,12 @@ def customer_shopify_webhook(
         provider = ShopifySourcePlugin(webhook_secret=integration.webhook_secret)
 
         return _process_webhook(
-            request, provider, "customer_shopify", workspace, integration
+            request,
+            provider,
+            "customer_shopify",
+            workspace,
+            integration,
+            log_provider_name="shopify",
         )
 
     except Exception as e:
@@ -510,9 +521,6 @@ def customer_chargify_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
     """Handle customer-specific Chargify/Maxio webhook requests with rate limiting"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "chargify", organization_uuid)
-
     logger.info(
         f"Processing customer Chargify/Maxio webhook for workspace {organization_uuid}",
         extra={
@@ -535,7 +543,12 @@ def customer_chargify_webhook(
         provider = ChargifySourcePlugin(webhook_secret=integration.webhook_secret)
 
         return _process_webhook(
-            request, provider, "customer_chargify", workspace, integration
+            request,
+            provider,
+            "customer_chargify",
+            workspace,
+            integration,
+            log_provider_name="chargify",
         )
 
     except Exception as e:
@@ -552,9 +565,6 @@ def customer_stripe_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
     """Handle customer-specific Stripe webhook requests with rate limiting"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "stripe", organization_uuid)
-
     logger.info(
         f"Processing customer Stripe webhook for workspace {organization_uuid}",
         extra={
@@ -580,7 +590,12 @@ def customer_stripe_webhook(
         provider = StripeSourcePlugin(webhook_secret=integration.webhook_secret)
 
         return _process_webhook(
-            request, provider, "customer_stripe", workspace, integration
+            request,
+            provider,
+            "customer_stripe",
+            workspace,
+            integration,
+            log_provider_name="stripe",
         )
 
     except Exception as e:
@@ -596,9 +611,6 @@ def customer_stripe_webhook(
 @require_http_methods(["POST"])
 def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
     """Handle global Stripe billing webhooks for Notipus revenue"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "stripe_billing")
-
     logger.info(
         "Processing global billing Stripe webhook",
         extra={"content_type": request.content_type},
@@ -626,7 +638,9 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
 
         provider = StripeSourcePlugin(webhook_secret=billing_integration.webhook_secret)
 
-        return _process_webhook(request, provider, "billing_stripe")
+        return _process_webhook(
+            request, provider, "billing_stripe", log_provider_name="stripe_billing"
+        )
 
     except Exception as e:
         logger.error(f"Error in billing Stripe webhook: {str(e)}", exc_info=True)
