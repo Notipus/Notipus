@@ -410,19 +410,20 @@ def _process_webhook(
         if not provider.validate_webhook(request):
             raise WebhookSignatureError()
 
-        # Log/store raw webhook payload only after signature validation
-        _log_webhook_payload(
-            request,
-            log_provider_name or provider_name,
-            str(workspace.uuid) if workspace else None,
-        )
-
         # Enforce workspace rate limits on authenticated requests only.
         # A single enforce_rate_limit call increments usage once and
         # returns the info reused for response headers.
         rate_limit_response, rate_limit_info = _handle_rate_limiting(workspace)
         if rate_limit_response:
             return rate_limit_response
+
+        # Log/store raw webhook payload only for authenticated,
+        # non-rate-limited requests
+        _log_webhook_payload(
+            request,
+            log_provider_name or provider_name,
+            str(workspace.uuid) if workspace else None,
+        )
 
         # Parse webhook (returns None for test webhooks)
         event_data = cast("Dict[str, Any] | None", provider.parse_webhook(request))

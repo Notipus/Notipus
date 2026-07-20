@@ -8,13 +8,14 @@ and must never leak signature values into logs.
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from core.models import Integration, Workspace
 from django.test import Client
-from webhooks.services.rate_limiter import rate_limiter
+from webhooks.services.rate_limiter import RateLimitException, rate_limiter
 from webhooks.services.webhook_storage import webhook_storage_service
 
 
@@ -122,6 +123,45 @@ class TestWebhookAuthOrdering:
 
         assert response.status_code == 200
         mock_increment.assert_called_once()
+
+    @patch("plugins.sources.stripe.StripeSourcePlugin")
+    def test_rate_limited_webhook_is_not_logged_or_stored(
+        self,
+        mock_provider_class: Any,
+        client: Client,
+        workspace: Workspace,
+        stripe_integration: Integration,
+        settings: Any,
+    ) -> None:
+        """An authenticated but over-quota request must not be logged/stored."""
+        settings.LOG_WEBHOOKS = True
+
+        mock_provider = mock_provider_class.return_value
+        mock_provider.validate_webhook.return_value = True
+        mock_provider.parse_webhook.return_value = None  # Test webhook
+
+        url = f"/webhook/customer/{workspace.uuid}/stripe/"
+        with (
+            patch.object(
+                rate_limiter,
+                "enforce_rate_limit",
+                side_effect=RateLimitException(
+                    "Rate limit exceeded",
+                    limit=100,
+                    current_usage=100,
+                    reset_time=datetime.now(timezone.utc) + timedelta(hours=1),
+                ),
+            ),
+            patch.object(webhook_storage_service, "store_webhook") as mock_store,
+        ):
+            response = client.post(
+                url,
+                data=json.dumps({"type": "test"}),
+                content_type="application/json",
+            )
+
+        assert response.status_code == 429
+        mock_store.assert_not_called()
 
     @patch("plugins.sources.stripe.StripeSourcePlugin")
     def test_valid_webhook_is_stored_after_validation(
