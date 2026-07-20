@@ -455,6 +455,38 @@ class TestHeadlineCurrencyFormatting:
 
         assert result.headline == "$0.00 received"
 
+    def test_zero_amount_order_created_headline_shows_amount(
+        self, builder: NotificationBuilder, customer_data: dict[str, Any]
+    ) -> None:
+        """Test that a comped ($0) order still shows the amount."""
+        event_data = {
+            "type": "order_created",
+            "provider": "shopify",
+            "amount": 0.0,
+            "currency": "USD",
+            "metadata": {"order_number": "1001"},
+        }
+
+        result = builder.build(event_data, customer_data)
+
+        assert result.headline == "New order #1001 ($0.00)"
+
+    def test_zero_amount_order_cancelled_headline_shows_amount(
+        self, builder: NotificationBuilder, customer_data: dict[str, Any]
+    ) -> None:
+        """Test that a canceled $0 order still shows the amount."""
+        event_data = {
+            "type": "order_cancelled",
+            "provider": "shopify",
+            "amount": 0.0,
+            "currency": "USD",
+            "metadata": {"order_number": "1002"},
+        }
+
+        result = builder.build(event_data, customer_data)
+
+        assert result.headline == "Order #1002 canceled ($0.00)"
+
     def test_upgrade_headline_uses_previous_currency_for_old_side(
         self, builder: NotificationBuilder, customer_data: dict[str, Any]
     ) -> None:

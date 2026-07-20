@@ -530,20 +530,20 @@ class NotificationBuilder:
 
         # Logistics event headlines (e-commerce/Shopify)
         elif event_type == "order_created":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
-            if order_number and amount:
+            # "is not None" so comped orders (Shopify sends total_price
+            # "0.00") still show the formatted amount.
+            if order_number and amount is not None:
                 return f"New order #{order_number} ({format_money(amount, currency)})"
             elif order_number:
                 return f"New order #{order_number}"
-            elif amount:
+            elif amount is not None:
                 return f"New order ({format_money(amount, currency)})"
             return "New order"
 
         elif event_type == "order_cancelled":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
-            if order_number and amount:
+            if order_number and amount is not None:
                 money = format_money(amount, currency)
                 return f"Order #{order_number} canceled ({money})"
             elif order_number:
