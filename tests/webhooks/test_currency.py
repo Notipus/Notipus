@@ -183,6 +183,27 @@ class TestStripeCurrencyParsing:
 
         assert metadata["previous_amount"] == 5000.0
 
+    def test_previous_plan_currency_and_interval_stored(
+        self, plugin: StripeSourcePlugin
+    ) -> None:
+        """Test that the previous plan's currency and interval are kept
+        in metadata so formatters can render the old side correctly."""
+        data: dict[str, Any] = {
+            "id": "sub_test",
+            "currency": "usd",
+            "plan": {"interval": "month"},
+            "_previous_attributes": {
+                "plan": {"amount": 5000, "currency": "eur", "interval": "year"}
+            },
+        }
+        metadata: dict[str, Any] = {}
+
+        plugin._add_subscription_metadata(metadata, "subscription_updated", data)
+
+        assert metadata["previous_amount"] == 50.0
+        assert metadata["previous_currency"] == "EUR"
+        assert metadata["previous_billing_period"] == "annual"
+
 
 class TestChargifyCurrencyParsing:
     """Chargify parser must thread the payload currency through."""
@@ -362,6 +383,93 @@ class TestHeadlineCurrencyFormatting:
         result = builder.build(event_data, customer_data)
 
         assert "/qtr" in result.headline
+
+    def test_upgrade_headline_uses_previous_currency_for_old_side(
+        self, builder: NotificationBuilder, customer_data: dict[str, Any]
+    ) -> None:
+        """Test that a EUR-to-USD upgrade shows each side's currency."""
+        event_data = {
+            "type": "subscription_updated",
+            "provider": "stripe",
+            "amount": 120.0,
+            "currency": "USD",
+            "metadata": {
+                "change_direction": "upgrade",
+                "previous_amount": 100.0,
+                "previous_currency": "EUR",
+                "billing_period": "monthly",
+            },
+        }
+
+        result = builder.build(event_data, customer_data)
+
+        assert result.headline == "Upgraded: €100.00/mo to $120.00/mo"
+
+    def test_downgrade_headline_uses_previous_interval_for_old_side(
+        self, builder: NotificationBuilder, customer_data: dict[str, Any]
+    ) -> None:
+        """Test that an annual-to-monthly downgrade shows /yr on the
+        old side and /mo on the new side."""
+        event_data = {
+            "type": "subscription_updated",
+            "provider": "stripe",
+            "amount": 99.0,
+            "currency": "USD",
+            "metadata": {
+                "change_direction": "downgrade",
+                "previous_amount": 1188.0,
+                "previous_billing_period": "annual",
+                "billing_period": "monthly",
+            },
+        }
+
+        result = builder.build(event_data, customer_data)
+
+        assert result.headline == "Downgraded: $1,188.00/yr to $99.00/mo"
+
+
+class TestLtvCurrencyDisplay:
+    """LTV display must use the event's currency, not a hardcoded $."""
+
+    @pytest.fixture
+    def builder(self) -> NotificationBuilder:
+        """Create a NotificationBuilder instance."""
+        return NotificationBuilder()
+
+    def test_eur_ltv_abbreviated_with_symbol(
+        self, builder: NotificationBuilder
+    ) -> None:
+        """Test that a large EUR lifetime value renders as €7.1k."""
+        assert builder._format_ltv(7100.0, "EUR") == "€7.1k"
+
+    def test_unknown_currency_ltv_falls_back_to_code(
+        self, builder: NotificationBuilder
+    ) -> None:
+        """Test that currencies without a symbol render as CODE 7.1k."""
+        assert builder._format_ltv(7100.0, "CHF") == "CHF 7.1k"
+
+    def test_small_ltv_renders_in_currency(self, builder: NotificationBuilder) -> None:
+        """Test that sub-1000 lifetime values keep the currency symbol."""
+        assert builder._format_ltv(150.0, "EUR") == "€150"
+
+    def test_ltv_display_uses_event_currency(
+        self, builder: NotificationBuilder
+    ) -> None:
+        """Test that the built notification's LTV follows the event
+        currency end to end."""
+        event_data = {
+            "type": "payment_success",
+            "provider": "stripe",
+            "amount": 100.0,
+            "currency": "EUR",
+            "metadata": {},
+        }
+        customer_data = {"email": "test@example.com", "total_spent": 7100.0}
+
+        result = builder.build(event_data, customer_data)
+
+        assert result.customer is not None
+        assert result.customer.ltv_display == "€7.1k"
 
 
 class TestArrCurrencyDisplay:

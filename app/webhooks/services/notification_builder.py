@@ -18,7 +18,7 @@ from webhooks.models.rich_notification import (
     PersonInfo,
     RichNotification,
 )
-from webhooks.utils.currency import format_money
+from webhooks.utils.currency import CURRENCY_SYMBOLS, format_money
 
 from .insight_detector import InsightDetector
 from .utils import get_display_name
@@ -238,7 +238,9 @@ class NotificationBuilder:
         provider_display = PROVIDER_DISPLAY.get(provider, provider.title())
 
         # Build sub-models
-        customer_info = self._build_customer_info(customer_data)
+        customer_info = self._build_customer_info(
+            customer_data, event_data.get("currency") or "USD"
+        )
         payment_info = self._build_payment_info(event_data)
         company_info = self._build_company_info(company) if company else None
         person_info = self._build_person_info(person) if person else None
@@ -281,11 +283,15 @@ class NotificationBuilder:
             billing_interval=billing_interval,
         )
 
-    def _build_customer_info(self, customer_data: dict[str, Any]) -> CustomerInfo:
+    def _build_customer_info(
+        self, customer_data: dict[str, Any], currency: str = "USD"
+    ) -> CustomerInfo:
         """Build CustomerInfo from customer data.
 
         Args:
             customer_data: Customer data dictionary.
+            currency: Currency code of the triggering event, used for
+                the LTV display.
 
         Returns:
             CustomerInfo dataclass.
@@ -309,7 +315,7 @@ class NotificationBuilder:
             total_spent = float(total_spent_raw) if total_spent_raw else 0.0
         except (ValueError, TypeError):
             total_spent = 0.0
-        ltv_display = self._format_ltv(total_spent) if total_spent else None
+        ltv_display = self._format_ltv(total_spent, currency) if total_spent else None
 
         return CustomerInfo(
             email=email,
@@ -473,6 +479,13 @@ class NotificationBuilder:
             plan_name = metadata.get("plan_name")
             previous_amount = metadata.get("previous_amount")
             suffix = _interval_suffix(metadata.get("billing_period"))
+            # The "old" side of an upgrade/downgrade may be denominated in
+            # a different currency or interval than the current plan.
+            prev_currency = metadata.get("previous_currency") or currency
+            prev_suffix = _interval_suffix(
+                metadata.get("previous_billing_period")
+                or metadata.get("billing_period")
+            )
 
             if direction == "upgrade":
                 # Show plan name if available (Chargify), otherwise amount change
@@ -480,9 +493,9 @@ class NotificationBuilder:
                     money = format_money(amount, currency)
                     return f"Upgraded to {plan_name} ({money}{suffix})"
                 elif previous_amount and amount:
-                    old = format_money(previous_amount, currency)
+                    old = format_money(previous_amount, prev_currency)
                     new = format_money(amount, currency)
-                    return f"Upgraded: {old}{suffix} to {new}{suffix}"
+                    return f"Upgraded: {old}{prev_suffix} to {new}{suffix}"
                 elif amount:
                     money = format_money(amount, currency)
                     return f"Subscription upgraded to {money}{suffix}"
@@ -492,9 +505,9 @@ class NotificationBuilder:
                     money = format_money(amount, currency)
                     return f"Downgraded to {plan_name} ({money}{suffix})"
                 elif previous_amount and amount:
-                    old = format_money(previous_amount, currency)
+                    old = format_money(previous_amount, prev_currency)
                     new = format_money(amount, currency)
-                    return f"Downgraded: {old}{suffix} to {new}{suffix}"
+                    return f"Downgraded: {old}{prev_suffix} to {new}{suffix}"
                 elif amount:
                     money = format_money(amount, currency)
                     return f"Subscription downgraded to {money}{suffix}"
@@ -748,15 +761,26 @@ class NotificationBuilder:
         except (ValueError, TypeError):
             return None
 
-    def _format_ltv(self, total_spent: float) -> str:
+    def _format_ltv(self, total_spent: float, currency: str = "USD") -> str:
         """Format lifetime value for display.
+
+        Note: LTV is aggregated in the workspace provider's currency;
+        mixed-currency payment history is not converted (out of scope),
+        so the triggering event's currency is used for display.
 
         Args:
             total_spent: Total amount spent.
+            currency: Currency code the total is denominated in.
 
         Returns:
-            Formatted LTV string like "$7.1k" or "$150".
+            Formatted LTV string like "$7.1k", "€150", or "CHF 150".
         """
         if total_spent >= 1000:
-            return f"${total_spent / 1000:.1f}k"
-        return f"${total_spent:,.0f}"
+            code = (currency or "USD").upper()
+            symbol = CURRENCY_SYMBOLS.get(code)
+            abbreviated = f"{total_spent / 1000:.1f}k"
+            if symbol:
+                return f"{symbol}{abbreviated}"
+            return f"{code} {abbreviated}"
+        formatted: str = format_money(total_spent, currency, 0)
+        return formatted

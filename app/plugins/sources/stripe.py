@@ -702,6 +702,16 @@ class StripeSourcePlugin(BaseSourcePlugin):
                 metadata["previous_amount"] = float(
                     from_minor_units(prev_plan["amount"], currency)
                 )
+                # Store the currency (and billing period, when derivable)
+                # the previous amount is denominated in, so formatters can
+                # render the "old" side of upgrade/downgrade headlines
+                # correctly when the currency or interval changed.
+                metadata["previous_currency"] = currency
+                prev_interval = prev_plan.get("interval")
+                if prev_interval:
+                    metadata["previous_billing_period"] = self.INTERVAL_MAP.get(
+                        prev_interval, prev_interval
+                    )
 
     def _get_name_from_structured_fields(self, item: dict[str, Any]) -> str | None:
         """Try to get plan name from structured Stripe line item fields.
