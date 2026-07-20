@@ -20,6 +20,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Only follow Django LTS releases (the x.2 series: 5.2, 6.2, ...).
+      # Extend these ranges when a new major series approaches.
+      - dependency-name: "django"
+        versions: [">=6.0,<6.2", ">=7.0,<7.2"]
+      - dependency-name: "django-stubs"
+        versions: [">=6.0,<6.2", ">=7.0,<7.2"]
+      - dependency-name: "django-stubs-ext"
+        versions: [">=6.0,<6.2", ">=7.0,<7.2"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
