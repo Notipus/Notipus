@@ -171,9 +171,12 @@ class BillingServiceTest(TestCase):
     def test_handle_subscription_created_success(self, mock_logger, mock_sync):
         """Test successful subscription creation handling"""
         subscription_data = {
+            "id": "sub_test123",
             "customer": "cus_test123",
+            "status": "active",
             "items": {"data": [{"plan": {"id": "plan_basic"}}]},
             "current_period_start": 1234567890,
+            "current_period_end": 1237246290,
         }
 
         BillingService.handle_subscription_created(subscription_data)
@@ -181,7 +184,9 @@ class BillingServiceTest(TestCase):
         self.workspace.refresh_from_db()
         # subscription_plan is set by sync_workspace_from_stripe, not directly
         self.assertEqual(self.workspace.subscription_status, "active")
-        self.assertEqual(self.workspace.billing_cycle_anchor, 1234567890)
+        # Anchor uses current_period_end (next renewal), never period_start
+        self.assertEqual(self.workspace.billing_cycle_anchor, 1237246290)
+        self.assertEqual(self.workspace.stripe_subscription_id, "sub_test123")
 
         mock_logger.info.assert_called_once_with(
             "Subscription created for customer cus_test123, syncing..."
@@ -268,8 +273,11 @@ class BillingServiceTest(TestCase):
 
     @patch("webhooks.services.billing.logger")
     def test_handle_payment_failed(self, mock_logger):
-        """Test failed payment handling"""
-        invoice_data = {"customer": "cus_test123"}
+        """Test failed payment handling for a subscription invoice"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            stripe_subscription_id="sub_test123"
+        )
+        invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
         BillingService.handle_payment_failed(invoice_data)
 
@@ -290,9 +298,8 @@ class BillingServiceTest(TestCase):
         mock_logger.error.assert_called_once_with("Missing customer ID in invoice data")
 
     @patch("webhooks.services.billing.Workspace.objects")
-    @patch("webhooks.services.billing.logger")
-    def test_handle_subscription_created_exception(self, mock_logger, mock_objects):
-        """Test exception handling in subscription creation"""
+    def test_handle_subscription_created_exception(self, mock_objects):
+        """Unexpected DB errors propagate so the webhook view returns 5xx"""
         mock_objects.filter.side_effect = Exception("Database error")
 
         subscription_data = {
@@ -300,39 +307,28 @@ class BillingServiceTest(TestCase):
             "items": {"data": [{"plan": {"id": "plan_basic"}}]},
         }
 
-        BillingService.handle_subscription_created(subscription_data)
-
-        mock_logger.error.assert_called_once_with(
-            "Error handling subscription created: Database error"
-        )
+        with self.assertRaisesMessage(Exception, "Database error"):
+            BillingService.handle_subscription_created(subscription_data)
 
     @patch("webhooks.services.billing.Workspace.objects")
-    @patch("webhooks.services.billing.logger")
-    def test_handle_payment_success_exception(self, mock_logger, mock_objects):
-        """Test exception handling in payment success"""
+    def test_handle_payment_success_exception(self, mock_objects):
+        """Unexpected DB errors propagate so the webhook view returns 5xx"""
         mock_objects.filter.side_effect = Exception("Database error")
 
         invoice_data = {"customer": "cus_test123"}
 
-        BillingService.handle_payment_success(invoice_data)
-
-        mock_logger.error.assert_called_once_with(
-            "Error handling payment success: Database error"
-        )
+        with self.assertRaisesMessage(Exception, "Database error"):
+            BillingService.handle_payment_success(invoice_data)
 
     @patch("webhooks.services.billing.Workspace.objects")
-    @patch("webhooks.services.billing.logger")
-    def test_handle_payment_failed_exception(self, mock_logger, mock_objects):
-        """Test exception handling in payment failure"""
+    def test_handle_payment_failed_exception(self, mock_objects):
+        """Unexpected DB errors propagate so the webhook view returns 5xx"""
         mock_objects.filter.side_effect = Exception("Database error")
 
-        invoice_data = {"customer": "cus_test123"}
+        invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
-        BillingService.handle_payment_failed(invoice_data)
-
-        mock_logger.error.assert_called_once_with(
-            "Error handling payment failure: Database error"
-        )
+        with self.assertRaisesMessage(Exception, "Database error"):
+            BillingService.handle_payment_failed(invoice_data)
 
     @patch("webhooks.services.billing.BillingService.sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
@@ -395,10 +391,11 @@ class BillingServiceTest(TestCase):
             "Missing customer ID in subscription data"
         )
 
+    @patch("webhooks.services.billing.BillingService.sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
-    def test_handle_subscription_deleted_success(self, mock_logger):
+    def test_handle_subscription_deleted_success(self, mock_logger, mock_sync):
         """Test successful subscription deletion handling"""
-        subscription_data = {"customer": "cus_test123"}
+        subscription_data = {"id": "sub_test123", "customer": "cus_test123"}
 
         BillingService.handle_subscription_deleted(subscription_data)
 
@@ -408,6 +405,8 @@ class BillingServiceTest(TestCase):
         mock_logger.info.assert_called_once_with(
             "Marked subscription as cancelled for customer cus_test123"
         )
+        # Deletion reconciles against Stripe in case another live sub exists
+        mock_sync.assert_called_once_with("cus_test123")
 
     @patch("webhooks.services.billing.logger")
     def test_handle_subscription_deleted_missing_customer(self, mock_logger):
