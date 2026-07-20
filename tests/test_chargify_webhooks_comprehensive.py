@@ -254,6 +254,7 @@ class TestChargifyWebhookParsing:
 
         assert result["type"] == "subscription_state_change"
         assert result["status"] == "canceled"
+        assert result["provider"] == "chargify"
         assert result["metadata"]["previous_state"] == "active"
         assert result["metadata"]["cancel_at_period_end"] is True
 
@@ -774,6 +775,7 @@ class TestChargifyEventRouting:
 
         assert result is not None
         assert result["type"] == internal_type
+        assert result["provider"] == "chargify"
         assert result["customer_id"] == "cust_456"
         assert result["metadata"]["subscription_id"] == "sub_12345"
         assert result["metadata"]["plan_name"] == "Premium Plan"
@@ -820,6 +822,9 @@ class TestChargifyEventRouting:
             }
             result = provider.parse_webhook(_mock_chargify_request(form_data))
             assert result is not None, f"Event not routed: {chargify_event}"
+            assert result["provider"] == "chargify", (
+                f"Missing provider field for: {chargify_event}"
+            )
 
 
 class TestChargifySparsePayloads:
@@ -893,6 +898,7 @@ class TestChargifySparsePayloads:
         assert result is not None
         assert result["type"] == "subscription_state_change"
         assert result["status"] == "unknown"
+        assert result["provider"] == "chargify"
         assert result["metadata"]["plan_name"] == ""
         assert result["metadata"]["subscription_id"] == "sub_12345"
 

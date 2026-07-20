@@ -650,6 +650,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "type": "subscription_state_change",
             "customer_id": customer_id,
             "status": data.get("payload[subscription][state]", "unknown"),
+            "provider": "chargify",
             "metadata": {
                 "subscription_id": data.get("payload[subscription][id]", ""),
                 "plan_name": data.get("payload[subscription][product][name]", ""),
