@@ -90,7 +90,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U notipus_user -d notipus_dev"]
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: notipus_redis
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
