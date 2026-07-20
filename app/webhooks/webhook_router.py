@@ -131,7 +131,7 @@ def create_error_response(error: Exception, status_code: int = 500) -> dict:
 
 
 def _handle_rate_limiting(
-    workspace: Workspace,
+    workspace: Optional[Workspace],
 ) -> tuple[Optional[JsonResponse], Optional[Dict[str, Any]]]:
     """
     Handle rate limiting for workspace.
@@ -391,7 +391,7 @@ def _process_webhook(
     request: HttpRequest,
     provider: Any,
     provider_name: str,
-    workspace: Workspace = None,
+    workspace: Workspace | None = None,
     integration: Integration | None = None,
     log_provider_name: str | None = None,
 ) -> JsonResponse:
