@@ -17,7 +17,9 @@ from plugins.base import BasePlugin, PluginMetadata
 logger = logging.getLogger(__name__)
 
 # Webhook signature headers whose values must never be logged.
-# Mirrors the masking policy of WebhookStorageService._extract_safe_headers.
+# Follows the same mask-as-[PRESENT] policy as
+# WebhookStorageService._extract_safe_headers, but covers a broader set
+# (e.g. the legacy X-Chargify-Webhook-Signature header).
 _SENSITIVE_HEADERS: frozenset[str] = frozenset(
     {
         "stripe-signature",

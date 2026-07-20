@@ -98,12 +98,13 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if settings.DISABLE_BILLING:
             return False
 
-        logger.info(
+        # Pre-validation: log only minimal, non-attacker-controlled fields
+        # so unauthenticated callers cannot flood logs with payload content.
+        logger.debug(
             "Validate Stripe webhook data",
             extra={
                 "content_type": request.content_type,
-                "form_data": (request.POST.dict() if request.POST else None),
-                "headers": mask_sensitive_headers(request.headers),
+                "content_length": request.headers.get("Content-Length"),
             },
         )
 
