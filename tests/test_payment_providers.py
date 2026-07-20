@@ -5,6 +5,7 @@ including signature validation, data parsing, and deduplication.
 """
 
 import json
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
@@ -157,7 +158,7 @@ def test_shopify_order_parsing() -> None:
     assert event is not None
     assert event["type"] == "payment_success"
     assert event["customer_id"] == "456"
-    assert event["amount"] == 29.99
+    assert event["amount"] == Decimal("29.99")
     assert event["status"] == "success"
     assert event["metadata"]["order_number"] == 1001
     assert event["metadata"]["financial_status"] == "paid"

@@ -314,11 +314,14 @@ def shopify_connect_callback(
     else:
         webhook_ids = webhook_result
 
-    # Store or update Shopify integration
+    # Store or update Shopify integration.
+    # Webhooks created via the Admin API are signed with the app's client
+    # secret, so store it as the webhook secret for HMAC validation.
     integration, created = Integration.objects.update_or_create(
         workspace=workspace,
         integration_type=INTEGRATION_TYPE,
         defaults={
+            "webhook_secret": settings.SHOPIFY_CLIENT_SECRET or "",
             "oauth_credentials": {
                 "access_token": access_token,
                 "scope": scope,

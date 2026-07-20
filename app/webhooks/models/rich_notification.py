@@ -67,8 +67,12 @@ class NotificationType(Enum):
     INTEGRATION_ERROR = "integration_error"
     WEBHOOK_RECEIVED = "webhook_received"
 
+    # Checkout events
+    CHECKOUT_STARTED = "checkout_started"
+
     # Logistics events
     ORDER_CREATED = "order_created"
+    ORDER_CANCELLED = "order_cancelled"
     ORDER_FULFILLED = "order_fulfilled"
     FULFILLMENT_CREATED = "fulfillment_created"
     FULFILLMENT_UPDATED = "fulfillment_updated"
@@ -103,7 +107,9 @@ EVENT_CATEGORY_MAP: dict[NotificationType, EventCategory] = {
     NotificationType.INTEGRATION_CONNECTED: EventCategory.SYSTEM,
     NotificationType.INTEGRATION_ERROR: EventCategory.SYSTEM,
     NotificationType.WEBHOOK_RECEIVED: EventCategory.SYSTEM,
+    NotificationType.CHECKOUT_STARTED: EventCategory.PAYMENT,
     NotificationType.ORDER_CREATED: EventCategory.LOGISTICS,
+    NotificationType.ORDER_CANCELLED: EventCategory.LOGISTICS,
     NotificationType.ORDER_FULFILLED: EventCategory.LOGISTICS,
     NotificationType.FULFILLMENT_CREATED: EventCategory.LOGISTICS,
     NotificationType.FULFILLMENT_UPDATED: EventCategory.LOGISTICS,

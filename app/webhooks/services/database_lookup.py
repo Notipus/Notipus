@@ -191,7 +191,11 @@ class DatabaseLookupService:
                 display_type, timestamp_key, workspace_id
             )
 
-            cache.set(webhook_key, json.dumps(webhook_record), timeout=self.ttl_seconds)
+            cache.set(
+                webhook_key,
+                json.dumps(webhook_record, default=str),
+                timeout=self.ttl_seconds,
+            )
 
             # Add to daily activity list
             self._add_to_activity_list(webhook_key, workspace_id)
@@ -331,7 +335,11 @@ class DatabaseLookupService:
             timestamp_key = now.strftime("%Y%m%d_%H%M%S_%f")
             webhook_key = self._get_webhook_key("order", timestamp_key, workspace_id)
 
-            cache.set(webhook_key, json.dumps(webhook_record), timeout=self.ttl_seconds)
+            cache.set(
+                webhook_key,
+                json.dumps(webhook_record, default=str),
+                timeout=self.ttl_seconds,
+            )
 
             # Add to daily activity list
             self._add_to_activity_list(webhook_key, workspace_id)
@@ -481,7 +489,11 @@ class DatabaseLookupService:
                 display_type, timestamp_key, workspace_id
             )
 
-            cache.set(webhook_key, json.dumps(webhook_record), timeout=self.ttl_seconds)
+            cache.set(
+                webhook_key,
+                json.dumps(webhook_record, default=str),
+                timeout=self.ttl_seconds,
+            )
 
             # Add to daily activity list
             self._add_to_activity_list(webhook_key, workspace_id)

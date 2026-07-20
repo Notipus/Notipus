@@ -62,8 +62,11 @@ EVENT_TYPE_MAP: dict[str, NotificationType] = {
     "integration_connected": NotificationType.INTEGRATION_CONNECTED,
     "integration_error": NotificationType.INTEGRATION_ERROR,
     "webhook_received": NotificationType.WEBHOOK_RECEIVED,
+    # Checkout events
+    "checkout_started": NotificationType.CHECKOUT_STARTED,
     # Logistics events
     "order_created": NotificationType.ORDER_CREATED,
+    "order_cancelled": NotificationType.ORDER_CANCELLED,
     "order_fulfilled": NotificationType.ORDER_FULFILLED,
     "fulfillment_created": NotificationType.FULFILLMENT_CREATED,
     "fulfillment_updated": NotificationType.FULFILLMENT_UPDATED,
@@ -102,8 +105,11 @@ EVENT_SEVERITY_MAP: dict[str, NotificationSeverity] = {
     "integration_connected": NotificationSeverity.SUCCESS,
     "integration_error": NotificationSeverity.ERROR,
     "webhook_received": NotificationSeverity.INFO,
+    # Checkout events
+    "checkout_started": NotificationSeverity.INFO,
     # Logistics events
     "order_created": NotificationSeverity.SUCCESS,
+    "order_cancelled": NotificationSeverity.WARNING,
     "order_fulfilled": NotificationSeverity.SUCCESS,
     "fulfillment_created": NotificationSeverity.INFO,
     "fulfillment_updated": NotificationSeverity.INFO,
@@ -142,8 +148,11 @@ EVENT_ICON_MAP: dict[str, str] = {
     "integration_connected": "check",
     "integration_error": "error",
     "webhook_received": "integration",
+    # Checkout events
+    "checkout_started": "cart",
     # Logistics events
     "order_created": "cart",
+    "order_cancelled": "warning",
     "order_fulfilled": "package",
     "fulfillment_created": "truck",
     "fulfillment_updated": "truck",
@@ -473,6 +482,15 @@ class NotificationBuilder:
             elif amount:
                 return f"New order (${amount:,.2f})"
             return "New order"
+
+        elif event_type == "order_cancelled":
+            metadata = event_data.get("metadata", {})
+            order_number = metadata.get("order_number") or metadata.get("order_ref")
+            if order_number and amount:
+                return f"Order #{order_number} canceled (${amount:,.2f})"
+            elif order_number:
+                return f"Order #{order_number} canceled"
+            return "Order canceled"
 
         elif event_type == "order_fulfilled":
             metadata = event_data.get("metadata", {})
