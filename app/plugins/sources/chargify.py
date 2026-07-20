@@ -45,22 +45,34 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     # _handle_chargify_event. Do not add an event type without also
     # routing it there: advertised-but-unroutable events would be
     # rejected with a 400 and retried by Chargify indefinitely.
+    #
+    # Every value must be a member of EventProcessor.VALID_EVENT_TYPES:
+    # emitting an unknown type raises ValueError downstream, which the
+    # router turns into a 5xx and Chargify retries forever.
     EVENT_TYPE_MAPPING: ClassVar[dict[str, str]] = {
         # Payment events
         "payment_success": "payment_success",
         "payment_failure": "payment_failure",
         "renewal_success": "payment_success",
         "renewal_failure": "payment_failure",
-        # Subscription change events
-        "subscription_state_change": "subscription_state_change",
-        "subscription_product_change": "subscription_state_change",
-        "subscription_billing_date_change": "subscription_state_change",
+        # Subscription change events. These emit subscription_updated by
+        # default; a change into a cancellation-like state (see
+        # _CANCELED_STATES) emits subscription_canceled instead.
+        "subscription_state_change": "subscription_updated",
+        "subscription_product_change": "subscription_updated",
+        "subscription_billing_date_change": "subscription_updated",
         # Subscription lifecycle events
         "subscription_created": "subscription_created",
         "subscription_updated": "subscription_updated",
         "subscription_cancelled": "subscription_canceled",
         "subscription_expired": "subscription_canceled",
     }
+
+    # Subscription states that represent the end of a subscription. A
+    # state change into one of these is emitted as subscription_canceled.
+    _CANCELED_STATES: ClassVar[frozenset[str]] = frozenset(
+        {"canceled", "cancelled", "expired"}
+    )
 
     # Known Chargify events we receive but do not act on. These must be
     # acknowledged with a 200 (logged and skipped), never rejected with
@@ -381,7 +393,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "subscription_billing_date_change",
         ):
             # Product and billing date changes are handled like state changes
-            return self._parse_subscription_state_change(data)
+            return self._parse_subscription_state_change(event_type, data)
         elif event_type in self.EVENT_TYPE_MAPPING:
             # Remaining routable events are subscription lifecycle events
             return self._parse_subscription_lifecycle(event_type, data)
@@ -631,14 +643,22 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "customer_data": customer_data,
         }
 
-    def _parse_subscription_state_change(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Parse subscription_state_change webhook data.
+    def _parse_subscription_state_change(
+        self, chargify_event: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Parse subscription state/product/billing date change webhooks.
 
-        Also used for product and billing date changes, which may omit
-        fields like the product name - all lookups use defaults so a
-        sparse payload cannot crash the parser.
+        The emitted type is normalized to one the event processor
+        understands: subscription_canceled when the new state is a
+        cancellation-like state, subscription_updated otherwise. The
+        actual Chargify state is preserved in ``status`` and
+        ``metadata.new_state``.
+
+        Payloads may omit fields like the product name - all lookups use
+        defaults so a sparse payload cannot crash the parser.
 
         Args:
+            chargify_event: The originating Chargify event type.
             data: Form data dictionary.
 
         Returns:
@@ -646,19 +666,27 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         """
         customer_id = data.get("payload[subscription][customer][id]", "")
         customer_data = self.get_customer_data(customer_id)
+        state = data.get("payload[subscription][state]", "unknown")
+        internal_type = (
+            "subscription_canceled"
+            if state.lower() in self._CANCELED_STATES
+            else "subscription_updated"
+        )
         return {
-            "type": "subscription_state_change",
+            "type": internal_type,
             "customer_id": customer_id,
-            "status": data.get("payload[subscription][state]", "unknown"),
+            "status": state,
             "provider": "chargify",
             "metadata": {
                 "subscription_id": data.get("payload[subscription][id]", ""),
                 "plan_name": data.get("payload[subscription][product][name]", ""),
+                "new_state": state,
                 "previous_state": data.get("payload[subscription][previous_state]"),
                 "cancel_at_period_end": data.get(
                     "payload[subscription][cancel_at_end_of_period]"
                 )
                 == "true",
+                "chargify_event": chargify_event,
             },
             "customer_data": customer_data,
         }

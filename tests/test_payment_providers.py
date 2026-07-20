@@ -356,9 +356,12 @@ def test_chargify_subscription_state_change() -> None:
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
-    assert event["type"] == "subscription_state_change"
+    # A change into the canceled state is normalized to the
+    # subscription_canceled type the event processor understands
+    assert event["type"] == "subscription_canceled"
     assert event["customer_id"] == "cust_456"
     assert event["status"] == "canceled"
+    assert event["metadata"]["new_state"] == "canceled"
     assert event["metadata"]["subscription_id"] == "sub_12345"
     assert event["metadata"]["cancel_at_period_end"]
     assert event["customer_data"]["company_name"] == "Test Company"
