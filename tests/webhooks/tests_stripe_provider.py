@@ -17,6 +17,7 @@ parsing event data, and triggering appropriate billing service handlers
 for subscription management and payment processing.
 """
 
+from typing import Any
 from unittest.mock import Mock, patch
 
 from django.test import TestCase
@@ -453,8 +454,15 @@ class StripeProviderTest(TestCase):
 
         self.assertIsNone(result)
 
-    def test_handle_stripe_billing_trial_conversion_detected(self) -> None:
-        """Test that trial conversion is detected for subscription_cycle payments."""
+    def test_handle_stripe_billing_no_trial_conversion_for_plain_cycle(self) -> None:
+        """Test that subscription_cycle alone is NOT a trial conversion.
+
+        Flipped from the original assertion: billing_reason
+        "subscription_cycle" fires on every recurring renewal, so treating
+        it as a trial conversion mislabeled all recurring payments. Without
+        evidence of a trial ending at the invoice period start, no
+        conversion may be flagged.
+        """
         data = {
             "amount_paid": 2660,  # $26.60
             "billing_reason": "subscription_cycle",
@@ -462,13 +470,69 @@ class StripeProviderTest(TestCase):
 
         self.provider._handle_stripe_billing("payment_success", data)
 
+        self.assertIsNone(data.get("_is_trial_conversion"))
+
+    def test_handle_stripe_billing_trial_conversion_detected(self) -> None:
+        """Test trial conversion for the first paid invoice after a trial.
+
+        A multi-item subscription's trial ends and its first paid invoice
+        arrives with the subscription trial_end equal to the invoice
+        period_start - the stateless signal for a genuine conversion.
+        """
+        data = {
+            "amount_paid": 2660,  # $26.60
+            "billing_reason": "subscription_cycle",
+            "period_start": 1770537317,
+            "subscription": {
+                "id": "sub_123",
+                "status": "active",
+                "plan": None,  # Null on multi-item subscriptions
+                "trial_end": 1770537317,  # == period_start
+                "items": {
+                    "data": [
+                        {"price": {"unit_amount": 1330}, "quantity": 2},
+                    ]
+                },
+            },
+        }
+
+        self.provider._handle_stripe_billing("payment_success", data)
+
         self.assertTrue(data.get("_is_trial_conversion"))
+
+    def test_handle_stripe_billing_trial_conversion_with_small_gap(self) -> None:
+        """Test conversion when period_start is just after trial_end."""
+        data = {
+            "amount_paid": 2660,
+            "billing_reason": "subscription_cycle",
+            "period_start": 1770537317 + 60,  # 1 minute after trial_end
+            "subscription": {"id": "sub_123", "trial_end": 1770537317},
+        }
+
+        self.provider._handle_stripe_billing("payment_success", data)
+
+        self.assertTrue(data.get("_is_trial_conversion"))
+
+    def test_handle_stripe_billing_no_trial_conversion_for_later_cycle(self) -> None:
+        """Test that a renewal long after the trial ended is not a conversion."""
+        data = {
+            "amount_paid": 2660,
+            "billing_reason": "subscription_cycle",
+            "period_start": 1770537317 + 2_592_000,  # 30 days after trial_end
+            "subscription": {"id": "sub_123", "trial_end": 1770537317},
+        }
+
+        self.provider._handle_stripe_billing("payment_success", data)
+
+        self.assertIsNone(data.get("_is_trial_conversion"))
 
     def test_handle_stripe_billing_no_trial_conversion_for_zero_amount(self) -> None:
         """Test that trial conversion is not set for $0 payments."""
         data = {
             "amount_paid": 0,
             "billing_reason": "subscription_cycle",
+            "period_start": 1770537317,
+            "subscription": {"id": "sub_123", "trial_end": 1770537317},
         }
 
         self.provider._handle_stripe_billing("payment_success", data)
@@ -480,6 +544,8 @@ class StripeProviderTest(TestCase):
         data = {
             "amount_paid": 2660,
             "billing_reason": "manual",
+            "period_start": 1770537317,
+            "subscription": {"id": "sub_123", "trial_end": 1770537317},
         }
 
         self.provider._handle_stripe_billing("payment_success", data)
@@ -534,6 +600,89 @@ class StripeProviderTest(TestCase):
         self.provider._handle_stripe_billing("subscription_updated", data)
 
         self.assertIsNone(data.get("_change_direction"))
+
+    def test_handle_stripe_billing_multi_item_upgrade_detected(self) -> None:
+        """Test upgrade detection on a multi-item subscription ($50 -> $100).
+
+        Modern multi-item subscriptions have a null top-level plan, so the
+        current amount must be summed from items[] (previously this yielded
+        $0 and every multi-item update was reported as a $0 downgrade).
+        """
+        data: dict[str, Any] = {
+            "plan": None,  # Null on multi-item subscriptions
+            "items": {
+                "data": [
+                    {"price": {"unit_amount": 4000}, "quantity": 2},  # $80
+                    {"plan": {"amount": 2000}, "quantity": 1},  # $20
+                ]
+            },
+            "_previous_attributes": {
+                "items": {
+                    "data": [
+                        {"price": {"unit_amount": 2000}, "quantity": 2},  # $40
+                        {"plan": {"amount": 1000}, "quantity": 1},  # $10
+                    ]
+                },
+            },
+        }
+
+        amount = self.provider._handle_stripe_billing("subscription_updated", data)
+
+        self.assertEqual(data.get("_change_direction"), "upgrade")
+        self.assertEqual(amount, 100.00)
+
+    def test_extract_subscription_amount_sums_items_with_quantity(self) -> None:
+        """Test that item amounts are summed with quantities."""
+        sub_data: dict[str, Any] = {
+            "plan": None,
+            "items": {
+                "data": [
+                    {"plan": {"amount": 1500}, "quantity": 2},
+                    {"price": {"unit_amount": 500}},  # No quantity -> 1
+                ]
+            },
+        }
+
+        self.assertEqual(self.provider._extract_subscription_amount(sub_data), 3500)
+
+    def test_extract_subscription_amount_falls_back_to_top_level_plan(self) -> None:
+        """Test fallback to top-level plan when items carry no amounts."""
+        sub_data: dict[str, Any] = {
+            "plan": {"amount": 2500},
+            "items": {"data": [{"id": "si_123"}]},
+        }
+
+        self.assertEqual(self.provider._extract_subscription_amount(sub_data), 2500)
+
+    def test_extract_subscription_amount_returns_zero_when_unknown(self) -> None:
+        """Test that missing plan and items yields 0 rather than crashing."""
+        self.assertEqual(self.provider._extract_subscription_amount({"plan": None}), 0)
+
+    def test_flag_as_trial_multi_item_plan_amount(self) -> None:
+        """Test that trial flagging sums item amounts when plan is null.
+
+        Previously _flag_as_trial read top-level plan.amount, which is null
+        on multi-item subscriptions, dropping plan_amount from the trial
+        notification (or crashing when plan was present as None).
+        """
+        data: dict[str, Any] = {
+            "status": "trialing",
+            "plan": None,
+            "trial_start": 1769327717,
+            "trial_end": 1770537317,
+            "items": {
+                "data": [
+                    {"price": {"unit_amount": 1660}, "quantity": 1},
+                    {"price": {"unit_amount": 500}, "quantity": 2},
+                ]
+            },
+        }
+
+        amount_cents = self.provider._flag_as_trial(data)
+
+        self.assertEqual(amount_cents, 0)  # Trials are not charged
+        self.assertTrue(data["_is_trial"])
+        self.assertEqual(data["_plan_amount_cents"], 2660)
 
     def test_build_stripe_event_data_includes_trial_conversion_metadata(self) -> None:
         """Test that trial conversion flag is included in event metadata."""
