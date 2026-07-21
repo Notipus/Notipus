@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -191,9 +192,11 @@ class DatabaseLookupService:
                 display_type, timestamp_key, workspace_id
             )
 
+            # Records carry customer PII (ids, emails, order data) and
+            # must be encrypted at rest in Redis.
             cache.set(
                 webhook_key,
-                json.dumps(webhook_record, default=str),
+                encrypt_cache_value(webhook_record),
                 timeout=self.ttl_seconds,
             )
 
@@ -337,7 +340,7 @@ class DatabaseLookupService:
 
             cache.set(
                 webhook_key,
-                json.dumps(webhook_record, default=str),
+                encrypt_cache_value(webhook_record),
                 timeout=self.ttl_seconds,
             )
 
@@ -358,6 +361,9 @@ class DatabaseLookupService:
         self, webhook_key: str, workspace_id: str = "global"
     ) -> None:
         """Add webhook key to daily activity list with cleanup.
+
+        The index itself stays plaintext on purpose: it holds only cache
+        key names (no PII); the records those keys point at are encrypted.
 
         Args:
             webhook_key: Redis key for the webhook record.
@@ -492,7 +498,7 @@ class DatabaseLookupService:
 
             cache.set(
                 webhook_key,
-                json.dumps(webhook_record, default=str),
+                encrypt_cache_value(webhook_record),
                 timeout=self.ttl_seconds,
             )
 
@@ -538,9 +544,11 @@ class DatabaseLookupService:
                 if isinstance(webhook_keys, str):
                     webhook_keys = json.loads(webhook_keys)
 
-                # Fetch webhook records
+                # Fetch webhook records (decrypting; legacy plaintext
+                # entries written before encryption come back as JSON
+                # strings and take the json.loads branch)
                 for webhook_key in webhook_keys:
-                    webhook_data = cache.get(webhook_key)
+                    webhook_data = decrypt_cache_value(cache.get(webhook_key))
                     if webhook_data:
                         if isinstance(webhook_data, str):
                             webhook_data = json.loads(webhook_data)

@@ -8,6 +8,7 @@ import json
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+from core.encrypted_cache import decrypt_cache_value
 from webhooks.models.rich_notification import (
     CompanyInfo,
     CustomerInfo,
@@ -141,7 +142,7 @@ class TestStoreEnrichedRecord:
         # Verify the stored data structure
         first_call_args = mock_cache.set.call_args_list[0]
         stored_key = first_call_args[0][0]
-        webhook_data = json.loads(first_call_args[0][1])
+        webhook_data = decrypt_cache_value(first_call_args[0][1])
 
         # Verify key contains workspace_id
         assert workspace_id in stored_key
@@ -241,7 +242,7 @@ class TestStoreEnrichedRecord:
         assert result is True
 
         first_call_args = mock_cache.set.call_args_list[0]
-        webhook_data = json.loads(first_call_args[0][1])
+        webhook_data = decrypt_cache_value(first_call_args[0][1])
 
         assert "company_name" not in webhook_data
         assert "company_logo_url" not in webhook_data
@@ -282,7 +283,7 @@ class TestStoreEnrichedRecord:
         assert result is True
 
         first_call_args = mock_cache.set.call_args_list[0]
-        webhook_data = json.loads(first_call_args[0][1])
+        webhook_data = decrypt_cache_value(first_call_args[0][1])
 
         assert "insight_text" not in webhook_data
         assert "insight_icon" not in webhook_data
@@ -380,7 +381,7 @@ class TestWorkspaceIsolation:
         assert ":global:" in stored_key
 
         # Verify stored record contains workspace_id field
-        webhook_data = json.loads(first_call_args[0][1])
+        webhook_data = decrypt_cache_value(first_call_args[0][1])
         assert webhook_data["workspace_id"] == "global"
 
     @patch("webhooks.services.database_lookup.cache")
@@ -406,7 +407,7 @@ class TestWorkspaceIsolation:
         )
 
         first_call_args = mock_cache.set.call_args_list[0]
-        webhook_data = json.loads(first_call_args[0][1])
+        webhook_data = decrypt_cache_value(first_call_args[0][1])
         assert webhook_data["workspace_id"] == ws_id
 
     @patch("webhooks.services.database_lookup.cache")

@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 import stripe
+from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
 from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpRequest
@@ -1331,7 +1332,12 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return
         try:
             cache_key = f"{CUSTOMER_EMAIL_CACHE_PREFIX}{customer_id}"
-            cache.set(cache_key, email, timeout=CUSTOMER_EMAIL_CACHE_TTL)
+            # Customer emails are PII and must be encrypted at rest in Redis.
+            cache.set(
+                cache_key,
+                encrypt_cache_value(email),
+                timeout=CUSTOMER_EMAIL_CACHE_TTL,
+            )
             logger.debug(f"Cached customer email for {customer_id}")
         except Exception as e:
             # Don't fail webhook processing if caching fails
@@ -1350,7 +1356,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return ""
         try:
             cache_key = f"{CUSTOMER_EMAIL_CACHE_PREFIX}{customer_id}"
-            email = cache.get(cache_key)
+            email = decrypt_cache_value(cache.get(cache_key))
             if email:
                 logger.debug(f"Found cached email for {customer_id}")
                 return str(email)

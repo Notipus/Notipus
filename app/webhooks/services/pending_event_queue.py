@@ -28,6 +28,7 @@ import threading
 import time
 from typing import Any, ClassVar, cast
 
+from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
 from core.models import Integration, Workspace
 from django.conf import settings
 from django.core.cache import cache
@@ -227,9 +228,11 @@ class PendingEventQueue:
         if not self._acquire_append_lock(key):
             raise RuntimeError(f"Could not acquire append lock for {key}")
         try:
-            existing = cache.get(key) or []
+            existing = decrypt_cache_value(cache.get(key)) or []
             existing.append(item)
-            cache.set(key, existing, timeout=self.TTL_SECONDS)
+            # Pending payloads carry customer PII (emails, names, order
+            # data) and must be encrypted at rest in Redis.
+            cache.set(key, encrypt_cache_value(existing), timeout=self.TTL_SECONDS)
         finally:
             self._release_append_lock(key)
 
@@ -360,7 +363,7 @@ class PendingEventQueue:
         try:
             # Get all stored events
             key = f"pending_webhook:{workspace_id}:{idempotency_key}"
-            stored_items = cache.get(key) or []
+            stored_items = decrypt_cache_value(cache.get(key)) or []
 
             if not stored_items:
                 logger.warning(
@@ -453,10 +456,10 @@ class PendingEventQueue:
             cache.delete(key)
             return []
         try:
-            current = cache.get(key) or []
+            current = decrypt_cache_value(cache.get(key)) or []
             remainder = [item for item in current if item not in processed_items]
             if remainder:
-                cache.set(key, remainder, timeout=self.TTL_SECONDS)
+                cache.set(key, encrypt_cache_value(remainder), timeout=self.TTL_SECONDS)
             else:
                 cache.delete(key)
             return remainder
@@ -982,7 +985,7 @@ class PendingEventQueue:
             _, workspace_id, idempotency_key = parts
 
             # Get stored events
-            stored_items = cache.get(key)
+            stored_items = decrypt_cache_value(cache.get(key))
             if not stored_items:
                 return False
 

@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
+from core.encrypted_cache import decrypt_cache_value
 from plugins.sources.stripe import StripeSourcePlugin
 from webhooks.models.rich_notification import RichNotification
 from webhooks.services.event_consolidation import EventConsolidationService
@@ -1010,14 +1011,16 @@ class TestWebhookCustomerDataExtraction:
     def test_cache_customer_email_from_invoice(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:
-        """Test that customer email is cached from invoice events."""
+        """Test that customer email is cached encrypted (PII at rest)."""
         with patch("plugins.sources.stripe.cache") as mock_cache:
             stripe_plugin._cache_customer_email("cus_test123", "test@example.com")
 
             mock_cache.set.assert_called_once()
             call_args = mock_cache.set.call_args
             assert call_args[0][0] == "stripe_customer_email:cus_test123"
-            assert call_args[0][1] == "test@example.com"
+            stored = call_args[0][1]
+            assert "test@example.com" not in stored
+            assert decrypt_cache_value(stored) == "test@example.com"
 
     def test_get_cached_customer_email(self, stripe_plugin: StripeSourcePlugin) -> None:
         """Test that cached customer email is retrieved."""

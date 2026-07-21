@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
 from webhooks.services.pending_event_queue import (
     MAX_SEND_ATTEMPTS,
     PendingEventQueue,
@@ -57,8 +58,12 @@ class TestPendingEventQueueStorage:
         queue._store_event("idem_key", "ws_123", event_data, customer_data)
 
         key = "pending_webhook:ws_123:idem_key"
-        stored = mock_cache.get(key)
-        assert stored is not None
+        raw = mock_cache.get(key)
+        assert raw is not None
+        # Payloads carry PII and reach Redis encrypted (issue #100)
+        assert isinstance(raw, str)
+        assert "test@example.com" not in raw
+        stored = decrypt_cache_value(raw)
         assert len(stored) == 1
         # Check original fields are present (plus _queued_at timestamp)
         assert stored[0]["event_data"]["type"] == event_data["type"]
@@ -80,7 +85,7 @@ class TestPendingEventQueueStorage:
         queue._store_event("idem_key", "ws_123", event2, customer2)
 
         key = "pending_webhook:ws_123:idem_key"
-        stored = mock_cache.get(key)
+        stored = decrypt_cache_value(mock_cache.get(key))
         assert len(stored) == 2
 
 
@@ -593,7 +598,7 @@ class TestPendingEventQueueIntegration:
 
         # Check event was stored
         key = "pending_webhook:ws_456:idem_123"
-        stored = mock_cache.get(key)
+        stored = decrypt_cache_value(mock_cache.get(key))
         assert stored is not None
         assert len(stored) == 1
 
@@ -636,7 +641,7 @@ class TestPendingEventQueueIntegration:
 
         # Check both events were stored
         key = "pending_webhook:ws_456:idem_123"
-        stored = mock_cache.get(key)
+        stored = decrypt_cache_value(mock_cache.get(key))
         assert len(stored) == 2
 
         # Clean up
@@ -1141,7 +1146,7 @@ class TestCustomerBasedAggregation:
 
         # Check that key includes time bucket
         expected_key = f"pending_webhook:ws_456:customer:cus_123:t{expected_bucket}"
-        stored = mock_cache.get(expected_key)
+        stored = decrypt_cache_value(mock_cache.get(expected_key))
         assert stored is not None
         assert len(stored) == 1
 
@@ -1164,7 +1169,7 @@ class TestCustomerBasedAggregation:
 
         # Check that key is unchanged (no time bucket)
         expected_key = "pending_webhook:ws_456:req_abc123"
-        stored = mock_cache.get(expected_key)
+        stored = decrypt_cache_value(mock_cache.get(expected_key))
         assert stored is not None
         assert len(stored) == 1
 
@@ -1207,7 +1212,7 @@ class TestCustomerBasedAggregation:
 
         # Both events should be stored under the same key
         expected_key = f"pending_webhook:ws_456:customer:cus_123:t{time_bucket}"
-        stored = mock_cache.get(expected_key)
+        stored = decrypt_cache_value(mock_cache.get(expected_key))
         assert stored is not None
         assert len(stored) == 2
 
@@ -1259,7 +1264,7 @@ class TestCustomerBasedAggregation:
             )
 
         # Event should have been added to the PREVIOUS bucket (not current)
-        stored = mock_cache.get(prev_key)
+        stored = decrypt_cache_value(mock_cache.get(prev_key))
         assert stored is not None
         assert len(stored) == 2  # Original + new event
 
@@ -1615,7 +1620,7 @@ class TestProcessDeleteRace:
         fake_cache = InMemoryCache()
         item_a = self._item("subscription_created", 1.0)
         item_b = self._item("invoice_paid", 2.0)
-        fake_cache.store[self.KEY] = [item_a]
+        fake_cache.store[self.KEY] = encrypt_cache_value([item_a])
 
         def append_mid_send(*_args: Any, **_kwargs: Any) -> bool:
             queue._locked_append(self.KEY, item_b)
@@ -1626,11 +1631,15 @@ class TestProcessDeleteRace:
                 with patch.object(queue, "_schedule_processing") as mock_schedule:
                     queue._process_events("idem_123", "ws_456", "stripe", None)
 
-        assert fake_cache.store[self.KEY] == [item_b]
+        assert decrypt_cache_value(fake_cache.store[self.KEY]) == [item_b]
         mock_schedule.assert_called_once_with("idem_123", "ws_456", "stripe", None)
 
     def test_fully_drained_list_is_deleted(self, queue: PendingEventQueue) -> None:
-        """With no mid-send append, a successful send removes the key."""
+        """With no mid-send append, a successful send removes the key.
+
+        Seeded as a legacy plaintext list: events queued before the
+        encryption deploy must still process and drain.
+        """
         fake_cache = InMemoryCache()
         fake_cache.store[self.KEY] = [self._item("subscription_created", 1.0)]
 
@@ -1652,7 +1661,7 @@ class TestProcessDeleteRace:
         attempts_key = "pending_webhook_attempts:ws_456:idem_123"
         item_a = self._item("subscription_created", 1.0)
         item_b = self._item("invoice_paid", 2.0)
-        fake_cache.store[self.KEY] = [item_a]
+        fake_cache.store[self.KEY] = encrypt_cache_value([item_a])
         fake_cache.store[attempts_key] = MAX_SEND_ATTEMPTS - 1
 
         def append_mid_send(*_args: Any, **_kwargs: Any) -> bool:
@@ -1664,7 +1673,7 @@ class TestProcessDeleteRace:
                 with patch.object(queue, "_schedule_processing") as mock_schedule:
                     queue._process_events("idem_123", "ws_456", "stripe", None)
 
-        assert fake_cache.store[self.KEY] == [item_b]
+        assert decrypt_cache_value(fake_cache.store[self.KEY]) == [item_b]
         assert attempts_key not in fake_cache.store
         mock_schedule.assert_called_once_with("idem_123", "ws_456", "stripe", None)
 
