@@ -5,6 +5,7 @@ Handles Slack OAuth connection for receiving notifications in Slack channels.
 
 import json
 import logging
+import secrets
 from typing import cast
 
 import requests
@@ -15,10 +16,9 @@ from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect
 
-from ...models import Integration, Workspace
+from ...models import Integration, UserProfile, Workspace, WorkspaceMember
 from .base import (
     DEFAULT_API_TIMEOUT,
-    get_user_workspace,
     require_admin_role,
     require_post_method,
 )
@@ -28,6 +28,75 @@ logger = logging.getLogger(__name__)
 # Integration metadata
 INTEGRATION_TYPE = "slack_notifications"
 DISPLAY_NAME = "Slack"
+
+# Session key for the Slack OAuth state parameter (CSRF protection)
+SLACK_CONNECT_STATE_SESSION_KEY = "slack_connect_oauth_state"
+
+
+def _get_admin_workspace(request: HttpRequest) -> Workspace | None:
+    """Return the user's workspace iff they are an admin/owner, else None.
+
+    Pure check with NO Django messages or redirect side effects, so it is
+    safe for JSON endpoints (a persisted flash message could otherwise
+    surface later on an unrelated full-page navigation) and for fail-fast
+    gating. Mirrors the role logic in ``require_admin_role``.
+
+    Args:
+        request: The HTTP request object.
+
+    Returns:
+        The workspace if the user is an admin/owner, otherwise None.
+    """
+    if not request.user.is_authenticated:
+        return None
+
+    # Order deterministically so selection is stable when a user belongs to
+    # multiple workspaces (explicit current-workspace resolution is a
+    # pre-existing codebase concern and out of scope for this PR).
+    member = (
+        WorkspaceMember.objects.filter(user=request.user, is_active=True)
+        .order_by("joined_at", "id")
+        .first()
+    )
+    if member is None:
+        # UserProfile users are treated as owners for backward compatibility.
+        try:
+            profile_workspace: Workspace = UserProfile.objects.get(
+                user=request.user
+            ).workspace
+            return profile_workspace
+        except UserProfile.DoesNotExist:
+            return None
+
+    if member.role not in ("owner", "admin"):
+        return None
+    member_workspace: Workspace = member.workspace
+    return member_workspace
+
+
+def _require_admin_role_json(
+    request: HttpRequest,
+) -> tuple[Workspace | None, JsonResponse | None]:
+    """Require admin/owner role for JSON (fetch) endpoints.
+
+    Returns a JSON 403 (no Django messages, no redirect) so ``fetch()``
+    callers that parse the body as JSON don't choke on an HTML redirect
+    target and no flash message leaks onto a later page navigation.
+
+    Args:
+        request: The HTTP request object.
+
+    Returns:
+        Tuple of (workspace, error_response). On success error_response is
+        None; on failure workspace is None and a JsonResponse 403 is returned.
+    """
+    workspace = _get_admin_workspace(request)
+    if workspace is None:
+        return None, JsonResponse(
+            {"error": "You don't have permission to perform this action."},
+            status=403,
+        )
+    return workspace, None
 
 
 @login_required
@@ -43,6 +112,7 @@ def integrate_slack(request: HttpRequest) -> HttpResponseRedirect:
     return redirect("core:slack_connect")
 
 
+@login_required
 def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
     """Initialize Slack connection for workspace notifications.
 
@@ -50,8 +120,21 @@ def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
         request: The HTTP request object.
 
     Returns:
-        Redirect to Slack OAuth authorization.
+        Redirect to Slack OAuth authorization, or to the dashboard if the
+        user is not an admin/owner.
     """
+    # Fail fast: only mint OAuth state for users who could actually complete
+    # the admin-gated callback (mirrors Shopify's gate-at-start). The
+    # workspace itself is unused here; only the permission check matters.
+    _workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+
+    # Generate a state parameter and store it in the session for CSRF
+    # protection. It is validated on callback before the code is exchanged.
+    state = secrets.token_urlsafe(32)
+    request.session[SLACK_CONNECT_STATE_SESSION_KEY] = state
+
     scopes = "incoming-webhook,chat:write,channels:read"
     auth_url = (
         f"https://slack.com/oauth/v2/authorize"
@@ -59,6 +142,7 @@ def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
         f"&scope={scopes}"
         f"&redirect_uri={settings.SLACK_CONNECT_REDIRECT_URI}"
         f"&response_type=code"
+        f"&state={state}"
     )
     return redirect(auth_url)
 
@@ -77,6 +161,29 @@ def slack_connect_callback(
     code = request.GET.get("code")
     if not code:
         return HttpResponse("Authorization failed: No code provided", status=400)
+
+    # Gate on admin role FIRST. require_admin_role cleanly redirects
+    # anonymous / non-admin users (e.g. an expired session) without leaving a
+    # stray "Invalid OAuth state" flash message that would surface after a
+    # later login. It also stops unauthorized users from burning codes or
+    # hitting the Slack API.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+
+    # Validate the state parameter (CSRF protection) BEFORE exchanging the
+    # code. Read (do not pop) the stored state so a forged callback with a
+    # wrong/missing state cannot clear the legitimate in-progress state and
+    # DoS the real flow. Only consume it after a successful match.
+    state = request.GET.get("state")
+    stored_state = request.session.get(SLACK_CONNECT_STATE_SESSION_KEY)
+    if not state or not stored_state or not secrets.compare_digest(state, stored_state):
+        logger.error("Slack connect OAuth state mismatch - possible CSRF attack")
+        messages.error(request, "Invalid OAuth state. Please try again.")
+        return redirect("core:integrations")
+
+    # State validated and user authorized: consume the state now.
+    request.session.pop(SLACK_CONNECT_STATE_SESSION_KEY, None)
 
     # Exchange code for token
     try:
@@ -100,11 +207,6 @@ def slack_connect_callback(
 
     if not data.get("ok"):
         return HttpResponse(f"Slack connection failed: {data.get('error')}", status=400)
-
-    # Get user's workspace (require admin role for modifications)
-    workspace, redirect_response = require_admin_role(request)
-    if redirect_response:
-        return redirect_response
 
     # Store or update Slack integration
     integration, created = Integration.objects.get_or_create(
@@ -192,9 +294,11 @@ def test_slack(request: HttpRequest) -> HttpResponseRedirect:
     if error_redirect:
         return error_redirect
 
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return redirect("core:create_workspace")
+    # Require admin role: sending test messages uses workspace credentials.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     # Find the active Slack integration
     integration = Integration.objects.filter(
@@ -331,11 +435,14 @@ def get_slack_channels(request: HttpRequest) -> JsonResponse:
         request: The HTTP request object.
 
     Returns:
-        JSON response with list of channels or error.
+        JSON response with list of channels or error (403 if the user lacks
+        the required admin role).
     """
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return JsonResponse({"error": "User profile not found"}, status=400)
+    # Require admin role: channel listing exposes workspace Slack data.
+    workspace, error_response = _require_admin_role_json(request)
+    if error_response is not None:
+        return error_response
+    assert workspace is not None
 
     # Find the active Slack integration
     integration = Integration.objects.filter(
@@ -405,14 +512,17 @@ def configure_slack(request: HttpRequest) -> JsonResponse:
         request: The HTTP request object.
 
     Returns:
-        JSON response with success status or error.
+        JSON response with success status or error (403 if the user lacks
+        the required admin role).
     """
     if request.method != "POST":
         return JsonResponse({"error": "Invalid request method"}, status=405)
 
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return JsonResponse({"error": "User profile not found"}, status=400)
+    # Require admin role: this mutates the destination channel.
+    workspace, error_response = _require_admin_role_json(request)
+    if error_response is not None:
+        return error_response
+    assert workspace is not None
 
     # Find the active Slack integration
     integration = Integration.objects.filter(

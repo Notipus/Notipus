@@ -4,6 +4,7 @@ This module handles user authentication via Slack OpenID Connect.
 """
 
 import logging
+import secrets
 from typing import Any
 
 import requests
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 # Default timeout for external API requests (seconds)
 SLACK_API_TIMEOUT = 30
+
+# Session key for the Slack OAuth login state parameter (CSRF protection)
+SLACK_AUTH_STATE_SESSION_KEY = "slack_auth_oauth_state"
 
 
 def home(request: HttpRequest) -> HttpResponse:
@@ -56,6 +60,11 @@ def slack_auth(request: HttpRequest) -> HttpResponseRedirect:
     Returns:
         Redirect to Slack authorization URL.
     """
+    # Generate a state parameter and store it in the session for CSRF
+    # protection. It is validated on callback before the code is exchanged.
+    state = secrets.token_urlsafe(32)
+    request.session[SLACK_AUTH_STATE_SESSION_KEY] = state
+
     scopes = "openid,email,profile"
     auth_url = (
         f"https://slack.com/openid/connect/authorize"
@@ -63,6 +72,7 @@ def slack_auth(request: HttpRequest) -> HttpResponseRedirect:
         f"&scope={scopes}"
         f"&redirect_uri={settings.SLACK_REDIRECT_URI}"
         f"&response_type=code"
+        f"&state={state}"
     )
     return redirect(auth_url)
 
@@ -142,6 +152,19 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
     if not code:
         return HttpResponse("Authorization failed: No code provided", status=400)
 
+    # Validate the state parameter (CSRF protection) BEFORE exchanging the
+    # code. Read (do not pop) the stored state so a forged callback with a
+    # wrong/missing state cannot clear the legitimate in-progress state and
+    # DoS the real login flow. Only consume it after a successful match.
+    state = request.GET.get("state")
+    stored_state = request.session.get(SLACK_AUTH_STATE_SESSION_KEY)
+    if not state or not stored_state or not secrets.compare_digest(state, stored_state):
+        logger.warning("Slack auth OAuth state mismatch - possible CSRF attack")
+        return HttpResponse("Invalid OAuth state", status=400)
+
+    # State validated: consume it so it can't be replayed.
+    request.session.pop(SLACK_AUTH_STATE_SESSION_KEY, None)
+
     # Exchange code for token
     token_data = _get_slack_token(code)
     if not token_data:
@@ -160,13 +183,40 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
     if not slack_id or not email:
         return HttpResponse("Invalid user data from Slack", status=400)
 
+    # Reject login when Slack reports the email is not verified. Auto-creating
+    # or linking an account on an unverified email would allow account takeover.
+    if not user_info.get("email_verified", False):
+        # Log a non-PII identifier (Slack sub) instead of the email address.
+        logger.warning(f"Slack login rejected: email not verified (sub={slack_id})")
+        return HttpResponse("Email address is not verified", status=400)
+
+    user = _resolve_user(slack_id, email, name)
+
+    # Log the user in
+    login(request, user)
+
+    return redirect("core:dashboard")
+
+
+def _resolve_user(slack_id: str, email: str, name: str) -> User:
+    """Find or create the user and reconcile their Slack profile link.
+
+    Args:
+        slack_id: The Slack user identifier (``sub`` claim).
+        email: The user's verified email address.
+        name: The user's display name.
+
+    Returns:
+        The resolved Django user.
+    """
     # Find or create user
     user, created = User.objects.get_or_create(
         email=email, defaults={"username": email, "first_name": name}
     )
 
     if created:
-        logger.info(f"Created new user: {email}")
+        # Log the non-PII Slack sub instead of the email address.
+        logger.info(f"Created new user (sub={slack_id})")
 
     # Try to find existing UserProfile
     try:
@@ -186,7 +236,4 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
             # No profile exists - this is handled later when joining a team
             pass
 
-    # Log the user in
-    login(request, user)
-
-    return redirect("core:dashboard")
+    return user
