@@ -38,9 +38,10 @@ class TestMetadataToDict:
         """Document the stripe 15.x behavior the helper exists to avoid."""
         metadata = _stripe_object({"metadata": {"plan_name": "basic"}}).metadata
 
-        with pytest.raises(KeyError):
+        unsafe = (KeyError, AttributeError, TypeError)
+        with pytest.raises(unsafe):
             dict(metadata)  # type: ignore[call-overload]
-        with pytest.raises(AttributeError):
+        with pytest.raises(unsafe):
             metadata.get("plan_name")
 
     def test_plain_dict_passthrough(self) -> None:

@@ -445,7 +445,7 @@ class StripeAPI:
                 "id": session.id,
                 "customer": session.customer,
                 "status": session.status,
-                "metadata": _metadata_to_dict(session.metadata),
+                "metadata": _metadata_to_dict(_safe_getattr(session, "metadata")),
                 "subscription": session.subscription,
             }
 
