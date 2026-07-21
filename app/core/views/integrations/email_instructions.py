@@ -74,7 +74,9 @@ PROVIDER_INSTRUCTIONS: dict[str, ProviderInstructions] = {
         display_name=STRIPE_DISPLAY_NAME,
         url_slug="stripe",
         integrate_route="core:integrate_stripe",
-        webhook_events=STRIPE_WEBHOOK_EVENTS,
+        # Copied so mutation through either alias cannot silently desync
+        # the setup page from the emailed instructions.
+        webhook_events=list(STRIPE_WEBHOOK_EVENTS),
         steps=[
             SetupStep(
                 title="Open the Stripe webhooks page",
@@ -225,7 +227,7 @@ def send_setup_instructions_email(
     )
 
     try:
-        send_mail(
+        sent_count = send_mail(
             subject=subject,
             message=text_message,
             from_email=settings.DEFAULT_FROM_EMAIL,
@@ -233,13 +235,17 @@ def send_setup_instructions_email(
             html_message=html_message,
             fail_silently=False,
         )
-        logger.info(
-            f"{instructions.display_name} setup instructions sent to {recipient}"
-        )
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send setup instructions to {recipient}: {e}")
+    except Exception:
+        logger.exception(f"Failed to send setup instructions to {recipient}")
         return False
+    if sent_count == 0:
+        logger.error(
+            f"Email backend accepted no messages sending setup "
+            f"instructions to {recipient}"
+        )
+        return False
+    logger.info(f"{instructions.display_name} setup instructions sent to {recipient}")
+    return True
 
 
 @login_required
