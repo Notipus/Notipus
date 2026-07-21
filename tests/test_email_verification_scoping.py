@@ -13,7 +13,7 @@ from allauth.account.models import EmailAddress
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core import mail
-from django.test import Client, override_settings
+from django.test import Client
 
 
 class TestSlackEmailTrust:
@@ -35,7 +35,6 @@ class TestSlackEmailTrust:
 
 
 @pytest.mark.django_db
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class TestPasskeySignupEmailVerification:
     """Test that passkey signups register and verify their email.
 
@@ -43,6 +42,11 @@ class TestPasskeySignupEmailVerification:
     assertions don't depend on pytest-django's implicit test-environment
     backend swap (test_settings itself configures the console backend).
     """
+
+    @pytest.fixture(autouse=True)
+    def _locmem_email_backend(self, settings) -> None:
+        """Pin the locmem email backend for reliable outbox assertions."""
+        settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
     def _complete_signup(self, user: User) -> tuple[int, dict]:
         """POST a signup completion with the WebAuthn service mocked.
