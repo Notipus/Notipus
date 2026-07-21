@@ -125,13 +125,40 @@ class TestRotation:
         get_keys.cache_clear()
 
     def test_non_base64_key_raises_improperly_configured(self) -> None:
-        """A key that is not valid base64url is rejected."""
-        with override_settings(FIELD_ENCRYPTION_KEYS=["not valid base64 !!!"]):
+        """A malformed base64url key raises ImproperlyConfigured, not binascii.Error."""
+        with override_settings(FIELD_ENCRYPTION_KEYS=["not-valid-base64-@@@@"]):
             get_keys.cache_clear()
             with pytest.raises(ImproperlyConfigured):
                 encrypt("anything")
 
         get_keys.cache_clear()
+
+
+class TestMalformedToken:
+    """decrypt() converts malformed input to InvalidToken (not raw errors)."""
+
+    def test_non_base64_token_raises_invalid_token(self) -> None:
+        """A pqc1 token whose body is not valid base64url raises InvalidToken."""
+        with pytest.raises(InvalidToken):
+            decrypt(TOKEN_PREFIX + "not-valid-base64-@@@@")
+
+    def test_truncated_token_raises_invalid_token(self) -> None:
+        """A token shorter than nonce+tag raises InvalidToken, not ValueError."""
+        # 12-byte nonce only, no ciphertext/tag -> below the nonce+tag minimum.
+        short_blob = base64.urlsafe_b64encode(os.urandom(12)).decode("ascii")
+        with pytest.raises(InvalidToken):
+            decrypt(TOKEN_PREFIX + short_blob)
+
+    def test_corrupted_token_body_raises_invalid_token(self) -> None:
+        """A well-sized but garbage token body raises InvalidToken."""
+        garbage = base64.urlsafe_b64encode(os.urandom(64)).decode("ascii")
+        with pytest.raises(InvalidToken):
+            decrypt(TOKEN_PREFIX + garbage)
+
+    def test_non_token_value_raises_invalid_token(self) -> None:
+        """A value without the pqc1 prefix raises InvalidToken."""
+        with pytest.raises(InvalidToken):
+            decrypt("plain-not-a-token")
 
 
 class TestEncryptedTextField:

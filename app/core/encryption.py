@@ -33,6 +33,7 @@ returned as if it were the plaintext secret.
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import os
 from functools import lru_cache
@@ -57,6 +58,7 @@ TOKEN_PREFIX = "pqc1:"
 # ChaCha20-Poly1305 parameters.
 _KEY_SIZE = 32  # 256-bit key
 _NONCE_SIZE = 12  # 96-bit nonce
+_TAG_SIZE = 16  # 128-bit Poly1305 authentication tag
 
 
 class InvalidToken(Exception):
@@ -82,8 +84,33 @@ def _b64url_encode(raw: bytes) -> str:
 
 
 def _b64url_decode(text: str) -> bytes:
-    """base64url-decode ``text`` back to bytes."""
-    return base64.urlsafe_b64decode(text.encode("ascii"))
+    """base64url-decode ``text`` back to bytes.
+
+    Padding is normalized before decoding. Any decoding failure
+    (``binascii.Error`` -- a ``ValueError`` subclass -- or a non-ASCII input)
+    is normalized to a plain ``ValueError`` so callers can convert it to their
+    own domain error (``ImproperlyConfigured`` for keys, ``InvalidToken`` for
+    tokens).
+
+    Args:
+        text: A base64url string.
+
+    Returns:
+        The decoded raw bytes.
+
+    Raises:
+        ValueError: If ``text`` is not valid base64url.
+    """
+    try:
+        data = text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Invalid base64url data (non-ASCII).") from exc
+    # Restore any stripped ``=`` padding so decoding does not fail on length.
+    data += b"=" * ((-len(data)) % 4)
+    try:
+        return base64.urlsafe_b64decode(data)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Invalid base64url data.") from exc
 
 
 def _derive_dev_key() -> str:
@@ -186,13 +213,17 @@ def decrypt(token: str) -> str:
         blob = _b64url_decode(token[len(TOKEN_PREFIX) :])
     except (ValueError, TypeError) as exc:
         raise InvalidToken("Ciphertext token is not valid base64url.") from exc
-    if len(blob) <= _NONCE_SIZE:
+    # A well-formed token is nonce (12) + ciphertext + Poly1305 tag (16), so
+    # anything shorter than nonce+tag cannot possibly authenticate.
+    if len(blob) < _NONCE_SIZE + _TAG_SIZE:
         raise InvalidToken("Ciphertext token is too short.")
     nonce, ciphertext = blob[:_NONCE_SIZE], blob[_NONCE_SIZE:]
     for key in get_keys():
         try:
             plaintext = ChaCha20Poly1305(key).decrypt(nonce, ciphertext, None)
-        except InvalidTag:
+        except (InvalidTag, ValueError):
+            # Wrong key (InvalidTag) or otherwise-malformed ciphertext
+            # (ValueError): try the next key, then fail as InvalidToken.
             continue
         return plaintext.decode("utf-8")
     raise InvalidToken("No configured key could decrypt the ciphertext token.")
