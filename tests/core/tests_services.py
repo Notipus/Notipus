@@ -254,6 +254,14 @@ class BillingServiceTest(TestCase):
         Workspace.objects.filter(id=self.workspace.id).update(
             stripe_subscription_id="sub_test123"
         )
+        # Seed a known anchor (a future renewal a subscription handler
+        # would have written) so we can assert the invoice handler leaves
+        # it untouched — the sync is what advances it, and it's mocked.
+        Workspace.objects.filter(id=self.workspace.id).update(
+            billing_cycle_anchor=1300000000
+        )
+        anchor_before = Workspace.objects.get(id=self.workspace.id).billing_cycle_anchor
+
         invoice_data = {
             "customer": "cus_test123",
             "subscription": "sub_test123",
@@ -266,7 +274,10 @@ class BillingServiceTest(TestCase):
         self.workspace.refresh_from_db()
         self.assertEqual(self.workspace.subscription_status, "active")
         self.assertTrue(self.workspace.payment_method_added)
-        self.assertEqual(self.workspace.billing_cycle_anchor, 1234567890)
+        # With sync mocked, the handler itself writes nothing into the
+        # anchor: it must be exactly what it was before the call (not the
+        # invoice's period_end, and not any other value).
+        self.assertEqual(self.workspace.billing_cycle_anchor, anchor_before)
 
         mock_logger.info.assert_called_once_with(
             "Applied payment_success for customer cus_test123 (amount_paid=2900)"

@@ -554,6 +554,10 @@ class BillingService:
         per-customer lock so a late-retried paid-invoice event can't
         resurrect a workspace whose subscription has since been deleted
         (sync sees the canceled subscription and restores "cancelled").
+        The sync is also what advances billing_cycle_anchor: it reads the
+        subscription's current_period_end (the next renewal), whereas the
+        invoice's own period_end is the just-billed period's end, so the
+        anchor is intentionally not written from the invoice here.
 
         Args:
             invoice: Invoice data from Stripe webhook.
@@ -608,9 +612,14 @@ class BillingService:
                 update_data["subscription_status"] = "active"
                 update_data["payment_method_added"] = True
 
-            period_end = invoice.get("period_end")
-            if period_end:
-                update_data["billing_cycle_anchor"] = period_end
+            # Deliberately do NOT write billing_cycle_anchor here. The
+            # invoice's top-level ``period_end`` is the end of the
+            # just-billed period (≈ now for a renewal), not the NEXT
+            # renewal that _extract_billing_anchor's contract requires;
+            # writing it would regress the anchor a subscription handler
+            # already advanced to the subscription's current_period_end.
+            # The sync below reads the subscription and sets the anchor
+            # from current_period_end, keeping it on the next renewal.
 
             if update_data:
                 Workspace.objects.filter(id=workspace.id).update(**update_data)
