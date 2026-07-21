@@ -166,6 +166,13 @@ class RateLimiter:
         # The fallback is per-process, so during a prolonged Redis outage it
         # would otherwise grow one entry per organization/month without bound.
         self._max_fallback_keys = 10_000
+        # When over the cap, evict in a batch down to this low-water mark so
+        # pruning (and its sort) is amortized across many writes instead of
+        # firing on every write once at capacity.
+        self._fallback_low_water = 9_000
+        # Throttle the eviction WARNING so a sustained outage cannot spam logs.
+        self._eviction_warn_interval = 60.0  # seconds
+        self._last_eviction_warn = 0.0
 
     def get_cache_key(self, organization_uuid: str, month: str) -> str:
         """Generate cache key for organization monthly usage.
@@ -227,6 +234,7 @@ class RateLimiter:
                 "to in-memory fallback: %s",
                 key,
                 e,
+                exc_info=True,
             )
             return self._get_from_fallback(key, default), False
 
@@ -335,10 +343,12 @@ class RateLimiter:
     def _prune_fallback(self) -> None:
         """Bound the in-memory fallback so it cannot grow without limit.
 
-        First drops expired entries, then enforces a hard cap on the number
-        of tracked keys by evicting the oldest entries. Without the cap a
-        prolonged Redis outage would let the per-process fallback grow one
-        entry per organization/month indefinitely.
+        First drops expired entries. If the fallback still exceeds the hard
+        cap, evicts the oldest entries in a single batch down to the
+        low-water mark. Evicting in batches (rather than one entry per write
+        once at capacity) means the O(n log n) sort is amortized across many
+        writes, and the eviction WARNING is throttled so a sustained Redis
+        outage cannot spam the log.
         """
         current_time = time.time()
 
@@ -351,21 +361,30 @@ class RateLimiter:
         for expired_key in expired_keys:
             del self._in_memory_fallback[expired_key]
 
-        # Enforce the hard cap by evicting the oldest entries. Reaching this
-        # branch means the fallback is under sustained pressure (Redis is very
-        # likely unavailable), so surface it.
-        overflow = len(self._in_memory_fallback) - self._max_fallback_keys
-        if overflow > 0:
-            oldest = sorted(
-                self._in_memory_fallback.items(), key=lambda item: item[1][1]
-            )[:overflow]
-            for stale_key, _ in oldest:
-                del self._in_memory_fallback[stale_key]
+        # Only sort/evict when actually over the cap. Evicting down to the
+        # low-water mark leaves headroom so the next prune (and its sort) is
+        # deferred for many subsequent writes instead of firing per write.
+        if len(self._in_memory_fallback) <= self._max_fallback_keys:
+            return
+
+        evict_count = len(self._in_memory_fallback) - self._fallback_low_water
+        oldest = sorted(self._in_memory_fallback.items(), key=lambda item: item[1][1])[
+            :evict_count
+        ]
+        for stale_key, _ in oldest:
+            del self._in_memory_fallback[stale_key]
+
+        # Reaching this branch means the fallback is under sustained pressure
+        # (Redis is very likely unavailable), so surface it -- but throttle so
+        # we warn at most once per interval.
+        if current_time - self._last_eviction_warn >= self._eviction_warn_interval:
+            self._last_eviction_warn = current_time
             logger.warning(
                 "In-memory rate-limit fallback exceeded %s keys; evicted %s "
-                "oldest entries. Redis is likely unavailable.",
+                "oldest entries down to %s. Redis is likely unavailable.",
                 self._max_fallback_keys,
-                overflow,
+                evict_count,
+                self._fallback_low_water,
             )
 
     def check_rate_limit(self, organization: Any) -> tuple[bool, dict[str, Any]]:
@@ -388,6 +407,7 @@ class RateLimiter:
 
             # Check if within limits
             is_allowed = current_usage < limit
+            deny_reason: str | None = None
 
             if not cache_healthy:
                 # Deliberate availability tradeoff. The cache backing the quota
@@ -401,6 +421,10 @@ class RateLimiter:
                 # fail-closed with RATE_LIMIT_FAIL_CLOSED = True.
                 fail_closed = getattr(settings, "RATE_LIMIT_FAIL_CLOSED", False)
                 is_allowed = not fail_closed
+                # Distinguish a cache-outage denial from an actual quota breach
+                # so enforce_rate_limit can raise a truthful message.
+                if not is_allowed:
+                    deny_reason = "cache_unavailable"
                 logger.error(
                     "Rate-limit cache unavailable for org %s; enforcing %s "
                     "(RATE_LIMIT_FAIL_CLOSED=%s). Usage count is unreliable.",
@@ -439,6 +463,7 @@ class RateLimiter:
                 "plan": organization.subscription_plan,
                 "fallback_mode": self.circuit_breaker.state != "CLOSED",
                 "cache_healthy": cache_healthy,
+                "reason": deny_reason,
             }
 
             return is_allowed, rate_limit_info
@@ -460,6 +485,7 @@ class RateLimiter:
                 "plan": organization.subscription_plan,
                 "fallback_mode": True,
                 "cache_healthy": False,
+                "reason": "cache_unavailable" if fail_closed else None,
                 "error": str(e),
             }
 
@@ -510,6 +536,18 @@ class RateLimiter:
         is_allowed, rate_limit_info = self.check_rate_limit(organization)
 
         if not is_allowed:
+            if rate_limit_info.get("reason") == "cache_unavailable":
+                # The denial is a fail-closed reaction to a cache outage, not
+                # an actual quota breach. Raise a truthful message so the
+                # rejection is not misattributed to the customer's usage.
+                raise RateLimitException(
+                    "Rate limiting is failing closed because the cache backend "
+                    "is unavailable (RATE_LIMIT_FAIL_CLOSED is enabled); "
+                    "rejecting the request until the cache recovers.",
+                    limit=rate_limit_info["limit"],
+                    current_usage=rate_limit_info["current_usage"],
+                    reset_time=rate_limit_info["reset_time"],
+                )
             raise RateLimitException(
                 f"Rate limit exceeded for plan '{organization.subscription_plan}'. "
                 f"Limit: {rate_limit_info['limit']}, "
