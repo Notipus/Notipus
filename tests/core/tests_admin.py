@@ -52,6 +52,7 @@ def sample_company(db: None) -> Company:
             },
             "_blended_at": "2025-01-24T10:00:00Z",
         },
+        logo_url="https://acme.com/logo.png",
         logo_data=b"fake logo data",
         logo_content_type="image/png",
     )
@@ -176,6 +177,7 @@ class TestCompanyAdminActions:
         # Enrichment data should be cleared
         assert sample_company.name == ""
         assert sample_company.brand_info == {}
+        assert sample_company.logo_url == ""
         assert sample_company.logo_data is None
         assert sample_company.logo_content_type == ""
 

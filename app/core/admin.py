@@ -150,6 +150,7 @@ class CompanyAdmin(admin.ModelAdmin):
             count = queryset.update(
                 name="",
                 brand_info={},
+                logo_url="",
                 logo_data=None,
                 logo_content_type="",
             )
