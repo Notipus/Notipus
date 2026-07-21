@@ -39,6 +39,45 @@ def _safe_getattr(obj: Any, attr: str, default: Any = None) -> Any:
         return default
 
 
+def _metadata_to_dict(metadata: Any) -> dict[str, Any]:
+    """Convert Stripe metadata to a plain dictionary.
+
+    Stripe SDK metadata is a StripeObject, which is not a Mapping: passing
+    it to dict() or calling .get() on it raises at runtime. Plain mappings
+    (e.g. test doubles) are converted with dict().
+
+    Args:
+        metadata: Stripe metadata object, mapping, or None.
+
+    Returns:
+        A plain dictionary of the metadata, empty if metadata is falsy.
+    """
+    if not metadata:
+        return {}
+    if isinstance(metadata, stripe.StripeObject):
+        return metadata.to_dict()
+    return dict(metadata)
+
+
+def _product_to_dict(product: Any) -> dict[str, Any]:
+    """Serialize a Stripe product into a plain dictionary.
+
+    Args:
+        product: A Stripe product object.
+
+    Returns:
+        Dictionary with the product's id, name, description, metadata,
+        and active flag.
+    """
+    return {
+        "id": product.id,
+        "name": product.name,
+        "description": product.description,
+        "metadata": _metadata_to_dict(_safe_getattr(product, "metadata")),
+        "active": product.active,
+    }
+
+
 class StripeAPI:
     """API client for Stripe operations using the official Stripe SDK.
 
@@ -404,7 +443,7 @@ class StripeAPI:
                 "id": session.id,
                 "customer": session.customer,
                 "status": session.status,
-                "metadata": dict(session.metadata) if session.metadata else {},
+                "metadata": _metadata_to_dict(session.metadata),
                 "subscription": session.subscription,
             }
 
@@ -622,7 +661,9 @@ class StripeAPI:
                     product_name = fetched_product.name
                     # Prefer metadata.plan_name if available (more reliable)
                     if hasattr(fetched_product, "metadata"):
-                        plan_name = fetched_product.metadata.get("plan_name")
+                        plan_name = _metadata_to_dict(fetched_product.metadata).get(
+                            "plan_name"
+                        )
                 except stripe.StripeError:
                     product_name = None
             elif product:
@@ -907,13 +948,7 @@ class StripeAPI:
             product = stripe.Product.create(api_key=self.api_key, **product_params)
 
             logger.info(f"Created Stripe product {product.id}: {name}")
-            return {
-                "id": product.id,
-                "name": product.name,
-                "description": product.description,
-                "metadata": dict(product.metadata) if product.metadata else {},
-                "active": product.active,
-            }
+            return _product_to_dict(product)
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error creating product: {e!s}")
@@ -1005,17 +1040,7 @@ class StripeAPI:
 
             products = stripe.Product.list(api_key=self.api_key, **params)
 
-            result = []
-            for product in products.data:
-                result.append(
-                    {
-                        "id": product.id,
-                        "name": product.name,
-                        "description": product.description,
-                        "metadata": dict(product.metadata) if product.metadata else {},
-                        "active": product.active,
-                    }
-                )
+            result = [_product_to_dict(product) for product in products.data]
 
             logger.info(f"Retrieved {len(result)} products from Stripe")
             return result
@@ -1047,15 +1072,9 @@ class StripeAPI:
             products = stripe.Product.list(limit=100, active=True, api_key=self.api_key)
 
             for product in products.data:
-                if product.metadata and product.metadata.get(key) == value:
+                if _metadata_to_dict(product.metadata).get(key) == value:
                     logger.info(f"Found product {product.id} with {key}={value}")
-                    return {
-                        "id": product.id,
-                        "name": product.name,
-                        "description": product.description,
-                        "metadata": dict(product.metadata),
-                        "active": product.active,
-                    }
+                    return _product_to_dict(product)
 
             logger.info(f"No product found with metadata {key}={value}")
             return None
@@ -1104,13 +1123,7 @@ class StripeAPI:
             )
 
             logger.info(f"Updated Stripe product {product.id}")
-            return {
-                "id": product.id,
-                "name": product.name,
-                "description": product.description,
-                "metadata": dict(product.metadata) if product.metadata else {},
-                "active": product.active,
-            }
+            return _product_to_dict(product)
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error updating product: {e!s}")
