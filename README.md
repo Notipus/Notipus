@@ -6,13 +6,13 @@ Managed service: [notipus.com](https://notipus.com) · Self-hosting: [see below]
 
 ## Features
 
-- ⚡ **Three payment sources**: Stripe, Shopify, and Maxio (Chargify) webhooks, with signature validation on every request
-- 🔗 **One-click setup**: OAuth-based connections for Slack, Stripe (Stripe Connect creates the webhook endpoint for you), and Shopify — no manual token copying
-- 💡 **Automatic enrichment**: company data (logo, industry, size) via Brandfetch and person data (name, job title, seniority, LinkedIn) via Hunter.io
-- 📊 **Insight detection**: VIP and at-risk flags, lifetime-value milestones ($1k–$100k), trial start/conversion, upgrade and downgrade detection, payment-retry tracking, customer anniversaries
-- 🔄 **Noise reduction**: related events are consolidated and deduplicated into a single message instead of five pings
-- 🎯 **Full event coverage**: new subscriptions, payment success/failure, refunds, cancellations and reactivations, Shopify orders and fulfillment
-- 🎨 **Engaging messages**: Slack Block Kit formatting with action buttons that deep-link back to the originating dashboard
+- **Three payment sources**: Stripe, Shopify, and Maxio (Chargify) webhooks, with signature validation on every request
+- **One-click setup**: OAuth-based connections for Slack, Stripe (Stripe Connect creates the webhook endpoint for you), and Shopify — no manual token copying
+- **Automatic enrichment**: company data (logo, industry, size) via Brandfetch and person data (name, job title, seniority, LinkedIn) via Hunter.io
+- **Insight detection**: VIP and at-risk flags, lifetime-value milestones ($1k–$100k), trial start/conversion, upgrade and downgrade detection, payment-retry tracking, customer anniversaries
+- **Noise reduction**: related events are consolidated and deduplicated into a single message instead of five pings
+- **Full event coverage**: new subscriptions, payment success/failure, refunds, cancellations and reactivations, Shopify orders and fulfillment
+- **Engaging messages**: Slack Block Kit formatting with action buttons that deep-link back to the originating dashboard
 
 ## Self-Hosting
 
