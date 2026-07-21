@@ -142,7 +142,7 @@ class CompanyAdmin(admin.ModelAdmin):
         (irreversible) purge, mirroring Django's built-in ``delete_selected``
         flow. The purge only runs once the confirmation form is submitted.
         """
-        if request.POST.get("confirm_purge"):
+        if request.POST.get("confirm_purge") == "yes":
             count = queryset.update(
                 name="",
                 brand_info={},

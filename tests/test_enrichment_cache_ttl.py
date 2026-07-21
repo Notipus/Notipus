@@ -51,6 +51,10 @@ class TestIsTimestampFresh:
         """A None duration caches indefinitely for any valid timestamp."""
         assert is_timestamp_fresh(_iso_days_ago(3650), None) is True
 
+    def test_none_duration_still_requires_parseable_timestamp(self) -> None:
+        """A malformed timestamp is stale even under an indefinite cache."""
+        assert is_timestamp_fresh("not-a-date", None) is False
+
     def test_zulu_suffix_timestamp_is_fresh(self) -> None:
         """A recent timestamp using the ``Z`` UTC suffix parses as fresh."""
         recent_zulu = (datetime.now(timezone.utc) - timedelta(days=1)).replace(

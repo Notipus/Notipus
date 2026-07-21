@@ -205,6 +205,31 @@ class TestCompanyAdminActions:
         assert sample_company.name == "Acme Corporation"
         assert sample_company.brand_info != {}
 
+    def test_purge_enrichment_data_ignores_wrong_confirm_value(
+        self,
+        company_admin: CompanyAdmin,
+        sample_company: Company,
+        request_factory: RequestFactory,
+    ) -> None:
+        """Test only the exact ``confirm_purge=yes`` sentinel triggers a purge."""
+        request = request_factory.post("/admin/core/company/", {"confirm_purge": "1"})
+        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+
+        queryset = Company.objects.filter(pk=sample_company.pk)
+
+        # A truthy-but-wrong value must show the confirmation page, not purge.
+        with patch.object(company_admin.admin_site, "each_context", return_value={}):
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        assert response is not None
+        assert response.template_name == (
+            "admin/core/company/purge_enrichment_confirmation.html"
+        )
+
+        sample_company.refresh_from_db()
+        assert sample_company.name == "Acme Corporation"
+        assert sample_company.brand_info != {}
+
     def test_refresh_enrichment(
         self,
         company_admin: CompanyAdmin,

@@ -27,12 +27,9 @@ def is_timestamp_fresh(
     if not timestamp:
         return False
 
-    # Indefinite cache: any valid timestamp is fresh.
-    if max_age_days is None:
-        return True
-
-    # Normalize a trailing "Z" (UTC designator) which older
-    # datetime.fromisoformat() implementations reject.
+    # Always validate the timestamp first so a malformed value is treated as
+    # stale, even under an indefinite cache. Normalize a trailing "Z" (UTC
+    # designator) which older datetime.fromisoformat() implementations reject.
     normalized = timestamp.strip()
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
@@ -41,6 +38,10 @@ def is_timestamp_fresh(
         enriched_at = datetime.fromisoformat(normalized)
     except (ValueError, TypeError):
         return False
+
+    # Indefinite cache: any successfully parsed timestamp is fresh.
+    if max_age_days is None:
+        return True
 
     # Treat naive timestamps as UTC so comparisons stay timezone-aware.
     if enriched_at.tzinfo is None:
