@@ -74,6 +74,17 @@ SLACK_ICONS: dict[str, str] = {
     "truck": "truck",
 }
 
+# Badges appended after the customer email for domain-type tags.
+# Keys are EmailTag values from webhooks.utils.email_classifier.
+EMAIL_TAG_BADGES: dict[str, str] = {
+    "government": ":classical_building: Government",
+    "education": ":mortar_board: Education",
+    "military": ":shield: Military",
+    "healthcare": ":hospital: Healthcare",
+    "free": ":mailbox: Free email",
+    "disposable": ":wastebasket: Disposable email",
+}
+
 # Provider display icons
 PROVIDER_ICONS: dict[str, str] = {
     # Payment providers
@@ -629,9 +640,16 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         """
         elements: list[str] = []
 
-        # Email
+        # Email, with compact domain-type badges (e.g.
+        # ":bust_in_silhouette: jane@stanford.edu · :mortar_board: Education")
         if customer.email:
-            elements.append(f":bust_in_silhouette: {customer.email}")
+            email_parts = [f":bust_in_silhouette: {customer.email}"]
+            email_parts.extend(
+                EMAIL_TAG_BADGES[tag]
+                for tag in customer.email_tags
+                if tag in EMAIL_TAG_BADGES
+            )
+            elements.append(" · ".join(email_parts))
 
         # Name if no email
         if not customer.email and customer.name:
