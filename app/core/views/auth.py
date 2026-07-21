@@ -153,12 +153,17 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
         return HttpResponse("Authorization failed: No code provided", status=400)
 
     # Validate the state parameter (CSRF protection) BEFORE exchanging the
-    # code. Abort on missing or mismatched state.
+    # code. Read (do not pop) the stored state so a forged callback with a
+    # wrong/missing state cannot clear the legitimate in-progress state and
+    # DoS the real login flow. Only consume it after a successful match.
     state = request.GET.get("state")
-    stored_state = request.session.pop(SLACK_AUTH_STATE_SESSION_KEY, None)
+    stored_state = request.session.get(SLACK_AUTH_STATE_SESSION_KEY)
     if not state or not stored_state or not secrets.compare_digest(state, stored_state):
         logger.warning("Slack auth OAuth state mismatch - possible CSRF attack")
         return HttpResponse("Invalid OAuth state", status=400)
+
+    # State validated: consume it so it can't be replayed.
+    request.session.pop(SLACK_AUTH_STATE_SESSION_KEY, None)
 
     # Exchange code for token
     token_data = _get_slack_token(code)
@@ -181,7 +186,8 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
     # Reject login when Slack reports the email is not verified. Auto-creating
     # or linking an account on an unverified email would allow account takeover.
     if not user_info.get("email_verified", False):
-        logger.warning(f"Slack login rejected: email not verified for {email}")
+        # Log a non-PII identifier (Slack sub) instead of the email address.
+        logger.warning(f"Slack login rejected: email not verified (sub={slack_id})")
         return HttpResponse("Email address is not verified", status=400)
 
     user = _resolve_user(slack_id, email, name)

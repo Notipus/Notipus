@@ -330,10 +330,21 @@ class TestConfigureSlackAdminGate:
 
         response = self._post_channel(client, "#evil")
 
-        # require_admin_role redirects non-admins away instead of mutating.
-        assert response.status_code == 302
+        # JSON (fetch) endpoint: non-admins get a JSON 403, not a redirect.
+        assert response.status_code == 403
+        assert response.json()["error"]
         integration.refresh_from_db()
         assert integration.integration_settings["channel"] == "#general"
+
+    def test_non_admin_get_channels_forbidden_json(self, client: Client) -> None:
+        """A plain member gets a JSON 403 from get_slack_channels."""
+        user, _, _ = self._make_member("user")
+        client.force_login(user)
+
+        response = client.get(reverse("core:get_slack_channels"))
+
+        assert response.status_code == 403
+        assert response.json()["error"]
 
     def test_admin_member_allowed(self, client: Client) -> None:
         """An admin member can change the Slack destination channel."""
