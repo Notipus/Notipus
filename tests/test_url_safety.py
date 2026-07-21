@@ -184,6 +184,48 @@ class TestCreatePinnedSession:
         finally:
             session.close()
 
+    def test_dual_stack_prefers_validated_ipv4(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dual-stack host with IPv6-first resolution pins to the IPv4."""
+
+        def _fake(*_args: object, **_kwargs: object) -> list:
+            return [
+                (
+                    socket.AF_INET6,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("2606:2800:220:1:248:1893:25c8:1946", 0, 0, 0),
+                ),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)),
+            ]
+
+        monkeypatch.setattr(url_safety.socket, "getaddrinfo", _fake)
+        session = create_pinned_session("https://example.com/")
+        try:
+            adapter = session.get_adapter("https://example.com/")
+            assert isinstance(adapter, _PinnedIPAdapter)
+            # Prefers the validated IPv4 even though IPv6 resolved first.
+            assert adapter._validated_ip == "93.184.216.34"
+        finally:
+            session.close()
+
+    def test_ipv6_only_pins_ipv6(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An IPv6-only host still pins to the validated IPv6 address."""
+        monkeypatch.setattr(
+            url_safety.socket,
+            "getaddrinfo",
+            _fake_getaddrinfo_for("2606:2800:220:1:248:1893:25c8:1946"),
+        )
+        session = create_pinned_session("https://example.com/")
+        try:
+            adapter = session.get_adapter("https://example.com/")
+            assert isinstance(adapter, _PinnedIPAdapter)
+            assert adapter._validated_ip == "2606:2800:220:1:248:1893:25c8:1946"
+        finally:
+            session.close()
+
     def test_refuses_private_resolution(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A host resolving to a private IP raises UnsafeUrlError."""
         monkeypatch.setattr(

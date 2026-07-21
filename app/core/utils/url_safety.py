@@ -116,6 +116,26 @@ def _resolve_validated_ips(hostname: str) -> list[str]:
     return ips
 
 
+def _prefer_ipv4(ips: list[str]) -> str:
+    """Pick the connection IP, preferring IPv4 over IPv6.
+
+    Dual-stack hosts may return an IPv6 address first, which fails in
+    IPv4-only or broken-IPv6 environments even when a validated public IPv4
+    exists. Prefer the first IPv4 address and fall back to the first address
+    (IPv6) only if no IPv4 is present.
+
+    Args:
+        ips: Non-empty list of already-validated public IP strings.
+
+    Returns:
+        The IP string to pin the connection to.
+    """
+    for ip in ips:
+        if ":" not in ip:
+            return ip
+    return ips[0]
+
+
 def is_safe_public_url(url: str) -> bool:
     """Return whether a URL is safe to fetch from a server context.
 
@@ -292,7 +312,7 @@ def create_pinned_session(url: str) -> requests.Session:
     if not ips:
         raise UnsafeUrlError(f"URL resolves to a non-public host: {url!r}")
 
-    adapter = _PinnedIPAdapter(hostname, ips[0], use_tls=(scheme == "https"))
+    adapter = _PinnedIPAdapter(hostname, _prefer_ipv4(ips), use_tls=(scheme == "https"))
     session = requests.Session()
     session.mount(f"{scheme}://", adapter)
     return session
