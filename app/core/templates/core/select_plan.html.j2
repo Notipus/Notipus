@@ -16,10 +16,10 @@
             <!-- Plan Cards -->
             <div class="mt-12 space-y-4 sm:mt-16 sm:space-y-0 sm:grid sm:grid-cols-2 sm:gap-6 lg:max-w-4xl lg:mx-auto xl:max-w-none xl:mx-0 xl:grid-cols-4">
                 {% for plan in plans %}
-                    <div class="border border-gray-200 rounded-lg shadow-sm divide-y divide-gray-200 {% if plan.name == 'pro' %}ring-2 ring-primary-500{% endif %}">
+                    <div class="relative border border-gray-200 rounded-lg shadow-sm divide-y divide-gray-200 {% if plan.name == 'pro' %}ring-2 ring-primary-500{% endif %}">
                         {% if plan.name == 'pro' %}
                             <div class="absolute -top-4 left-1/2 transform -translate-x-1/2">
-                                <span class="inline-flex px-4 py-1 rounded-full text-sm font-semibold tracking-wide uppercase bg-primary-500 text-white">
+                                <span class="inline-flex whitespace-nowrap px-4 py-1 rounded-full text-sm font-semibold tracking-wide uppercase bg-primary-500 text-white shadow">
                                     Most Popular
                                 </span>
                             </div>

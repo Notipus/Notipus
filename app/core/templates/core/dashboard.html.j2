@@ -10,49 +10,11 @@
         <!-- Simplified Header -->
         <div class="bg-white shadow-sm">
             <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-                <div class="md:flex md:items-center md:justify-between">
-                    <div class="flex-1 min-w-0">
-                        <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl flex items-center gap-2">
-                            Welcome back! <i class="ti ti-hand-wave text-primary-500"></i>
-                        </h2>
-                        <p class="mt-1 text-lg text-gray-600">Ready to manage your webhooks</p>
-                    </div>
-                    <div class="mt-4 flex md:mt-0 md:ml-4 space-x-3">
-                        <a href="{% url 'core:billing_dashboard' %}"
-                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                            <svg class="mr-2 h-4 w-4"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z">
-                                </path>
-                            </svg>
-                            Billing
-                        </a>
-                        <a href="{% url 'core:integrations' %}"
-                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                            <svg class="mr-2 h-4 w-4"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
-                                </path>
-                            </svg>
-                            Integrations
-                        </a>
-                        <a href="{% url 'core:workspace_settings' %}"
-                           class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 transition-all duration-200">
-                            <svg class="mr-2 h-4 w-4"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                </path>
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                            </svg>
-                            Settings
-                        </a>
-                    </div>
+                <div class="flex-1 min-w-0">
+                    <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl flex items-center gap-2">
+                        Welcome back{% if user.first_name %}, {{ user.first_name }}{% endif %}! <i class="ti ti-hand-wave text-primary-500"></i>
+                    </h2>
+                    <p class="mt-1 text-lg text-gray-600">Here's what's happening across {{ organization.name }}</p>
                 </div>
             </div>
         </div>
@@ -88,12 +50,12 @@
                             <div class="mt-4 flex flex-wrap gap-3">
                                 <a href="{% url 'core:integrate_slack' %}"
                                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 transition-all duration-200">
-                                    <i class="fas fa-comments mr-2"></i>
+                                    <i class="ti ti-brand-slack mr-2"></i>
                                     Connect Slack
                                 </a>
                                 <a href="{% url 'core:integrate_shopify' %}"
                                    class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 transition-all duration-200">
-                                    <i class="fas fa-shopping-cart mr-2"></i>
+                                    <i class="ti ti-shopping-cart mr-2"></i>
                                     Connect Shopify
                                 </a>
                                 <a href="{% url 'core:integrations' %}"
@@ -330,23 +292,41 @@
                                                         </path>
                                                     </svg>
                                                 </div>
-                                            {% elif activity.severity == "success" %}
-                                                <div class="h-10 w-10 bg-green-100 rounded-lg flex items-center justify-center">
-                                                    <svg class="h-5 w-5 text-green-600"
+                                            {% elif activity.company_domain %}
+                                                <img src="{% url 'core:company-logo' domain=activity.company_domain %}"
+                                                     alt="{{ activity.company_name|default:activity.company_domain }}"
+                                                     width="40"
+                                                     height="40"
+                                                     loading="lazy"
+                                                     class="h-10 w-10 rounded-lg object-cover bg-white border border-gray-200"
+                                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                                <!-- Fallback icon shown when no logo is stored -->
+                                                <div class="h-10 w-10 bg-gray-100 rounded-lg items-center justify-center hidden">
+                                                    <svg class="h-5 w-5 text-gray-400"
                                                          fill="none"
                                                          stroke="currentColor"
                                                          viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4">
                                                         </path>
                                                     </svg>
                                                 </div>
-                                            {% elif activity.severity == "error" %}
+                                            {% elif activity.status == "failed" or activity.status == "declined" or activity.status == "error" or activity.severity == "error" or activity.severity == "critical" %}
                                                 <div class="h-10 w-10 bg-red-100 rounded-lg flex items-center justify-center">
                                                     <svg class="h-5 w-5 text-red-600"
                                                          fill="none"
                                                          stroke="currentColor"
                                                          viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z">
+                                                        </path>
+                                                    </svg>
+                                                </div>
+                                            {% elif activity.status == "cancelled" %}
+                                                <div class="h-10 w-10 bg-gray-100 rounded-lg flex items-center justify-center">
+                                                    <svg class="h-5 w-5 text-gray-500"
+                                                         fill="none"
+                                                         stroke="currentColor"
+                                                         viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636">
                                                         </path>
                                                     </svg>
                                                 </div>
@@ -437,7 +417,7 @@
 
                                                     <!-- Insight Banner -->
                                                     {% if activity.insight_text %}
-                                                        <div class="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-primary-50 text-primary-700 text-xs font-medium">
+                                                        <div class="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium {% if activity.severity == 'error' or activity.severity == 'critical' %}bg-red-50 text-red-700{% elif activity.severity == 'warning' %}bg-amber-50 text-amber-700{% else %}bg-green-50 text-green-700{% endif %}">
                                                             {% if activity.insight_icon == "celebration" %}
                                                                 <i class="ti ti-confetti"></i>
                                                             {% elif activity.insight_icon == "trophy" %}

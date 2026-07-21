@@ -1,14 +1,14 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Create Organization - Notipus
+    Create Workspace - Notipus
 {% endblock title %}
 
 {% block content %}
     <div class="min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8">
         <div class="sm:mx-auto sm:w-full sm:max-w-md">
             <div class="text-center">
-                <h2 class="mt-6 text-3xl font-extrabold text-gray-900">Create Your Organization</h2>
+                <h2 class="mt-6 text-3xl font-extrabold text-gray-900">Create Your Workspace</h2>
                 <p class="mt-2 text-sm text-gray-600">Set up your workspace to get started with Notipus</p>
             </div>
         </div>
@@ -29,9 +29,9 @@
                 <form class="space-y-6" method="post">
                     {% csrf_token %}
 
-                    <!-- Organization Name Field -->
+                    <!-- Workspace Name Field -->
                     <div>
-                        <label for="name" class="block text-sm font-medium text-gray-700">Organization Name</label>
+                        <label for="name" class="block text-sm font-medium text-gray-700">Workspace Name</label>
                         <div class="mt-1">
                             <input id="name"
                                    name="name"
@@ -62,7 +62,7 @@
                     <div>
                         <button type="submit"
                                 class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition duration-150 ease-in-out">
-                            Create Organization
+                            Create Workspace
                         </button>
                     </div>
                 </form>
@@ -70,7 +70,7 @@
                 <!-- Additional Info -->
                 <div class="mt-6">
                     <div class="text-center">
-                        <p class="text-xs text-gray-500">You can update these details later in your organization settings</p>
+                        <p class="text-xs text-gray-500">You can update these details later in your workspace settings</p>
                     </div>
                 </div>
             </div>

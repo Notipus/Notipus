@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build:css": "bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --minify",
-    "build:fonts": "cp -r node_modules/@fortawesome/fontawesome-free/webfonts app/static/ && mkdir -p app/static/tabler-fonts && cp -r node_modules/@tabler/icons-webfont/dist/fonts/* app/static/tabler-fonts/",
+    "build:fonts": "mkdir -p app/static/dist/fonts && cp -r node_modules/@tabler/icons-webfont/dist/fonts/* app/static/dist/fonts/",
     "build": "bun run build:fonts && bun run build:css",
     "dev": "bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
   },

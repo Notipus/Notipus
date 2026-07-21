@@ -7,25 +7,22 @@
 {% block content %}
     <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
         <!-- Header -->
-        <div class="bg-white shadow-sm">
-            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-                <div class="md:flex md:items-center md:justify-between">
-                    <div class="flex-1 min-w-0">
-                        <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl flex items-center gap-3">
-                            <svg class="w-10 h-10" viewBox="0 0 24 24" fill="#635bff">
+        <div class="max-w-4xl mx-auto pt-8 px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center">
+                <a href="{% url 'core:integrations' %}"
+                   class="mr-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200">
+                    <i class="ti ti-arrow-left text-xl"></i>
+                </a>
+                <div>
+                    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center gap-3">
+                        <span class="p-2 bg-[#635bff]/10 rounded-xl">
+                            <svg class="w-6 h-6" viewBox="0 0 24 24" fill="#635bff">
                                 <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305z" />
                             </svg>
-                            Connect Stripe
-                        </h2>
-                        <p class="mt-1 text-lg text-gray-600">Receive payment and subscription webhooks from your Stripe account</p>
-                    </div>
-                    <div class="mt-4 flex md:mt-0 md:ml-4">
-                        <a href="{% url 'core:integrations' %}"
-                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                            <i class="ti ti-arrow-left mr-2"></i>
-                            Back to Integrations
-                        </a>
-                    </div>
+                        </span>
+                        Connect Stripe
+                    </h1>
+                    <p class="mt-1 text-gray-500">Receive payment and subscription webhooks from your Stripe account</p>
                 </div>
             </div>
         </div>
@@ -263,31 +260,28 @@
                                     6
                                 </div>
                             </div>
-                            <div class="ml-3">
+                            <div class="ml-3 flex-1">
                                 <h4 class="text-sm font-medium text-gray-900">Complete the connection</h4>
                                 <p class="text-sm text-gray-500">Click the button below to complete the setup.</p>
+                                <button type="submit"
+                                        class="mt-4 inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#635bff] hover:bg-[#5851db] transition-all duration-200 shadow-lg">
+                                    <svg class="mr-2 h-5 w-5"
+                                         fill="none"
+                                         stroke="currentColor"
+                                         viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
+                                        </path>
+                                    </svg>
+                                    {% if existing_integration %}
+                                        Update
+                                    {% else %}
+                                        Connect
+                                    {% endif %}
+                                    Stripe
+                                </button>
                             </div>
                         </div>
                     </div>
-                </div>
-
-                <div class="flex justify-end mb-8">
-                    <button type="submit"
-                            class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#635bff] hover:bg-[#5851db] transition-all duration-200 shadow-lg">
-                        <svg class="mr-2 h-5 w-5"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
-                            </path>
-                        </svg>
-                        {% if existing_integration %}
-                            Update
-                        {% else %}
-                            Connect
-                        {% endif %}
-                        Stripe
-                    </button>
                 </div>
             </form>
         </div>

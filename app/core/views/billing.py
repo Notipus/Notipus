@@ -47,8 +47,9 @@ def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     plans: list[dict[str, Any]] = []
 
     for plan in plans_queryset:
+        # Bare amount only — the template appends "/month" to dollar prices
         price_display = (
-            "Free" if plan.price_monthly == 0 else f"${plan.price_monthly:.0f}/month"
+            "Free" if plan.price_monthly == 0 else f"${plan.price_monthly:.0f}"
         )
         plans.append(
             {
@@ -108,6 +109,9 @@ def billing_dashboard(request: HttpRequest) -> HttpResponse | HttpResponseRedire
         **billing_data["trial_info"],  # trial_days_remaining, is_trial, etc.
         "available_plans": billing_data["available_plans"],
         "current_plan": billing_data["current_plan"],
+        "current_plan_obj": Plan.objects.filter(
+            name=billing_data["current_plan"], is_active=True
+        ).first(),
     }
 
     return render(request, "core/billing_dashboard.html.j2", context)
@@ -134,6 +138,20 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
 
     billing_service = BillingService()
     available_plans = billing_service.get_available_plans(workspace.subscription_plan)
+
+    # Mark plans cheaper than the current one so the template can present
+    # them honestly as downgrades instead of "upgrades".
+    current_plan_obj = Plan.objects.filter(
+        name=workspace.subscription_plan, is_active=True
+    ).first()
+    if current_plan_obj:
+        for plan in available_plans:
+            try:
+                plan["is_downgrade"] = float(plan.get("price", 0)) < float(
+                    current_plan_obj.price_monthly
+                )
+            except (TypeError, ValueError):
+                plan["is_downgrade"] = False
 
     context: dict[str, Any] = {
         "workspace": workspace,
