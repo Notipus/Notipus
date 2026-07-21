@@ -154,6 +154,10 @@ class TestInputHandling:
             "@",
             "user@",
             "user@nodot",
+            "user@foo..gov",  # consecutive dots must not match .gov
+            "user@.gov",  # leading dot
+            "user@gov.",  # trailing dot
+            "user@..",
             None,
         ],
     )

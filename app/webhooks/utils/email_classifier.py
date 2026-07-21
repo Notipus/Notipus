@@ -126,8 +126,12 @@ def _extract_domain(email: str | None) -> str | None:
     candidate = email.strip().lower()
     if "@" not in candidate:
         return None
-    domain = candidate.rsplit("@", 1)[1].strip().strip(".")
+    domain = candidate.rsplit("@", 1)[1].strip()
     if not domain or "." not in domain:
+        return None
+    # Reject empty labels (leading/trailing dots, consecutive dots) so
+    # clearly-invalid domains like "foo..gov" never suffix-match.
+    if any(not label for label in domain.split(".")):
         return None
     return domain
 
