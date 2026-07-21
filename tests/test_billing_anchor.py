@@ -136,12 +136,22 @@ class TestInvoicePaidBillingAnchor:
     ) -> None:
         """A subscription handler that already advanced the anchor to the
         next renewal must not be regressed by a later invoice.paid whose
-        period_end is the just-billed (earlier) period."""
+        period_end is the just-billed (earlier) period.
+
+        The sync is deliberately made a no-op here (Stripe returns no
+        subscriptions) so it cannot repair the anchor. That isolates the
+        invoice handler's own writes: if it regressed the anchor to the
+        invoice's period_end, the stored value would drop from the
+        pre-set next renewal and this test would fail.
+        """
         Workspace.objects.filter(id=workspace.id).update(
             billing_cycle_anchor=NEXT_RENEWAL
         )
 
-        with _mock_stripe_api([_active_subscription()]):
+        # No live subscription for the sync to read: sync_workspace_from_stripe
+        # returns without writing an anchor, so only the invoice handler
+        # could touch billing_cycle_anchor.
+        with _mock_stripe_api([]):
             BillingService.handle_invoice_paid(_renewal_invoice())
 
         workspace.refresh_from_db()
