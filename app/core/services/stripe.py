@@ -446,7 +446,7 @@ class StripeAPI:
                 "id": session.id,
                 "customer": session.customer,
                 "status": session.status,
-                "metadata": _metadata_to_dict(session.metadata),
+                "metadata": _metadata_to_dict(_safe_getattr(session, "metadata")),
                 "subscription": session.subscription,
             }
 
@@ -529,6 +529,7 @@ class StripeAPI:
         Returns:
             Formatted price data dictionary.
         """
+        metadata = _metadata_to_dict(_safe_getattr(product, "metadata"))
         price_data: dict[str, Any] = {
             "id": price.id,
             "product_id": product.id,
@@ -537,8 +538,8 @@ class StripeAPI:
             "unit_amount": price.unit_amount,
             "currency": price.currency,
             "recurring": None,
-            "metadata": dict(product.metadata) if product.metadata else {},
-            "features": self._extract_features_from_metadata(product.metadata),
+            "metadata": metadata,
+            "features": self._extract_features_from_metadata(metadata),
         }
 
         if price.recurring:
@@ -663,10 +664,9 @@ class StripeAPI:
                     )
                     product_name = fetched_product.name
                     # Prefer metadata.plan_name if available (more reliable)
-                    if hasattr(fetched_product, "metadata"):
-                        plan_name = _metadata_to_dict(fetched_product.metadata).get(
-                            "plan_name"
-                        )
+                    plan_name = _metadata_to_dict(
+                        _safe_getattr(fetched_product, "metadata")
+                    ).get("plan_name")
                 except stripe.StripeError:
                     product_name = None
             elif product:
@@ -1075,7 +1075,8 @@ class StripeAPI:
             products = stripe.Product.list(limit=100, active=True, api_key=self.api_key)
 
             for product in products.data:
-                if _metadata_to_dict(product.metadata).get(key) == value:
+                metadata = _metadata_to_dict(_safe_getattr(product, "metadata"))
+                if metadata.get(key) == value:
                     logger.info(f"Found product {product.id} with {key}={value}")
                     return _product_to_dict(product)
 
