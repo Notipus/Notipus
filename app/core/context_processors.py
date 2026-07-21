@@ -25,9 +25,15 @@ def workspace_role(request: HttpRequest) -> dict[str, Any]:
     if user is None or not user.is_authenticated:
         return {}
 
-    member = (
-        WorkspaceMember.objects.filter(user=request.user, is_active=True)
-        .only("role")
-        .first()
-    )
+    # Permission decorators already attach the resolved membership on
+    # most workspace views — reuse it instead of querying again.
+    member = getattr(request, "workspace_member", None)
+    if member is not None:
+        return {"nav_workspace_role": member.role}
+
+    memberships = WorkspaceMember.objects.filter(user=user, is_active=True)
+    workspace = getattr(request, "workspace", None)
+    if workspace is not None:
+        memberships = memberships.filter(workspace=workspace)
+    member = memberships.only("role").first()
     return {"nav_workspace_role": member.role if member else None}
