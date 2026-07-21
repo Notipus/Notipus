@@ -15,7 +15,7 @@ import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import sentry_sdk
 from django.utils.functional import SimpleLazyObject
@@ -64,6 +64,30 @@ def _sentry_is_sensitive_key(key: str) -> bool:
     return any(marker in lowered for marker in _SENTRY_SENSITIVE_KEY_MARKERS)
 
 
+def _sentry_redact_value(value: Any) -> Any:
+    """Recursively redact sensitive values within nested structures.
+
+    Walks dicts and lists/tuples so that request bodies (which may be deeply
+    nested JSON) have any value under a sensitive-looking key replaced, while
+    non-sensitive structure is preserved.
+
+    :param value: An arbitrary value (dict, list, tuple, or scalar).
+    :returns: A redacted copy of ``value``.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                _SENTRY_REDACTED
+                if _sentry_is_sensitive_key(str(key))
+                else _sentry_redact_value(inner)
+            )
+            for key, inner in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sentry_redact_value(item) for item in value]
+    return value
+
+
 def _sentry_redact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``mapping`` with sensitive values redacted.
 
@@ -77,6 +101,28 @@ def _sentry_redact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _sentry_redact_query_string(query: Any) -> Any:
+    """Redact sensitive keys in a query string, dict or raw-string form.
+
+    Sentry may represent ``query_string`` either as a dict or as a raw
+    ``"a=1&token=..."`` string. Both are handled: pairs whose key looks
+    sensitive have their value replaced with the filtered placeholder.
+
+    :param query: The query string as a dict or ``str``.
+    :returns: The redacted query string in the same form it was given.
+    """
+    if isinstance(query, dict):
+        return _sentry_redact_mapping(query)
+    if isinstance(query, str):
+        pairs = parse_qsl(query, keep_blank_values=True)
+        redacted = [
+            (key, _SENTRY_REDACTED if _sentry_is_sensitive_key(key) else value)
+            for key, value in pairs
+        ]
+        return urlencode(redacted)
+    return query
+
+
 def _sentry_before_send(event: "Event", hint: "Hint") -> "Event | None":
     """Scrub sensitive data from a Sentry event before it is sent.
 
@@ -84,6 +130,8 @@ def _sentry_before_send(event: "Event", hint: "Hint") -> "Event | None":
 
     * For requests to webhook routes, the raw request body/data is dropped
       entirely since it may contain payment-payload PII for any tenant.
+    * For all other routes the request body is walked recursively and values
+      under credential/PII-looking keys are redacted.
     * Request headers, query strings, cookies, and environment variables are
       redacted key-by-key whenever the key name looks like a credential,
       secret, or signature (for webhook routes, headers are dropped wholesale).
@@ -96,13 +144,19 @@ def _sentry_before_send(event: "Event", hint: "Hint") -> "Event | None":
     if not isinstance(request, dict):
         return event
 
+    # Match on the URL path only: substring-matching the full URL would
+    # misclassify routes whose query string merely contains "/webhook/".
     url = str(request.get("url", ""))
-    is_webhook = any(marker in url for marker in _SENTRY_WEBHOOK_PATH_MARKERS)
+    path = urlsplit(url).path
+    is_webhook = any(marker in path for marker in _SENTRY_WEBHOOK_PATH_MARKERS)
 
-    # Drop request bodies wholesale for webhook routes (payment-payload PII).
+    # Request body: drop wholesale for webhook routes (payment-payload PII);
+    # otherwise recursively redact sensitive keys within it.
     if is_webhook:
         request.pop("data", None)
         request.pop("cookies", None)
+    elif "data" in request:
+        request["data"] = _sentry_redact_value(request["data"])
 
     # Headers: strip entirely for webhook routes (signature headers + more);
     # otherwise redact only the sensitive ones.
@@ -110,11 +164,14 @@ def _sentry_before_send(event: "Event", hint: "Hint") -> "Event | None":
     if isinstance(headers, dict):
         request["headers"] = {} if is_webhook else _sentry_redact_mapping(headers)
 
-    # Query string and env: redact sensitive keys regardless of route.
-    for section in ("query_string", "env"):
-        value = request.get(section)
-        if isinstance(value, dict):
-            request[section] = _sentry_redact_mapping(value)
+    # Query string: handle both dict and raw-string forms.
+    if "query_string" in request:
+        request["query_string"] = _sentry_redact_query_string(request["query_string"])
+
+    # Environment variables: redact sensitive keys regardless of route.
+    env = request.get("env")
+    if isinstance(env, dict):
+        request["env"] = _sentry_redact_mapping(env)
 
     # Cookies elsewhere: redact rather than drop.
     cookies = request.get("cookies")

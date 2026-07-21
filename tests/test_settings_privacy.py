@@ -80,6 +80,76 @@ def test_before_send_redacts_sensitive_headers_on_non_webhook_routes() -> None:
     assert request["cookies"]["theme"] == "dark"
 
 
+def test_before_send_uses_path_only_for_webhook_detection() -> None:
+    """A "/webhook/" fragment in the query string must not trigger webhook mode."""
+    event: dict[str, Any] = {
+        "request": {
+            # Non-webhook path; "/webhook/" appears only in the query string.
+            "url": "https://notipus.com/dashboard/?next=/webhook/customer/x/",
+            "data": {"keep": "me"},
+            "headers": {"Accept": "text/html"},
+        }
+    }
+
+    result = _sentry_before_send(event, {})
+
+    assert result is not None
+    request = result["request"]
+    # Treated as non-webhook: body and benign headers are preserved, not dropped.
+    assert request["data"] == {"keep": "me"}
+    assert request["headers"] == {"Accept": "text/html"}
+
+
+def test_before_send_redacts_sensitive_keys_in_non_webhook_body() -> None:
+    """Non-webhook request bodies must have sensitive keys redacted recursively."""
+    event: dict[str, Any] = {
+        "request": {
+            "url": "https://notipus.com/dashboard/",
+            "data": {
+                "username": "alice",
+                "password": "hunter2",
+                "nested": {"api_token": "leaky", "keep": "ok"},
+                "items": [{"secret": "shh", "label": "one"}],
+            },
+        }
+    }
+
+    result = _sentry_before_send(event, {})
+
+    assert result is not None
+    data = result["request"]["data"]
+    # Top-level sensitive key redacted, benign preserved.
+    assert data["username"] == "alice"
+    assert data["password"] == "[Filtered]"
+    # Nested dict walked recursively.
+    assert data["nested"]["api_token"] == "[Filtered]"
+    assert data["nested"]["keep"] == "ok"
+    # Lists of dicts walked recursively.
+    assert data["items"][0]["secret"] == "[Filtered]"
+    assert data["items"][0]["label"] == "one"
+
+
+def test_before_send_redacts_string_query_string() -> None:
+    """A raw-string query_string must have sensitive keys redacted in place."""
+    event: dict[str, Any] = {
+        "request": {
+            "url": "https://notipus.com/dashboard/",
+            "query_string": "page=2&token=super-secret&api_key=leaky",
+        }
+    }
+
+    result = _sentry_before_send(event, {})
+
+    assert result is not None
+    query = result["request"]["query_string"]
+    assert isinstance(query, str)
+    # Benign key preserved; sensitive keys redacted.
+    assert "page=2" in query
+    assert "super-secret" not in query
+    assert "leaky" not in query
+    assert query.count("%5BFiltered%5D") == 2  # url-encoded "[Filtered]" twice
+
+
 def test_before_send_passes_events_without_request() -> None:
     """Events lacking a request section are returned unchanged."""
     event: dict[str, Any] = {"message": "boom"}
