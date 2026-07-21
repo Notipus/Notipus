@@ -326,6 +326,19 @@ class TestSlackDestinationPluginProviderBadge:
                     return
         pytest.fail("Payment type not found in badge")
 
+    def test_provider_badge_sanitized(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test payload-derived badge elements cannot inject Slack syntax."""
+        assert basic_notification.payment is not None
+        basic_notification.payment.payment_method = "<!channel> card"
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if block["type"] == "context":
+                text = str(block.get("elements", [{}])[0].get("text", ""))
+                assert "<!channel>" not in text
+
 
 def get_fields_text(result: dict[str, Any]) -> str:
     """Collect the text of all section-block fields in the message.
@@ -581,6 +594,24 @@ class TestSlackDestinationPluginCompanySection:
                 return
         pytest.fail("Company section not found")
 
+    def test_company_section_skips_unsafe_domain_link(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test an unsafe domain renders no link but keeps the name."""
+        basic_notification.company = CompanyInfo(
+            name="Evil Corp",
+            domain="evil.com/|<!channel>",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if block["type"] == "section" and "Evil Corp" in str(block.get("text", {})):
+                text = str(block.get("text", {}).get("text", ""))
+                assert "<https://" not in text
+                assert "<!channel>" not in text
+                return
+        pytest.fail("Company section not found")
+
 
 class TestSlackDestinationPluginCompanyLinks:
     """Test company links formatting."""
@@ -655,6 +686,23 @@ class TestSlackDestinationPluginCompanyLinks:
                     assert "Website" not in text
                     return
         pytest.fail("LinkedIn-only links block not found")
+
+    def test_company_links_rejects_unsafe_linkedin_url(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test a LinkedIn URL that could break link syntax is dropped."""
+        basic_notification.company = CompanyInfo(
+            name="Test Corp",
+            domain="",
+            linkedin_url="https://evil.example/|<https://phish.example",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if block["type"] == "context":
+                text = str(block.get("elements", [{}])[0].get("text", ""))
+                assert "LinkedIn" not in text
+                assert "phish.example" not in text
 
     def test_no_company_links_without_data(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification

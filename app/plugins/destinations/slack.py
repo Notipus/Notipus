@@ -7,11 +7,16 @@ format and sends them via Slack's incoming webhook API.
 import logging
 import math
 from typing import Any
+from urllib.parse import quote
 
 import requests
 from plugins.base import PluginCapability, PluginMetadata, PluginType
 from plugins.destinations.base import BaseDestinationPlugin
-from plugins.destinations.slack_utils import html_to_slack_mrkdwn, safe_mrkdwn
+from plugins.destinations.slack_utils import (
+    html_to_slack_mrkdwn,
+    safe_mrkdwn,
+    safe_mrkdwn_link,
+)
 from webhooks.models.rich_notification import (
     ActionButton,
     CompanyInfo,
@@ -426,10 +431,14 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             # For non-payment events, add category badge
             elements.append(n.category.value.title())
 
+        # Provider display, billing interval, and payment method all
+        # derive from webhook payload data, so each element is sanitized
+        # before joining into mrkdwn.
+        badge_text = " • ".join(safe_mrkdwn(e) for e in elements)
         return {
             "type": "context",
             "elements": [
-                {"type": "mrkdwn", "text": " • ".join(elements)},
+                {"type": "mrkdwn", "text": badge_text},
             ],
         }
 
@@ -603,7 +612,9 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         """
         name_line = f"*{safe_mrkdwn(company.name)}*"
         if company.domain:
-            name_line += f" · <https://{company.domain}|{safe_mrkdwn(company.domain)}>"
+            domain_link = safe_mrkdwn_link(f"https://{company.domain}", company.domain)
+            if domain_link:
+                name_line += f" · {domain_link}"
         text_parts = [name_line]
 
         # Company details line
@@ -652,10 +663,10 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         Returns:
             Slack context block dict, or None if no LinkedIn available.
         """
-        if not company.linkedin_url:
+        link_text = safe_mrkdwn_link(company.linkedin_url, "LinkedIn")
+        if not link_text:
             return None
 
-        link_text = f"<{company.linkedin_url}|LinkedIn>"
         return {
             "type": "context",
             "elements": [{"type": "mrkdwn", "text": link_text}],
@@ -734,15 +745,26 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         Returns:
             Slack context block dict, or None when no links available.
         """
-        links: list[str] = []
-        if person.linkedin_url:
-            links.append(f"<{person.linkedin_url}|LinkedIn>")
-        if person.twitter_handle:
-            twitter_url = f"https://twitter.com/{person.twitter_handle}"
-            links.append(f"<{twitter_url}|Twitter>")
-        if person.github_handle:
-            github_url = f"https://github.com/{person.github_handle}"
-            links.append(f"<{github_url}|GitHub>")
+        # Enrichment URLs are untrusted; handles are percent-encoded so
+        # they cannot smuggle mrkdwn or path segments into the URL.
+        candidates = [
+            (person.linkedin_url, "LinkedIn"),
+            (
+                f"https://twitter.com/{quote(person.twitter_handle, safe='')}"
+                if person.twitter_handle
+                else None,
+                "Twitter",
+            ),
+            (
+                f"https://github.com/{quote(person.github_handle, safe='')}"
+                if person.github_handle
+                else None,
+                "GitHub",
+            ),
+        ]
+        links = [
+            link for url, label in candidates if (link := safe_mrkdwn_link(url, label))
+        ]
 
         if not links:
             return None
