@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 from typing import Any, ClassVar, cast
 
+from django.conf import settings
 from django.core.cache import cache
 from django.core.cache.backends.base import InvalidCacheBackendError
 from django.utils import timezone
@@ -161,6 +162,10 @@ class RateLimiter:
         self.circuit_breaker = RedisCircuitBreaker()
         self._in_memory_fallback: dict[str, tuple[int, float]] = {}
         self._fallback_timeout = 300  # 5 minutes for in-memory cache
+        # Hard cap on the number of keys tracked by the in-memory fallback.
+        # The fallback is per-process, so during a prolonged Redis outage it
+        # would otherwise grow one entry per organization/month without bound.
+        self._max_fallback_keys = 10_000
 
     def get_cache_key(self, organization_uuid: str, month: str) -> str:
         """Generate cache key for organization monthly usage.
@@ -194,6 +199,37 @@ class RateLimiter:
         plan = organization.subscription_plan
         return self.PLAN_LIMITS.get(plan, 20)  # Default to free plan limit
 
+    def _cache_get_with_health(self, key: str, default: int = 0) -> tuple[int, bool]:
+        """Get a value from cache, reporting whether the cache path succeeded.
+
+        Args:
+            key: Cache key.
+            default: Default value if not found.
+
+        Returns:
+            Tuple of (value, cache_healthy). When ``cache_healthy`` is False
+            the value came from the bounded in-memory fallback and callers
+            must treat the count as unreliable rather than authoritative --
+            in particular it must not be assumed to mean "under limit".
+        """
+        try:
+            value = cast(
+                int,
+                self.circuit_breaker.call_with_circuit_breaker(cache.get, key, default),
+            )
+            return value, True
+        except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
+            # Log at ERROR (not WARNING/silent) so cache outages that degrade
+            # quota enforcement are visible in monitoring instead of silently
+            # disabling rate limiting.
+            logger.error(
+                "Cache GET failed for key %s; rate-limit enforcement degraded "
+                "to in-memory fallback: %s",
+                key,
+                e,
+            )
+            return self._get_from_fallback(key, default), False
+
     def _safe_cache_get(self, key: str, default: int = 0) -> int:
         """Get value from cache with fallback to in-memory storage.
 
@@ -204,14 +240,8 @@ class RateLimiter:
         Returns:
             Cached value or default.
         """
-        try:
-            return cast(
-                int,
-                self.circuit_breaker.call_with_circuit_breaker(cache.get, key, default),
-            )
-        except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
-            logger.warning(f"Cache GET failed for key {key}, using fallback: {e!s}")
-            return self._get_from_fallback(key, default)
+        value, _ = self._cache_get_with_health(key, default)
+        return value
 
     def _safe_cache_set(self, key: str, value: int, timeout: int | None = None) -> bool:
         """Set value in cache with fallback to in-memory storage.
@@ -232,7 +262,7 @@ class RateLimiter:
             self._set_to_fallback(key, value)
             return True
         except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
-            logger.warning(f"Cache SET failed for key {key}, using fallback: {e!s}")
+            logger.error(f"Cache SET failed for key {key}, using fallback: {e!s}")
             self._set_to_fallback(key, value)
             return False
 
@@ -268,7 +298,7 @@ class RateLimiter:
             self._set_to_fallback(key, new_count)
             return new_count
         except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
-            logger.warning(f"Cache INCR failed for key {key}, using fallback: {e!s}")
+            logger.error(f"Cache INCR failed for key {key}, using fallback: {e!s}")
             new_count = self._get_from_fallback(key, 0) + 1
             self._set_to_fallback(key, new_count)
             return new_count
@@ -300,9 +330,19 @@ class RateLimiter:
             value: Value to store.
         """
         self._in_memory_fallback[key] = (value, time.time())
+        self._prune_fallback()
 
-        # Clean up expired entries to prevent memory leaks
+    def _prune_fallback(self) -> None:
+        """Bound the in-memory fallback so it cannot grow without limit.
+
+        First drops expired entries, then enforces a hard cap on the number
+        of tracked keys by evicting the oldest entries. Without the cap a
+        prolonged Redis outage would let the per-process fallback grow one
+        entry per organization/month indefinitely.
+        """
         current_time = time.time()
+
+        # Clean up expired entries to prevent memory leaks.
         expired_keys = [
             k
             for k, (_, timestamp) in self._in_memory_fallback.items()
@@ -310,6 +350,23 @@ class RateLimiter:
         ]
         for expired_key in expired_keys:
             del self._in_memory_fallback[expired_key]
+
+        # Enforce the hard cap by evicting the oldest entries. Reaching this
+        # branch means the fallback is under sustained pressure (Redis is very
+        # likely unavailable), so surface it.
+        overflow = len(self._in_memory_fallback) - self._max_fallback_keys
+        if overflow > 0:
+            oldest = sorted(
+                self._in_memory_fallback.items(), key=lambda item: item[1][1]
+            )[:overflow]
+            for stale_key, _ in oldest:
+                del self._in_memory_fallback[stale_key]
+            logger.warning(
+                "In-memory rate-limit fallback exceeded %s keys; evicted %s "
+                "oldest entries. Redis is likely unavailable.",
+                self._max_fallback_keys,
+                overflow,
+            )
 
     def check_rate_limit(self, organization: Any) -> tuple[bool, dict[str, Any]]:
         """Check if organization is within rate limits.
@@ -325,12 +382,32 @@ class RateLimiter:
             current_month = self.get_current_month_key()
             cache_key = self.get_cache_key(organization_uuid, current_month)
 
-            # Get current usage using safe cache operations
-            current_usage = self._safe_cache_get(cache_key, 0)
+            # Get current usage, tracking whether the cache path is healthy.
+            current_usage, cache_healthy = self._cache_get_with_health(cache_key, 0)
             limit = self.get_organization_limit(organization)
 
             # Check if within limits
             is_allowed = current_usage < limit
+
+            if not cache_healthy:
+                # Deliberate availability tradeoff. The cache backing the quota
+                # counter is unavailable, so ``current_usage`` came from the
+                # bounded in-memory fallback and cannot be trusted -- we must
+                # not silently treat it as "under limit". By default we still
+                # fail OPEN (allow the webhook): a fail-closed default would
+                # reject every legitimate webhook during a Redis outage, which
+                # is worse than briefly under-enforcing quota. Operators who
+                # prefer to reject traffic under uncertainty can opt into
+                # fail-closed with RATE_LIMIT_FAIL_CLOSED = True.
+                fail_closed = getattr(settings, "RATE_LIMIT_FAIL_CLOSED", False)
+                is_allowed = not fail_closed
+                logger.error(
+                    "Rate-limit cache unavailable for org %s; enforcing %s "
+                    "(RATE_LIMIT_FAIL_CLOSED=%s). Usage count is unreliable.",
+                    organization_uuid,
+                    "fail-closed (deny)" if fail_closed else "fail-open (allow)",
+                    fail_closed,
+                )
 
             # Calculate reset time (first day of next month)
             now = timezone.now()
@@ -361,6 +438,7 @@ class RateLimiter:
                 "reset_time": reset_time,
                 "plan": organization.subscription_plan,
                 "fallback_mode": self.circuit_breaker.state != "CLOSED",
+                "cache_healthy": cache_healthy,
             }
 
             return is_allowed, rate_limit_info
@@ -369,14 +447,19 @@ class RateLimiter:
             logger.error(
                 f"Error checking rate limit for organization {organization.uuid}: {e!s}"
             )
-            # Fail open - allow request if rate limiting fails completely
-            return True, {
+            # Availability tradeoff (see check above): rate limiting failed
+            # completely, so default to fail-open to avoid rejecting all
+            # legitimate webhooks during an outage. Operators can opt into
+            # fail-closed via RATE_LIMIT_FAIL_CLOSED = True.
+            fail_closed = getattr(settings, "RATE_LIMIT_FAIL_CLOSED", False)
+            return not fail_closed, {
                 "limit": self.get_organization_limit(organization),
                 "current_usage": 0,
                 "remaining": self.get_organization_limit(organization),
                 "reset_time": timezone.now(),
                 "plan": organization.subscription_plan,
                 "fallback_mode": True,
+                "cache_healthy": False,
                 "error": str(e),
             }
 
