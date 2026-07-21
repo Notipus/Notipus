@@ -240,6 +240,49 @@ class TestFirstPaymentFromStripeBillingReason:
         assert result is None
 
 
+class TestFirstPaymentFromChargifySignup:
+    """Chargify first payments are detected via signup_success revenue.
+
+    A signup creates the subscription, so revenue in a signup_success
+    payload can only have come from that signup - the parser marks it
+    with is_signup_payment metadata.
+    """
+
+    def test_signup_payment_is_first_payment(self, detector: InsightDetector) -> None:
+        """Test a paid Chargify signup fires the first-payment insight."""
+        event = {
+            "type": "subscription_created",
+            "provider": "chargify",
+            "amount": 29.99,
+            "currency": "USD",
+            "metadata": {"is_signup_payment": True},
+        }
+        customer_data = {"email": "ops@beta.example", "customer_id": "42"}
+
+        result = detector._detect_first_payment(event, customer_data)
+
+        assert result is not None
+        assert result.icon == "new"
+        assert result.text == "First payment for this subscription"
+
+    def test_signup_payment_without_amount_stays_silent(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test the flag alone is not enough - a positive amount is required."""
+        event = {
+            "type": "subscription_created",
+            "provider": "chargify",
+            "amount": 0.0,
+            "currency": "USD",
+            "metadata": {"is_signup_payment": True},
+        }
+        customer_data = {"email": "ops@beta.example", "customer_id": "42"}
+
+        result = detector._detect_first_payment(event, customer_data)
+
+        assert result is None
+
+
 class TestTrialInsightCurrencyAndInterval:
     """The trial insight honors the event currency and billing interval."""
 

@@ -258,6 +258,134 @@ class TestChargifyWebhookParsing:
         assert result["metadata"]["cancel_at_period_end"] is True
         assert result["metadata"]["chargify_event"] == "subscription_state_change"
 
+    def test_signup_success_with_revenue_is_first_payment(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test a paid signup parses with the first-payment signal.
+
+        A signup creates the subscription, so revenue in the payload can
+        only have been collected by this signup - is_signup_payment is a
+        proven first payment, not an inference.
+        """
+        form_data = {
+            "event": "signup_success",
+            "payload[subscription][id]": "sub_12345",
+            "payload[subscription][state]": "active",
+            "payload[subscription][total_revenue_in_cents]": "2999",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[subscription][customer][email]": "test@example.com",
+            "payload[subscription][customer][organization]": "Acme Corp",
+            "payload[subscription][product][name]": "Premium Plan",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+        assert result is not None
+        assert result["type"] == "subscription_created"
+        assert result["amount"] == 29.99
+        assert result["currency"] == "USD"
+        assert result["metadata"]["is_signup_payment"] is True
+        assert result["metadata"]["subscription_id"] == "sub_12345"
+        assert result["metadata"]["chargify_event"] == "signup_success"
+
+    def test_signup_success_trialing_is_trial_started(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test a trialing signup is emitted as trial_started, no payment claim."""
+        form_data = {
+            "event": "signup_success",
+            "payload[subscription][id]": "sub_12345",
+            "payload[subscription][state]": "trialing",
+            "payload[subscription][total_revenue_in_cents]": "0",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[subscription][customer][email]": "test@example.com",
+            "payload[subscription][product][name]": "Premium Plan",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+        assert result is not None
+        assert result["type"] == "trial_started"
+        assert result["metadata"]["is_trial"] is True
+        assert "is_signup_payment" not in result["metadata"]
+        assert "amount" not in result
+
+    def test_signup_success_without_revenue_makes_no_payment_claim(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test a signup with zero/missing revenue stays a plain subscription event.
+
+        A lagging or absent revenue counter must lose the insight, never
+        fabricate one. "" is how a form-encoded payload spells "absent".
+        """
+        for revenue_value in ("0", "", None):
+            form_data = {
+                "event": "signup_success",
+                "payload[subscription][id]": "sub_12345",
+                "payload[subscription][state]": "active",
+                "payload[subscription][customer][id]": "cust_456",
+                "payload[subscription][customer][email]": "test@example.com",
+                "payload[subscription][product][name]": "Premium Plan",
+                "created_at": "2024-01-15T10:30:00Z",
+            }
+            if revenue_value is not None:
+                form_data["payload[subscription][total_revenue_in_cents]"] = (
+                    revenue_value
+                )
+
+            result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+            assert result is not None
+            assert result["type"] == "subscription_created"
+            assert "is_signup_payment" not in result["metadata"]
+            assert "amount" not in result
+
+    def test_total_spent_respects_zero_decimal_currency(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test total_spent uses per-currency minor units, not a fixed /100.
+
+        JPY has no minor unit: 5000 in the payload is ¥5,000, and a
+        hardcoded /100 would report ¥50.
+        """
+        provider._current_webhook_data = {
+            "payload[subscription][currency]": "JPY",
+            "payload[subscription][total_revenue_in_cents]": "5000",
+            "payload[subscription][customer][email]": "test@example.com",
+        }
+
+        customer_data = provider.get_customer_data("cust_456")
+
+        assert customer_data["total_spent"] == 5000.0
+
+    def test_signup_success_malformed_revenue_does_not_reject(
+        self, provider: ChargifySourcePlugin, request_factory: RequestFactory
+    ) -> None:
+        """Test a malformed revenue field is ignored, not a 400.
+
+        Rejecting a legitimate signup event would make Chargify retry it
+        forever; the optional revenue field must never take the event down.
+        """
+        form_data = {
+            "event": "signup_success",
+            "payload[subscription][id]": "sub_12345",
+            "payload[subscription][state]": "active",
+            "payload[subscription][total_revenue_in_cents]": "not-a-number",
+            "payload[subscription][customer][id]": "cust_456",
+            "payload[subscription][customer][email]": "test@example.com",
+            "created_at": "2024-01-15T10:30:00Z",
+        }
+
+        result = provider.parse_webhook(_mock_chargify_request(form_data))
+
+        assert result is not None
+        assert result["type"] == "subscription_created"
+        assert "is_signup_payment" not in result["metadata"]
+        # The malformed value must also be skipped as LTV, not defaulted
+        assert "total_spent" not in result["customer_data"]
+
     def test_invalid_content_type_rejected(self, provider, request_factory):
         """Test rejection of invalid content type"""
         request = request_factory.post(
