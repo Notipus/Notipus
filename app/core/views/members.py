@@ -109,9 +109,20 @@ def members_list(request: HttpRequest) -> HttpResponse:
     current_member = request.workspace_member  # type: ignore[attr-defined]
 
     # Get all members
-    members = WorkspaceMember.objects.filter(
-        workspace=workspace, is_active=True
-    ).select_related("user")
+    members = list(
+        WorkspaceMember.objects.filter(
+            workspace=workspace, is_active=True
+        ).select_related("user")
+    )
+
+    # Whether the viewer gets role/remove controls for each row; the
+    # template shows a static role badge when it doesn't render controls.
+    # (Computed here because Django templates can't parenthesize booleans.)
+    for member in members:
+        member.can_manage = member.id != current_member.id and (
+            current_member.role == "owner"
+            or (current_member.role == "admin" and member.role != "owner")
+        )
 
     # Get pending invitations
     pending_invitations = WorkspaceInvitation.objects.filter(

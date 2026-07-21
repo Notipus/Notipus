@@ -62,7 +62,7 @@
                     <div class="divide-y divide-gray-100">
                         {% for integration in event_sources %}
                             <div class="px-6 py-5 hover:bg-gray-50/50 transition-colors">
-                                <div class="flex items-start justify-between gap-4">
+                                <div class="flex flex-wrap items-start justify-between gap-4">
                                     <div class="flex items-start gap-4">
                                         <!-- Integration Icon -->
                                         <div class="flex-shrink-0">
@@ -177,20 +177,18 @@
                                             {% endif %}
                                         {% else %}
                                             {% if integration.id == "shopify" %}
-                                                <a href="{% url 'core:integrate_shopify' %}"
-                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#95BF47] hover:bg-[#7ea93d] rounded-lg transition-colors shadow-sm">
+                                                <a href="{% url 'core:integrate_shopify' %}" class="btn-primary gap-1.5">
                                                     <i class="ti ti-plug-connected"></i>
                                                     Connect
                                                 </a>
                                             {% elif integration.id == "chargify" %}
                                                 <a href="{% url 'core:integrate_chargify' %}"
-                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors shadow-sm">
+                                                   class="btn-primary gap-1.5">
                                                     <i class="ti ti-plug-connected"></i>
                                                     Connect
                                                 </a>
                                             {% elif integration.id == "stripe_customer" %}
-                                                <a href="{% url 'core:integrate_stripe' %}"
-                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#635bff] hover:bg-[#5851db] rounded-lg transition-colors shadow-sm">
+                                                <a href="{% url 'core:integrate_stripe' %}" class="btn-primary gap-1.5">
                                                     <i class="ti ti-plug-connected"></i>
                                                     Connect
                                                 </a>
@@ -226,7 +224,7 @@
                     <div class="divide-y divide-gray-100">
                         {% for integration in notification_channels %}
                             <div class="px-6 py-5 hover:bg-gray-50/50 transition-colors">
-                                <div class="flex items-start justify-between gap-4">
+                                <div class="flex flex-wrap items-start justify-between gap-4">
                                     <div class="flex items-start gap-4">
                                         <!-- Integration Icon -->
                                         <div class="flex-shrink-0">
@@ -308,8 +306,7 @@
                                             {% endif %}
                                         {% else %}
                                             {% if integration.id == "slack_notifications" %}
-                                                <a href="{% url 'core:integrate_slack' %}"
-                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#4A154B] hover:bg-[#3e1240] rounded-lg transition-colors shadow-sm">
+                                                <a href="{% url 'core:integrate_slack' %}" class="btn-primary gap-1.5">
                                                     <i class="ti ti-plug-connected"></i>
                                                     Connect
                                                 </a>
@@ -358,7 +355,7 @@
                     <div class="divide-y divide-gray-100">
                         {% for integration in enrichment_services %}
                             <div class="px-6 py-5 hover:bg-gray-50/50 transition-colors">
-                                <div class="flex items-start justify-between gap-4">
+                                <div class="flex flex-wrap items-start justify-between gap-4">
                                     <div class="flex items-start gap-4">
                                         <!-- Integration Icon -->
                                         <div class="flex-shrink-0">
@@ -424,8 +421,7 @@
                                             {% endif %}
                                         {% else %}
                                             {% if integration.id == "hunter" %}
-                                                <a href="{% url 'core:integrate_hunter' %}"
-                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#ff5722] hover:bg-[#e64a19] rounded-lg transition-colors shadow-sm">
+                                                <a href="{% url 'core:integrate_hunter' %}" class="btn-primary gap-1.5">
                                                     <i class="ti ti-plug-connected"></i>
                                                     Connect
                                                 </a>

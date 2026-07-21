@@ -7,21 +7,20 @@
 {% block content %}
     <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
         <!-- Header -->
-        <div class="bg-white shadow-sm">
-            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-                <div class="md:flex md:items-center md:justify-between">
-                    <div class="flex-1 min-w-0">
-                        <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl flex items-center gap-3">
-                            <i class="ti ti-rocket text-primary-600"></i> Upgrade Your Plan
-                        </h2>
-                        <p class="mt-1 text-lg text-gray-600">Choose the perfect plan for your growing business</p>
-                    </div>
-                    <div class="mt-4 flex md:mt-0 md:ml-4">
-                        <a href="{% url 'core:billing_dashboard' %}"
-                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                            ← Back to Billing
-                        </a>
-                    </div>
+        <div class="max-w-7xl mx-auto pt-8 px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center">
+                <a href="{% url 'core:billing_dashboard' %}"
+                   class="mr-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200">
+                    <i class="ti ti-arrow-left text-xl"></i>
+                </a>
+                <div>
+                    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center gap-3">
+                        <span class="p-2 bg-primary-100 rounded-xl">
+                            <i class="ti ti-rocket text-primary-600 text-xl"></i>
+                        </span>
+                        Change Your Plan
+                    </h1>
+                    <p class="mt-1 text-gray-500">Choose the plan that fits your business</p>
                 </div>
             </div>
         </div>
@@ -29,14 +28,14 @@
         <!-- Main content -->
         <div class="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
             <!-- Current Plan Banner -->
-            <div class="bg-gradient-to-r from-blue-500 to-blue-600 rounded-xl p-4 sm:p-6 mb-8 text-white">
+            <div class="bg-gradient-to-r from-primary-600 to-primary-700 rounded-xl p-4 sm:p-6 mb-8 text-white">
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between">
                     <div class="flex-1 min-w-0">
                         <h3 class="text-lg font-semibold truncate">Current Plan: {{ current_plan|title }}</h3>
-                        <p class="text-blue-100 mt-1 text-sm sm:text-base">Ready to unlock more features and higher limits?</p>
+                        <p class="text-primary-100 mt-1 text-sm sm:text-base">Ready to unlock more features and higher limits?</p>
                     </div>
                     <div class="flex items-center mt-4 sm:mt-0 sm:ml-4">
-                        <svg class="h-6 w-6 sm:h-8 sm:w-8 text-blue-200"
+                        <svg class="h-6 w-6 sm:h-8 sm:w-8 text-primary-200"
                              fill="none"
                              stroke="currentColor"
                              viewBox="0 0 24 24">
@@ -48,7 +47,7 @@
             </div>
 
             <!-- Plan Comparison Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 lg:gap-8 mb-8">
+            <div class="grid grid-cols-1 {% if plans|length == 2 %}md:grid-cols-2 max-w-4xl mx-auto{% else %}md:grid-cols-2 lg:grid-cols-3{% endif %} gap-6 lg:gap-8 mb-8">
                 {% for plan in plans %}
                     <div class="group relative bg-white rounded-2xl shadow-lg border {% if plan.recommended %}border-primary-500 ring-2 ring-primary-500 ring-opacity-50 shadow-primary-500/25{% else %}border-gray-200 hover:border-gray-300 hover:shadow-xl{% endif %} transition-all duration-300 transform hover:scale-105">
                         {% if plan.recommended %}
@@ -61,7 +60,7 @@
                             <div class="absolute inset-0 bg-gradient-to-br from-primary-50/50 to-transparent pointer-events-none"></div>
                         {% endif %}
 
-                        <div class="relative p-6 lg:p-8">
+                        <div class="relative p-6 lg:p-8 h-full flex flex-col">
                             <!-- Plan Header -->
                             <div class="text-center mb-8">
                                 {% if plan.recommended %}
@@ -74,7 +73,7 @@
                                         </svg>
                                     </div>
                                 {% elif plan.id == "basic" %}
-                                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-blue-500 to-blue-600 rounded-full mb-4 shadow-lg">
+                                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-primary-400 to-primary-500 rounded-full mb-4 shadow-lg">
                                         <svg class="w-8 h-8 text-white"
                                              fill="none"
                                              stroke="currentColor"
@@ -84,7 +83,7 @@
                                         </svg>
                                     </div>
                                 {% else %}
-                                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-purple-500 to-purple-600 rounded-full mb-4 shadow-lg">
+                                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-gray-700 to-gray-900 rounded-full mb-4 shadow-lg">
                                         <svg class="w-8 h-8 text-white"
                                              fill="none"
                                              stroke="currentColor"
@@ -106,12 +105,16 @@
                                     <p class="text-sm text-primary-600 font-semibold bg-primary-50 px-3 py-1 rounded-full inline-block">
                                         Perfect for growing teams
                                     </p>
+                                {% elif plan.is_downgrade %}
+                                    <p class="text-sm text-gray-600 font-semibold bg-gray-100 px-3 py-1 rounded-full inline-block">
+                                        Lower tier than your current plan
+                                    </p>
                                 {% elif plan.id == "basic" %}
-                                    <p class="text-sm text-blue-600 font-semibold bg-blue-50 px-3 py-1 rounded-full inline-block">
+                                    <p class="text-sm text-primary-600 font-semibold bg-primary-50 px-3 py-1 rounded-full inline-block">
                                         Great for getting started
                                     </p>
                                 {% else %}
-                                    <p class="text-sm text-purple-600 font-semibold bg-purple-50 px-3 py-1 rounded-full inline-block">
+                                    <p class="text-sm text-gray-700 font-semibold bg-gray-100 px-3 py-1 rounded-full inline-block">
                                         For large organizations
                                     </p>
                                 {% endif %}
@@ -137,7 +140,7 @@
                             </div>
 
                             <!-- CTA Button -->
-                            <div>
+                            <div class="mt-auto">
                                 {% if plan.id == current_plan %}
                                     <div class="w-full py-4 px-6 border-2 border-gray-200 rounded-xl text-center bg-gray-50">
                                         <div class="flex items-center justify-center">
@@ -161,6 +164,8 @@
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
                                             </svg>
                                             <span>Upgrade to {{ plan.name }}</span>
+                                        {% elif plan.is_downgrade %}
+                                            <span>Downgrade to {{ plan.name }}</span>
                                         {% else %}
                                             <span>Choose {{ plan.name }}</span>
                                             <svg class="ml-2 h-5 w-5 group-hover/btn:translate-x-1 transition-transform"
@@ -184,8 +189,8 @@
 
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div class="text-center">
-                        <div class="h-16 w-16 bg-gradient-to-r from-blue-500 to-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <svg class="h-8 w-8 text-white"
+                        <div class="h-16 w-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <svg class="h-8 w-8 text-primary-600"
                                  fill="none"
                                  stroke="currentColor"
                                  viewBox="0 0 24 24">
@@ -197,8 +202,8 @@
                     </div>
 
                     <div class="text-center">
-                        <div class="h-16 w-16 bg-gradient-to-r from-green-500 to-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <svg class="h-8 w-8 text-white"
+                        <div class="h-16 w-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <svg class="h-8 w-8 text-primary-600"
                                  fill="none"
                                  stroke="currentColor"
                                  viewBox="0 0 24 24">
@@ -211,8 +216,8 @@
                     </div>
 
                     <div class="text-center">
-                        <div class="h-16 w-16 bg-gradient-to-r from-purple-500 to-purple-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <svg class="h-8 w-8 text-white"
+                        <div class="h-16 w-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <svg class="h-8 w-8 text-primary-600"
                                  fill="none"
                                  stroke="currentColor"
                                  viewBox="0 0 24 24">

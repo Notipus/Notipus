@@ -297,16 +297,21 @@ class DashboardService:
             Dictionary with trial status and remaining days.
         """
         trial_days_remaining = 0
+        trial_has_ended = False
         is_trial = workspace.subscription_status == "trial"
 
         if is_trial and workspace.trial_end_date:
             trial_days_remaining = max(
                 0, (workspace.trial_end_date - timezone.now()).days
             )
+            # Distinct from trial_days_remaining == 0, which is also true
+            # during the final <24h of an active trial.
+            trial_has_ended = workspace.trial_end_date <= timezone.now()
 
         return {
             "is_trial": is_trial,
             "trial_days_remaining": trial_days_remaining,
+            "trial_has_ended": trial_has_ended,
             "trial_end_date": workspace.trial_end_date,
         }
 

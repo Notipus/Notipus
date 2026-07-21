@@ -69,28 +69,15 @@
 
                 <!-- Plan Details -->
                 <div class="p-6">
-                    <!-- Trial Warning -->
-                    {% if workspace.subscription_status == "trial" %}
+                    {% if trial_has_ended %}
                         <div class="mb-6 p-4 bg-amber-50 rounded-xl border border-amber-100">
                             <div class="flex items-start gap-3">
                                 <div class="p-1.5 bg-amber-100 rounded-lg">
                                     <i class="ti ti-clock text-amber-600"></i>
                                 </div>
                                 <div class="flex-1">
-                                    <h3 class="text-sm font-medium text-amber-800">
-                                        {% if trial_days_remaining > 0 %}
-                                            {{ trial_days_remaining }} day{{ trial_days_remaining|pluralize }} left in your trial
-                                        {% else %}
-                                            Your trial has ended
-                                        {% endif %}
-                                    </h3>
-                                    <p class="mt-1 text-sm text-amber-700">
-                                        {% if trial_days_remaining > 0 %}
-                                            Upgrade anytime to keep your notifications flowing.
-                                        {% else %}
-                                            Upgrade now to restore your notifications.
-                                        {% endif %}
-                                    </p>
+                                    <h3 class="text-sm font-medium text-amber-800">Your trial has ended</h3>
+                                    <p class="mt-1 text-sm text-amber-700">Upgrade now to restore your notifications.</p>
                                 </div>
                             </div>
                         </div>
@@ -123,12 +110,8 @@
                                 <div class="text-2xl font-bold text-gray-900">
                                     {% if workspace.subscription_plan == "free" %}
                                         Free
-                                    {% elif workspace.subscription_plan == "basic" %}
-                                        $29
-                                    {% elif workspace.subscription_plan == "pro" %}
-                                        $99
-                                    {% elif workspace.subscription_plan == "enterprise" %}
-                                        $299
+                                    {% elif current_plan_obj %}
+                                        ${{ current_plan_obj.price_monthly|floatformat:0 }}
                                     {% else %}
                                         --
                                     {% endif %}
