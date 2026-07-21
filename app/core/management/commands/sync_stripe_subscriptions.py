@@ -12,7 +12,7 @@ import stripe
 from core.models import Workspace
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from webhooks.services.billing import BillingService, map_stripe_status
+from webhooks.services.billing import map_stripe_status
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,14 @@ class Command(BaseCommand):
         starting_after = None
 
         while True:
-            params: dict = {"limit": 100, "expand": ["data.items.data.price"]}
+            # status="all" so canceled subscriptions are returned too;
+            # otherwise a workspace whose only subscription was canceled is
+            # never seen here and stays "active" locally forever.
+            params: dict = {
+                "limit": 100,
+                "status": "all",
+                "expand": ["data.items.data.price"],
+            }
             if starting_after:
                 params["starting_after"] = starting_after
 
@@ -77,26 +84,78 @@ class Command(BaseCommand):
         self.stdout.write(f"Found {len(subscriptions)} subscription(s) in Stripe")
         return subscriptions
 
-    def _build_customer_subscription_map(
+    def _group_subscriptions_by_customer(
         self, subscriptions: list
-    ) -> dict[str, stripe.Subscription]:
-        """Build map of customer_id to most relevant subscription."""
-        customer_subscriptions: dict[str, stripe.Subscription] = {}
+    ) -> dict[str, list[stripe.Subscription]]:
+        """Group every subscription by its Stripe customer id.
+
+        All subscriptions are retained (not collapsed to one per customer)
+        so that per-workspace selection can honor a stored
+        ``stripe_subscription_id`` rather than an arbitrary heuristic.
+
+        Args:
+            subscriptions: Subscriptions fetched from Stripe.
+
+        Returns:
+            Mapping of customer id to its list of subscriptions, preserving
+            the order returned by Stripe.
+        """
+        customer_subscriptions: dict[str, list[stripe.Subscription]] = {}
 
         for sub in subscriptions:
             customer_id = sub.customer
             if isinstance(customer_id, stripe.Customer):
                 customer_id = customer_id.id
 
-            existing = customer_subscriptions.get(customer_id)
-
-            if existing is None:
-                customer_subscriptions[customer_id] = sub
-            elif sub.status in ("active", "trialing", "past_due"):
-                if existing.status not in ("active", "trialing"):
-                    customer_subscriptions[customer_id] = sub
+            customer_subscriptions.setdefault(customer_id, []).append(sub)
 
         return customer_subscriptions
+
+    def _most_relevant_subscription(
+        self, subs: list[stripe.Subscription]
+    ) -> stripe.Subscription:
+        """Pick a subscription using the live-first fallback heuristic.
+
+        Prefers a live (active/trialing/past_due) subscription; otherwise
+        returns the first one so a customer whose only subscription was
+        canceled still downgrades the workspace instead of being skipped.
+
+        Args:
+            subs: Non-empty list of a customer's subscriptions.
+
+        Returns:
+            The selected subscription.
+        """
+        for sub in subs:
+            if sub.status in ("active", "trialing", "past_due"):
+                return sub
+        return subs[0]
+
+    def _select_subscription(
+        self, workspace: Workspace, subs: list[stripe.Subscription]
+    ) -> stripe.Subscription:
+        """Choose the subscription that reflects the workspace's billing.
+
+        When the workspace records a ``stripe_subscription_id``, the
+        subscription with that id wins so an add-on or duplicate
+        subscription on the same customer can't overwrite the plan billing
+        is actually tied to. The live-first heuristic is used only when no
+        id is stored or the stored id no longer matches any subscription.
+
+        Args:
+            workspace: Workspace being synced.
+            subs: Non-empty list of the customer's subscriptions.
+
+        Returns:
+            The selected subscription.
+        """
+        stored_id = workspace.stripe_subscription_id
+        if stored_id:
+            for sub in subs:
+                if sub.id == stored_id:
+                    return sub
+
+        return self._most_relevant_subscription(subs)
 
     def handle(self, *args, **options) -> None:
         """Execute the command.
@@ -125,13 +184,13 @@ class Command(BaseCommand):
         subscriptions = self._fetch_all_subscriptions()
         self.stdout.write("")
 
-        customer_subscriptions = self._build_customer_subscription_map(subscriptions)
+        customer_subscriptions = self._group_subscriptions_by_customer(subscriptions)
         customer_count = len(customer_subscriptions)
         self.stdout.write(f"Processing {customer_count} unique customer(s)")
         self.stdout.write("-" * 50)
 
-        for customer_id, sub in customer_subscriptions.items():
-            self._process_subscription(customer_id, sub, dry_run, results)
+        for customer_id, subs in customer_subscriptions.items():
+            self._process_customer(customer_id, subs, dry_run, results)
 
         self._print_summary(results, dry_run)
 
@@ -173,18 +232,18 @@ class Command(BaseCommand):
             return None
         return product_name.lower().replace("notipus ", "").replace(" plan", "").strip()
 
-    def _process_subscription(
+    def _process_customer(
         self,
         customer_id: str,
-        sub: stripe.Subscription,
+        subs: list[stripe.Subscription],
         dry_run: bool,
         results: dict,
     ) -> None:
-        """Process a single subscription and sync to workspace.
+        """Process a customer's subscriptions and sync to its workspace.
 
         Args:
             customer_id: Stripe customer ID.
-            sub: Stripe Subscription object.
+            subs: The customer's subscriptions (non-empty).
             dry_run: If True, don't make actual changes.
             results: Dictionary to track operation counts.
         """
@@ -196,6 +255,7 @@ class Command(BaseCommand):
                 results["skipped_no_workspace"] += 1
                 return
 
+            sub = self._select_subscription(workspace, subs)
             internal_status = map_stripe_status(sub.status)
             plan_name = self._normalize_plan_name(self._get_product_name(sub))
 
@@ -208,7 +268,9 @@ class Command(BaseCommand):
                 results["synced"] += 1
                 return
 
-            self._apply_changes(workspace, customer_id, changes, dry_run, results)
+            self._apply_changes(
+                workspace, sub, internal_status, plan_name, changes, dry_run, results
+            )
 
         except Exception as e:
             self.stdout.write(
@@ -231,12 +293,29 @@ class Command(BaseCommand):
     def _apply_changes(
         self,
         workspace: Workspace,
-        customer_id: str,
+        sub: stripe.Subscription,
+        status: str,
+        plan: str | None,
         changes: list[str],
         dry_run: bool,
         results: dict,
     ) -> None:
-        """Apply sync changes to workspace."""
+        """Persist the state derived from the selected subscription.
+
+        The state from ``sub`` (the subscription chosen for this workspace)
+        is written directly, so honoring the stored ``stripe_subscription_id``
+        during selection actually takes effect instead of being re-derived
+        from an arbitrary subscription.
+
+        Args:
+            workspace: Workspace to update.
+            sub: The subscription selected for this workspace.
+            status: Internal subscription status derived from ``sub``.
+            plan: Normalized plan name derived from ``sub``, or None.
+            changes: Human-readable change descriptions for output.
+            dry_run: If True, don't make actual changes.
+            results: Dictionary to track operation counts.
+        """
         change_str = ", ".join(changes)
 
         if dry_run:
@@ -246,16 +325,17 @@ class Command(BaseCommand):
             results["synced"] += 1
             return
 
-        if BillingService.sync_workspace_from_stripe(customer_id):
-            self.stdout.write(
-                self.style.SUCCESS(f"  SYNCED: {workspace.name} - {change_str}")
-            )
-            results["synced"] += 1
-        else:
-            self.stdout.write(
-                self.style.ERROR(f"  ERROR: Failed to sync {workspace.name}")
-            )
-            results["errors"] += 1
+        update_data: dict[str, Any] = {"subscription_status": status}
+        if plan:
+            update_data["subscription_plan"] = plan
+        if sub.id:
+            update_data["stripe_subscription_id"] = sub.id
+
+        Workspace.objects.filter(id=workspace.id).update(**update_data)
+        self.stdout.write(
+            self.style.SUCCESS(f"  SYNCED: {workspace.name} - {change_str}")
+        )
+        results["synced"] += 1
 
     def _print_summary(self, results: dict, dry_run: bool) -> None:
         """Print a summary of operations performed.

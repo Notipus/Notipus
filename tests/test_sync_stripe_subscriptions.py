@@ -24,6 +24,43 @@ def workspace(db) -> Workspace:
     )
 
 
+def _make_mock_sub(
+    sub_id: str,
+    customer_id: str,
+    status: str,
+    product_name: str | None = None,
+) -> MagicMock:
+    """Build a MagicMock shaped like a Stripe Subscription object.
+
+    Args:
+        sub_id: Subscription id.
+        customer_id: Owning customer id.
+        status: Stripe subscription status.
+        product_name: Product name exposed via items.data[0].price.product,
+            or None to leave items empty.
+
+    Returns:
+        A MagicMock mimicking the attribute access the command performs.
+    """
+    sub = MagicMock()
+    sub.id = sub_id
+    sub.customer = customer_id
+    sub.status = status
+
+    items = MagicMock()
+    if product_name is None:
+        items.data = []
+    else:
+        price = MagicMock()
+        price.product = MagicMock()
+        price.product.name = product_name
+        item = MagicMock()
+        item.price = price
+        items.data = [item]
+    sub.items = items
+    return sub
+
+
 @pytest.fixture
 def mock_subscription_data() -> dict:
     """Create mock subscription data from Stripe API."""
@@ -398,3 +435,91 @@ class TestSyncStripeSubscriptionsCommand:
 
         output = out.getvalue()
         assert "SYNCED" in output or "already in sync" in output
+
+    def test_honors_stored_subscription_id(self, db) -> None:
+        """Verify the stored subscription is chosen over another live one.
+
+        A customer with two active subscriptions (e.g. a plan plus an
+        add-on) must sync from the subscription recorded on the workspace,
+        not from an arbitrary first-seen one.
+        """
+        workspace = Workspace.objects.create(
+            name="Stored Sub Workspace",
+            stripe_customer_id="cus_stored",
+            subscription_status="trial",
+            subscription_plan="pro",
+            stripe_subscription_id="sub_stored",
+        )
+
+        other = _make_mock_sub("sub_other", "cus_stored", "active")
+        stored = _make_mock_sub("sub_stored", "cus_stored", "active")
+
+        mock_response = MagicMock()
+        mock_response.data = [other, stored]  # other is first-seen
+        mock_response.has_more = False
+
+        with patch("stripe.api_key", "sk_test"):
+            with patch("stripe.api_version", "2025-01-01"):
+                with patch("stripe.Account.retrieve") as mock_account:
+                    mock_account.return_value = MagicMock(id="acct_test")
+                    with patch("stripe.Subscription.list") as mock_list:
+                        mock_list.return_value = mock_response
+
+                        out = StringIO()
+                        call_command("sync_stripe_subscriptions", stdout=out)
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "active"
+        # The stored subscription won, so its id is preserved (not "sub_other").
+        assert workspace.stripe_subscription_id == "sub_stored"
+
+    def test_downgrades_workspace_with_only_canceled_subscription(self, db) -> None:
+        """Verify a workspace whose only subscription is canceled downgrades.
+
+        Without status="all" the canceled subscription is never fetched and
+        the workspace stays "active" forever; it must be downgraded instead.
+        """
+        workspace = Workspace.objects.create(
+            name="Canceled Workspace",
+            stripe_customer_id="cus_canceled",
+            subscription_status="active",
+            subscription_plan="pro",
+        )
+
+        canceled = _make_mock_sub("sub_canceled", "cus_canceled", "canceled")
+
+        mock_response = MagicMock()
+        mock_response.data = [canceled]
+        mock_response.has_more = False
+
+        with patch("stripe.api_key", "sk_test"):
+            with patch("stripe.api_version", "2025-01-01"):
+                with patch("stripe.Account.retrieve") as mock_account:
+                    mock_account.return_value = MagicMock(id="acct_test")
+                    with patch("stripe.Subscription.list") as mock_list:
+                        mock_list.return_value = mock_response
+
+                        out = StringIO()
+                        call_command("sync_stripe_subscriptions", stdout=out)
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "cancelled"
+        assert workspace.subscription_status != "active"
+
+    def test_fetches_subscriptions_with_status_all(self, workspace: Workspace) -> None:
+        """Verify the Stripe list call passes status="all"."""
+        mock_response = MagicMock()
+        mock_response.data = []
+        mock_response.has_more = False
+
+        with patch("stripe.api_key", "sk_test"):
+            with patch("stripe.api_version", "2025-01-01"):
+                with patch("stripe.Account.retrieve") as mock_account:
+                    mock_account.return_value = MagicMock(id="acct_test")
+                    with patch("stripe.Subscription.list") as mock_list:
+                        mock_list.return_value = mock_response
+
+                        out = StringIO()
+                        call_command("sync_stripe_subscriptions", stdout=out)
+
+        assert mock_list.call_args.kwargs["status"] == "all"
