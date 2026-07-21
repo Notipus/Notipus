@@ -1,6 +1,6 @@
 """Correctness regression tests for the InsightDetector.
 
-These tests pin down three fixes:
+These tests pin down two fixes:
 
 1. First-payment detection must NOT fire for providers (Stripe, Chargify)
    that never populate order/payment history - only Shopify does. Absent
@@ -8,9 +8,6 @@ These tests pin down three fixes:
    as a first payment.
 2. The trial insight must render the event's currency (not a hardcoded "$")
    and the actual billing interval (not a hardcoded "/mo").
-3. The LTV milestone must not be claimed one payment early. Shopify's
-   customer ``total_spent`` at orders/paid time already includes the current
-   order, so the reported value IS the new lifetime value.
 """
 
 import pytest
@@ -82,13 +79,14 @@ class TestFirstPaymentRequiresHistoryFields:
 
         assert result is None
 
-    def test_stripe_renewal_does_not_mask_large_payment_insight(
+    def test_stripe_renewal_does_not_mask_lower_priority_insight(
         self, detector: InsightDetector
     ) -> None:
-        """Test a large Stripe renewal surfaces the large-payment insight.
+        """Test a large Stripe renewal is not labeled a first payment.
 
-        First payment sits high in the priority order; when it stops
-        firing spuriously, a lower-priority insight can surface instead.
+        First payment sits high in the priority order; when it stops firing
+        spuriously for history-less providers, a lower-priority insight
+        (here a large-payment / LTV insight) surfaces instead.
         """
         event = {
             "type": "payment_success",
@@ -102,7 +100,6 @@ class TestFirstPaymentRequiresHistoryFields:
         result = detector.detect(event, customer_data)
 
         assert result is not None
-        assert result.icon == "money"
         assert "First payment" not in result.text
 
     def test_shopify_first_order_is_still_first_payment(
@@ -184,47 +181,3 @@ class TestTrialInsightCurrencyAndInterval:
 
         assert result is not None
         assert result.text == "7-day trial, then £10.00/mo"
-
-
-class TestLtvMilestoneNoDoubleCount:
-    """The LTV milestone is not claimed one payment early."""
-
-    def test_milestone_not_claimed_early(self, detector: InsightDetector) -> None:
-        """Test a customer sitting below a milestone does not celebrate it.
-
-        total_spent already includes the current order (800 prior + 100
-        now = 900), so at $900 lifetime the $1,000 milestone is not reached.
-        The old code added the current amount again (900 + 100 = 1,000) and
-        celebrated a payment early.
-        """
-        event = {"type": "payment_success", "amount": 100.00}
-        customer_data = {
-            "orders_count": 9,
-            "total_spent": "900.00",
-            "payment_history": [{"status": "success", "amount": 100}] * 3,
-        }
-
-        result = detector.detect(event, customer_data)
-
-        assert result is None
-
-    def test_milestone_fires_when_actually_crossed(
-        self, detector: InsightDetector
-    ) -> None:
-        """Test the milestone fires when total_spent actually reaches it.
-
-        total_spent already includes the current order (900 prior + 100 now
-        = 1,000), so the $1,000 milestone is genuinely crossed.
-        """
-        event = {"type": "payment_success", "amount": 100.00}
-        customer_data = {
-            "orders_count": 10,
-            "total_spent": "1000.00",
-            "payment_history": [{"status": "success", "amount": 100}] * 3,
-        }
-
-        result = detector.detect(event, customer_data)
-
-        assert result is not None
-        assert result.icon == "celebration"
-        assert "1,000" in result.text

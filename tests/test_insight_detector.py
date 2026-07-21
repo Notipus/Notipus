@@ -187,9 +187,7 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 200.00}
         customer = {
             "orders_count": 5,
-            # total_spent already includes the current payment (900 prior +
-            # 200 now), so this crosses $1000.
-            "total_spent": 1100.00,
+            "total_spent": 900.00,  # Will cross $1000 with this payment
             "payment_history": [{"status": "success", "amount": 300}] * 3,
         }
 
@@ -204,9 +202,7 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 500.00}
         customer = {
             "orders_count": 20,
-            # total_spent already includes the current payment (4500 prior +
-            # 500 now), so this crosses $5000.
-            "total_spent": 5000.00,
+            "total_spent": 4800.00,  # Will cross $5000 with this payment
             "payment_history": [{"status": "success", "amount": 300}] * 5,
         }
 
@@ -236,9 +232,7 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 100.00}
         customer = {
             "orders_count": 3,
-            # total_spent already includes the current payment (400 prior +
-            # 100 now), so this crosses the custom $500 milestone.
-            "total_spent": 500.00,
+            "total_spent": 450.00,  # Will cross $500 with this payment
             "payment_history": [{"status": "success", "amount": 150}] * 3,
         }
 
@@ -256,9 +250,7 @@ class TestLargestLTVMilestone:
         event = {"type": "payment_success", "amount": 60000.00}
         customer = {
             "orders_count": 10,
-            # total_spent already includes the current payment (500 prior +
-            # 60000 now), so this jumps from $500 to $60,500.
-            "total_spent": 60500.00,
+            "total_spent": 500.00,
             "payment_history": [{"status": "success", "amount": 250}] * 2,
         }
 
@@ -275,9 +267,7 @@ class TestLargestLTVMilestone:
         event = {"type": "payment_success", "amount": 200.00}
         customer = {
             "orders_count": 10,
-            # total_spent already includes the current payment (4800 prior +
-            # 200 now), so this crosses only $5,000.
-            "total_spent": 5000.00,
+            "total_spent": 4900.00,  # Crosses only $5,000
             "payment_history": [{"status": "success", "amount": 200}] * 2,
         }
 
@@ -894,9 +884,7 @@ class TestStringLTVHandling:
         event = {"type": "payment_success", "amount": 200.00}
         customer = {
             "orders_count": 5,
-            # String total_spent already includes the current payment
-            # (900 prior + 200 now), so this crosses $1000.
-            "total_spent": "1100.00",
+            "total_spent": "900.00",  # String that will cross $1000
             "payment_history": [{"status": "success", "amount": 300}] * 3,
         }
 
@@ -910,8 +898,7 @@ class TestStringLTVHandling:
         event = {"type": "payment_success", "amount": "200.00"}  # String amount
         customer = {
             "orders_count": 5,
-            # total_spent already includes the current payment (900 + 200).
-            "total_spent": 1100.00,
+            "total_spent": 900.00,
             "payment_history": [{"status": "success", "amount": 300}] * 3,
         }
 
@@ -942,9 +929,7 @@ class TestInsightPriority:
         event = {"type": "payment_success", "amount": 500.00}
         customer = {
             "orders_count": 5,
-            # total_spent already includes the current payment (600 + 500),
-            # so this crosses $1000.
-            "total_spent": 1100.00,
+            "total_spent": 900.00,  # Will cross $1000
             "payment_history": [
                 {"status": "success", "amount": 100},  # Average is 100
                 {"status": "success", "amount": 100},

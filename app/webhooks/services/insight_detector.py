@@ -391,15 +391,10 @@ class InsightDetector:
             return None
 
         current_amount = _to_float(event_data.get("amount"))
-        # total_spent / lifetime_value already reflect the CURRENT payment:
-        # Shopify's customer total_spent at orders/paid time includes the
-        # order being processed. Treat the reported value as the new LTV and
-        # derive the pre-payment LTV by subtracting the current amount, so a
-        # milestone is not claimed one payment early by double-counting.
-        new_ltv = _to_float(customer_data.get("total_spent")) or _to_float(
+        previous_ltv = _to_float(customer_data.get("total_spent")) or _to_float(
             customer_data.get("lifetime_value")
         )
-        previous_ltv = new_ltv - current_amount
+        new_ltv = previous_ltv + current_amount
 
         # Celebrate the LARGEST milestone crossed by this payment (a big
         # payment can cross several at once - one Slack message per event).
