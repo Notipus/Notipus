@@ -303,5 +303,14 @@
             }
             NotipusUI.copyToClipboard(text);
         }
+
+        // The read-only copy helpers live inside the POST form; without this,
+        // pressing Enter in one would submit and trigger required-field
+        // validation on the webhook_secret input.
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && e.target.matches('input[readonly]')) {
+                e.preventDefault();
+            }
+        });
     </script>
 {% endblock content %}
