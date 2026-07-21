@@ -375,7 +375,9 @@ class PendingEventQueue:
         try:
             # Get all stored events
             key = f"pending_webhook:{workspace_id}:{idempotency_key}"
-            stored_items = decrypt_cache_value(cache.get(key)) or []
+            stored_items = self._read_pending_items(key)
+            if stored_items is None:
+                return  # Poisoned entry purged; already logged loudly
 
             if not stored_items:
                 logger.warning(
@@ -489,6 +491,41 @@ class PendingEventQueue:
             return remainder
         finally:
             self._release_append_lock(key)
+
+    def _read_pending_items(self, key: str) -> list[dict[str, Any]] | None:
+        """Read and decrypt the pending list, purging poisoned entries.
+
+        ``decrypt_cache_value`` returns None both for a true miss and for
+        a ciphertext token no configured key can decrypt (e.g. the key
+        was rotated out of ``FIELD_ENCRYPTION_KEYS`` before the entry
+        drained). The two must not be conflated: a poisoned entry would
+        otherwise sit in Redis until TTL expiry, logging "no events
+        found" on every timer/sweep pass while its notifications are
+        silently lost. Purge it (and its attempt counter) loudly instead
+        - it can never be processed.
+
+        Args:
+            key: Cache key of the pending list
+                ("pending_webhook:{workspace}:{idempotency_key}").
+
+        Returns:
+            The decrypted item list ([] when the key is absent), or None
+            when a poisoned entry was found and purged.
+        """
+        raw = cache.get(key)
+        items = decrypt_cache_value(raw)
+        if raw is not None and items is None:
+            logger.error(
+                f"Pending events under {key} could not be decrypted with any "
+                f"configured key (FIELD_ENCRYPTION_KEYS rotated too early?). "
+                f"Dropping the undecryptable entry; its notifications are lost."
+            )
+            cache.delete(key)
+            cache.delete(
+                key.replace("pending_webhook:", "pending_webhook_attempts:", 1)
+            )
+            return None
+        return items or []
 
     def _record_failed_attempt(self, attempts_key: str) -> int:
         """Increment and return the failed-delivery counter for a group.
@@ -1008,8 +1045,8 @@ class PendingEventQueue:
 
             _, workspace_id, idempotency_key = parts
 
-            # Get stored events
-            stored_items = decrypt_cache_value(cache.get(key))
+            # Get stored events (a poisoned entry is purged and skipped)
+            stored_items = self._read_pending_items(key)
             if not stored_items:
                 return False
 

@@ -1701,7 +1701,7 @@ class TestProcessDeleteRace:
                 with patch.object(queue, "_schedule_processing") as mock_schedule:
                     queue._process_events("idem_123", "ws_456", "stripe", None)
 
-        assert fake_cache.store[self.KEY] == [item_a]
+        assert decrypt_cache_value(fake_cache.store[self.KEY]) == [item_a]
         mock_schedule.assert_called_once()
 
     def test_finalize_lock_budget_outlasts_lock_ttl(self) -> None:
@@ -1721,6 +1721,72 @@ class TestProcessDeleteRace:
             APPEND_LOCK_FINALIZE_MAX_ATTEMPTS * APPEND_LOCK_RETRY_DELAY_SECONDS
         )
         assert finalize_budget > APPEND_LOCK_TTL_SECONDS
+
+
+class TestPoisonedEntryPurge:
+    """Undecryptable pending entries are purged, not skipped forever.
+
+    decrypt_cache_value returns None for both a miss and a token no
+    configured key can decrypt (key rotated away too early). Without
+    distinguishing them, a poisoned entry sits in Redis until TTL
+    expiry, logging "no events found" on every pass while its
+    notifications are silently lost.
+    """
+
+    KEY = "pending_webhook:ws_456:idem_123"
+    ATTEMPTS_KEY = "pending_webhook_attempts:ws_456:idem_123"
+    POISONED = "pqc1:" + "A" * 64  # decrypts with no configured key
+
+    @pytest.fixture
+    def queue(self) -> PendingEventQueue:
+        """Create a fresh queue instance with no active timers."""
+        queue = PendingEventQueue()
+        with queue._lock:
+            queue._active_timers.clear()
+        return queue
+
+    def test_process_events_purges_poisoned_entry(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Processing deletes an undecryptable entry and sends nothing."""
+        fake_cache = InMemoryCache()
+        fake_cache.store[self.KEY] = self.POISONED
+        fake_cache.store[self.ATTEMPTS_KEY] = 3
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            with patch.object(queue, "_send_notification") as mock_send:
+                queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        mock_send.assert_not_called()
+        assert self.KEY not in fake_cache.store
+        assert self.ATTEMPTS_KEY not in fake_cache.store
+
+    def test_recovery_sweep_purges_poisoned_entry(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """The orphan sweep deletes an undecryptable entry, not loops on it."""
+        fake_cache = InMemoryCache()
+        fake_cache.store[self.KEY] = self.POISONED
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            recovered = queue._recover_single_event(self.KEY)
+
+        assert recovered is False
+        assert self.KEY not in fake_cache.store
+
+    def test_true_miss_is_not_treated_as_poisoned(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """An absent key still reads as an empty list, nothing deleted."""
+        fake_cache = InMemoryCache()
+        fake_cache.store[self.ATTEMPTS_KEY] = 3
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            items = queue._read_pending_items(self.KEY)
+
+        assert items == []
+        # The attempts counter is untouched on a plain miss
+        assert fake_cache.store[self.ATTEMPTS_KEY] == 3
 
 
 class TestThreadConnectionCleanup:
