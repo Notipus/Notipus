@@ -144,9 +144,10 @@ class TestSendSetupInstructionsEmail:
     """Test the content of the generated instruction email."""
 
     def test_stripe_email_contains_webhook_url_and_events(
-        self, workspace: Workspace
+        self, workspace: Workspace, settings
     ) -> None:
-        """Test the Stripe email carries the URL and every event."""
+        """Test the Stripe email carries the full URL and every event."""
+        settings.BASE_URL = "https://notipus.example.com"
         result = send_setup_instructions_email(
             "cfo@example.com",
             workspace,
@@ -156,7 +157,9 @@ class TestSendSetupInstructionsEmail:
 
         assert result is True
         message = mail.outbox[0]
-        expected_url = f"/webhook/customer/{workspace.uuid}/stripe/"
+        expected_url = (
+            f"https://notipus.example.com/webhook/customer/{workspace.uuid}/stripe/"
+        )
         html_body = message.alternatives[0][0]
         assert expected_url in message.body
         assert expected_url in html_body
