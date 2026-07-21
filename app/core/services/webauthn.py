@@ -506,8 +506,8 @@ class WebAuthnService:
         """
         try:
             self.cleanup_expired_challenges()
-        except Exception as e:  # pragma: no cover - defensive best-effort path
-            logger.debug(f"Best-effort challenge cleanup failed: {e}")
+        except Exception:  # pragma: no cover - defensive best-effort path
+            logger.debug("Best-effort challenge cleanup failed", exc_info=True)
 
     def cleanup_expired_challenges(self, max_age: timedelta = CHALLENGE_TTL) -> int:
         """Clean up expired WebAuthn challenges.
