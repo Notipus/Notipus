@@ -60,3 +60,8 @@ def my_page(page: Page) -> None:
 Keep captures at the fixture defaults (1920x1080 desktop frame and
 390x844 mobile frame, both at 2x — output is 3840px / 780px wide, so
 Full HD is the floor) so the set stays visually consistent.
+
+`slack_listing.py` is the exception: the Slack App Directory requires
+screenshots that are exactly 1600x1000, so its captures come from the
+`slack_listing_page` fixture (1600x1000 viewport at 1:1) with
+`full_page=False`.

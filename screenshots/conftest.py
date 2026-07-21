@@ -55,6 +55,10 @@ os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
 # grow taller as the page requires.
 DESKTOP_VIEWPORT = {"width": 1920, "height": 1080}
 MOBILE_VIEWPORT = {"width": 390, "height": 844}
+# Slack App Directory listing requirement: screenshots must be exactly
+# 1600x1000 pixels — captured at 1:1 scale, viewport only (no
+# full-page scrolling).
+SLACK_LISTING_VIEWPORT = {"width": 1600, "height": 1000}
 OUTPUT_DIR = Path(__file__).parent / "output"
 
 # Initech's customers, straight from the movie
@@ -295,6 +299,27 @@ def mobile_page(
         device_scale_factor=2,  # retina-density, matches real phones
         is_mobile=True,
         has_touch=True,
+    )
+    yield context.new_page()
+    context.close()
+
+
+@pytest.fixture
+def slack_listing_page(
+    browser: Browser, live_server, session_cookie: dict[str, str]
+) -> Generator[Page, Any, None]:
+    """Authenticated page sized for Slack App Directory listings.
+
+    The directory rejects anything that isn't exactly 1600x1000, so
+    captures from this page must use ``full_page=False`` (the default
+    ``shoot`` full-page mode would grow taller than 1000px).
+    """
+    context = _new_context(
+        browser,
+        live_server,
+        session_cookie,
+        viewport=SLACK_LISTING_VIEWPORT,
+        device_scale_factor=1,
     )
     yield context.new_page()
     context.close()
