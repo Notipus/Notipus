@@ -469,6 +469,7 @@ class DatabaseLookupService:
                 webhook_record["customer_status_flags"] = (
                     notification.customer.status_flags
                 )
+                webhook_record["customer_email_tags"] = notification.customer.email_tags
 
             # Add insight if available
             if notification.insight:
