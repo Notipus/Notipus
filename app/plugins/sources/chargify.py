@@ -363,7 +363,9 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             total_revenue_cents = self._current_webhook_data.get(
                 "payload[subscription][total_revenue_in_cents]"
             )
-            if total_revenue_cents is not None:
+            # "" is how a form-encoded payload spells "absent" - skip it
+            # silently rather than warn on every such webhook.
+            if total_revenue_cents not in (None, ""):
                 try:
                     customer_data["total_spent"] = float(total_revenue_cents) / 100
                 except (ValueError, TypeError):

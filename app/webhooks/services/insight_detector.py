@@ -17,28 +17,30 @@ failure modes this prevents are both silent in production:
   first-payment solely off Shopify's orders_count made the insight
   unreachable for Stripe, which never sends order history).
 
-Per-provider signal sources (update this table when adding a detector):
+Per-provider signal sources (update this list when adding a detector):
 
-======================  ======================  ==================  ==========
-Signal                  Stripe                  Chargify            Shopify
-======================  ======================  ==================  ==========
-first payment           metadata.billing_reason is_signup_payment   orders_count
-                        == "subscription_create" from signup_success
-                                                revenue
-lifetime spend (LTV,    (none - silent)         total_spent from    total_spent
-VIP, at-risk)                                   total_revenue_      (see note)
-                                                in_cents (see note)
-customer created_at     (none - anniversary     customer.           customer.
-(anniversary, tenure)   silent)                 created_at          created_at
-trial metadata          parser-derived          parser-derived      n/a
-                                                (signup state
-                                                trialing)
-failure attempt count   attempt_count/          failure_reason      n/a
-                        next_payment_attempt    only
-customer email          invoices only; cached   customer.email      customer.
-                        (encrypted) for                             email
-                        subscription events
-======================  ======================  ==================  ==========
+* first payment:
+  Stripe = invoice billing_reason "subscription_create";
+  Chargify = is_signup_payment metadata from signup_success revenue;
+  Shopify = customer orders_count.
+* lifetime spend (LTV, VIP, at-risk):
+  Stripe = none (silent);
+  Chargify = total_spent from total_revenue_in_cents (see note);
+  Shopify = total_spent (see note).
+* customer created_at (anniversary, tenure):
+  Stripe = none (anniversary silent);
+  Chargify and Shopify = customer.created_at.
+* trial metadata:
+  Stripe = parser-derived;
+  Chargify = parser-derived (signup_success with state "trialing");
+  Shopify = n/a.
+* failure attempt count:
+  Stripe = attempt_count / next_payment_attempt;
+  Chargify = failure_reason only;
+  Shopify = n/a.
+* customer email:
+  Stripe = invoices only, cached (encrypted) for subscription events;
+  Chargify and Shopify = customer.email.
 
 Note on lifetime-spend semantics (issue #110): neither Shopify nor
 Chargify documents whether the lifetime-spend snapshot embedded in a

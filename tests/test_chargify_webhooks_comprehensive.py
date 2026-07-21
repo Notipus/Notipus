@@ -318,9 +318,9 @@ class TestChargifyWebhookParsing:
         """Test a signup with zero/missing revenue stays a plain subscription event.
 
         A lagging or absent revenue counter must lose the insight, never
-        fabricate one.
+        fabricate one. "" is how a form-encoded payload spells "absent".
         """
-        for revenue_value in ("0", None):
+        for revenue_value in ("0", "", None):
             form_data = {
                 "event": "signup_success",
                 "payload[subscription][id]": "sub_12345",
