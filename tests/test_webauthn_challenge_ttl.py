@@ -175,6 +175,35 @@ def test_signup_rejects_expired_challenge(service: WebAuthnService) -> None:
 
 
 @pytest.mark.django_db
+def test_signup_accepts_fresh_challenge(service: WebAuthnService) -> None:
+    """A fresh signup challenge creates the user and credential and is consumed."""
+    challenge_str = base64.urlsafe_b64encode(b"signup-challenge").decode()
+    WebAuthnChallenge.objects.create(
+        challenge=challenge_str,
+        user=None,
+        challenge_type="signup_registration",
+    )
+
+    verification = Mock()
+    verification.credential_id = b"cred-id"
+    verification.credential_public_key = b"public-key"
+    verification.sign_count = 0
+
+    with patch(
+        "core.services.webauthn.verify_registration_response",
+        return_value=verification,
+    ):
+        result = service.complete_signup_registration(
+            {"challenge": challenge_str}, "bob", "bob@example.com"
+        )
+
+    assert result is not None
+    assert result.username == "bob"
+    assert WebAuthnCredential.objects.filter(user=result).exists()
+    assert not WebAuthnChallenge.objects.filter(challenge=challenge_str).exists()
+
+
+@pytest.mark.django_db
 def test_new_challenge_cleans_up_expired(service: WebAuthnService, user: User) -> None:
     """Creating a new challenge purges previously expired challenges."""
     stale = WebAuthnChallenge.objects.create(

@@ -1028,6 +1028,14 @@ class WebAuthnChallenge(models.Model):
         app_label = "core"
         verbose_name = "WebAuthn Challenge"
         verbose_name_plural = "WebAuthn Challenges"
+        indexes: ClassVar[list[models.Index]] = [
+            # Speeds up TTL cutoff lookups and opportunistic cleanup deletes,
+            # which filter on created_at (optionally with challenge_type).
+            models.Index(
+                fields=["created_at", "challenge_type"],
+                name="core_webauthn_created_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         """Return string representation of the challenge.
