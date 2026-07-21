@@ -8,17 +8,21 @@ a single consolidated notification.
 The delay ensures we have complete data (like customer_email from invoice
 events) even when processing subscription events that arrive first.
 
-On server startup, orphaned events (from previous server instances) are
-recovered and processed to prevent data loss on ephemeral infrastructure.
+Delivery reliability: once an event is queued the router has already
+acknowledged it to the provider (and recorded a dedup marker that
+suppresses provider retries), so delivery is entirely our responsibility.
+Failed sends leave the events in Redis; a periodic recovery sweep (plus a
+sweep at server startup for ephemeral infrastructure) retries them until
+either delivery succeeds, MAX_SEND_ATTEMPTS is exhausted, or the retry
+window (TTL_SECONDS) expires.
 
 Thread Safety:
-- Uses Redis atomic operations (SETNX) for distributed locking
-- Uses JSON append pattern with optimistic locking for event storage
+- Uses cache.add (atomic SET NX on Redis) for distributed locking, both
+  for event processing and for appending to the pending-event list
 - Timer scheduling uses threading.Lock for in-process safety
 """
 
 import copy
-import json
 import logging
 import threading
 import time
@@ -30,16 +34,34 @@ from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
-# Minimum age (in seconds) before an orphaned event is processed on startup.
-# This prevents processing events that were just queued and have active timers.
+# Minimum age (in seconds) before an orphaned event is processed by a
+# recovery sweep. This prevents processing events that were just queued
+# and have active timers.
 ORPHAN_MIN_AGE_SECONDS = 35  # Slightly longer than DELAY_SECONDS
 
 # Lock TTL for distributed processing lock (seconds)
 # Should be longer than max expected processing time
 PROCESSING_LOCK_TTL = 60
 
-# Maximum retries for storing events (optimistic locking)
+# Maximum retries for storing events (lock contention)
 MAX_STORE_RETRIES = 3
+
+# Distributed append lock: TTL bounds how long a crashed lock holder can
+# block appends; attempts * delay bounds how long a request waits.
+APPEND_LOCK_TTL_SECONDS = 5
+APPEND_LOCK_MAX_ATTEMPTS = 20
+APPEND_LOCK_RETRY_DELAY_SECONDS = 0.05
+
+# How often the background sweep retries undelivered events. Combined
+# with TTL_SECONDS this defines the delivery-retry schedule.
+RECOVERY_SWEEP_INTERVAL_SECONDS = 300
+
+# Give up (loudly) after this many failed delivery attempts for one
+# event group - e.g. a revoked Slack webhook URL that will never succeed.
+MAX_SEND_ATTEMPTS = 20
+
+# Fleet-wide marker so only one worker runs each periodic sweep.
+SWEEP_LOCK_KEY = "pending_webhook_sweep_lock"
 
 
 class PendingEventQueue:
@@ -52,16 +74,23 @@ class PendingEventQueue:
 
     Attributes:
         DELAY_SECONDS: Time to wait before processing (default 30s).
-        TTL_SECONDS: Redis TTL for pending events (default 5 min).
+        TTL_SECONDS: Redis TTL for pending events. This is the delivery
+            retry window: once queued, the provider's own retries are
+            suppressed (dedup marker), so it must comfortably exceed the
+            aggregation delay AND give the periodic recovery sweep time
+            to retry failed sends through e.g. a Slack outage.
     """
 
     DELAY_SECONDS = 30
-    TTL_SECONDS = 300  # 5 min TTL for pending events
+    TTL_SECONDS = 6 * 60 * 60  # 6h delivery-retry window
 
     # Track active timers to avoid duplicate scheduling
     # Key: "{workspace_id}:{idempotency_key}" -> Timer
     _active_timers: dict[str, threading.Timer] = {}
     _lock = threading.Lock()
+
+    # Per-process guard so the periodic recovery thread starts only once
+    _recovery_thread_started = False
 
     def queue_event(
         self,
@@ -141,8 +170,10 @@ class PendingEventQueue:
     ) -> None:
         """Store event to Redis keyed by idempotency_key.
 
-        Uses atomic Redis operations to prevent race conditions when
-        multiple events arrive simultaneously.
+        Uses a distributed lock to prevent concurrent appends from
+        overwriting each other. Raises on persistent failure so the
+        router returns 5xx and the provider redelivers the webhook
+        (the dedup marker is only recorded after successful queueing).
 
         Args:
             idempotency_key: Stripe idempotency key.
@@ -161,10 +192,9 @@ class PendingEventQueue:
             "customer_data": customer_data,
         }
 
-        # Use atomic append with retry loop to handle concurrent writes
         for attempt in range(MAX_STORE_RETRIES):
             try:
-                self._atomic_append(key, new_item)
+                self._locked_append(key, new_item)
                 return
             except Exception as e:
                 if attempt == MAX_STORE_RETRIES - 1:
@@ -175,82 +205,34 @@ class PendingEventQueue:
                 # Small backoff before retry
                 time.sleep(0.01 * (attempt + 1))
 
-    def _atomic_append(self, key: str, item: dict[str, Any]) -> None:
-        """Atomically append an item to a list in Redis.
+    def _locked_append(self, key: str, item: dict[str, Any]) -> None:
+        """Append an item to the cached list under a distributed lock.
 
-        Uses Redis WATCH/MULTI/EXEC for optimistic locking to ensure
-        concurrent appends don't overwrite each other.
-
-        Falls back to non-atomic append if Redis client is unavailable
-        (e.g., in tests or with non-Redis cache backends).
-
-        Args:
-            key: Redis key for the list.
-            item: Item to append.
-        """
-        redis_client = self._get_redis_client_for_atomic()
-        if redis_client is None:
-            # Fallback to non-atomic append
-            self._simple_append(key, item)
-            return
-
-        # Use Redis pipeline with WATCH for optimistic locking
-        pipe = redis_client.pipeline(True)  # True = use MULTI/EXEC
-        try:
-            # Watch the key for changes
-            pipe.watch(key)
-
-            # Get current value
-            current = pipe.get(key)
-            if current:
-                if isinstance(current, bytes):
-                    current = current.decode("utf-8")
-                existing = json.loads(current)
-            else:
-                existing = []
-
-            # Append new item
-            existing.append(item)
-
-            # Start transaction
-            pipe.multi()
-            pipe.setex(key, self.TTL_SECONDS, json.dumps(existing))
-            pipe.execute()
-
-        except Exception as e:
-            # WatchError means another client modified the key - retry
-            pipe.reset()
-            raise e
-
-    def _get_redis_client_for_atomic(self):
-        """Get Redis client for atomic operations.
-
-        Returns:
-            Redis client or None if unavailable.
-        """
-        try:
-            client = cache.client.get_client()  # type: ignore[attr-defined]
-            # Verify it's a real Redis client by checking for concrete type
-            # MagicMock will have __class__.__name__ == 'MagicMock'
-            client_class = client.__class__.__name__
-            if "Mock" in client_class or "mock" in client_class:
-                return None
-            if hasattr(client, "pipeline"):
-                return client
-            return None
-        except (AttributeError, Exception):
-            return None
-
-    def _simple_append(self, key: str, item: dict[str, Any]) -> None:
-        """Simple non-atomic append (fallback for non-Redis backends).
+        cache.add is an atomic SET NX on Redis, giving cross-process
+        mutual exclusion through the public cache API. This works with
+        Django's built-in Redis backend - whose keys are prefixed and
+        pickled, so a raw-client WATCH/MULTI transaction cannot see
+        them - as well as any other cache backend.
 
         Args:
             key: Cache key for the list.
             item: Item to append.
+
+        Raises:
+            RuntimeError: If the append lock could not be acquired.
         """
-        existing = cache.get(key) or []
-        existing.append(item)
-        cache.set(key, existing, timeout=self.TTL_SECONDS)
+        lock_key = f"append_lock:{key}"
+        for _ in range(APPEND_LOCK_MAX_ATTEMPTS):
+            if cache.add(lock_key, "1", timeout=APPEND_LOCK_TTL_SECONDS):
+                try:
+                    existing = cache.get(key) or []
+                    existing.append(item)
+                    cache.set(key, existing, timeout=self.TTL_SECONDS)
+                finally:
+                    cache.delete(lock_key)
+                return
+            time.sleep(APPEND_LOCK_RETRY_DELAY_SECONDS)
+        raise RuntimeError(f"Could not acquire append lock for {key}")
 
     def _schedule_processing(
         self,
@@ -351,17 +333,50 @@ class PendingEventQueue:
                 aggregated_event, aggregated_customer, provider_name, workspace
             )
 
+            attempts_key = f"pending_webhook_attempts:{workspace_id}:{idempotency_key}"
             if success:
                 # Delete pending events only after successful send
                 cache.delete(key)
+                cache.delete(attempts_key)
             else:
-                # Leave events for retry (orphan recovery will pick them up)
-                logger.warning(
-                    f"Notification failed for {idempotency_key}, events left for retry"
-                )
+                # Leave events for the periodic recovery sweep, but give
+                # up loudly on groups that will never deliver (e.g. a
+                # revoked Slack webhook URL) instead of retrying forever.
+                attempts = self._record_failed_attempt(attempts_key)
+                if attempts >= MAX_SEND_ATTEMPTS:
+                    logger.error(
+                        f"Giving up on notification for {idempotency_key} after "
+                        f"{attempts} failed delivery attempts; dropping events"
+                    )
+                    cache.delete(key)
+                    cache.delete(attempts_key)
+                else:
+                    logger.warning(
+                        f"Notification failed for {idempotency_key}, events left "
+                        f"for retry (attempt {attempts}/{MAX_SEND_ATTEMPTS})"
+                    )
         finally:
             # Always release the lock
             self._release_lock(lock_key)
+
+    def _record_failed_attempt(self, attempts_key: str) -> int:
+        """Increment and return the failed-delivery counter for a group.
+
+        The counter lives as long as the pending events themselves so a
+        group's attempts are bounded across process restarts.
+
+        Args:
+            attempts_key: Cache key of the attempt counter.
+
+        Returns:
+            The updated number of failed attempts.
+        """
+        try:
+            attempts = int(cache.get(attempts_key) or 0) + 1
+        except (TypeError, ValueError):
+            attempts = 1
+        cache.set(attempts_key, attempts, timeout=self.TTL_SECONDS)
+        return attempts
 
     def _acquire_lock(self, lock_key: str) -> bool:
         """Acquire a distributed lock using Redis SETNX.
@@ -705,11 +720,64 @@ class PendingEventQueue:
             )
             return None
 
-    def recover_orphaned_events(self) -> int:
-        """Recover and process orphaned events from Redis.
+    def start_periodic_recovery(
+        self, interval_seconds: int = RECOVERY_SWEEP_INTERVAL_SECONDS
+    ) -> None:
+        """Start the background thread that retries undelivered events.
 
-        Called on server startup to process events that were queued by
-        a previous server instance that died before processing them.
+        Once queued, events are our responsibility (the router has already
+        acknowledged the webhook and suppressed provider retries), so a
+        failed Slack send must be retried by us. A startup-only sweep is
+        not enough: without a periodic sweep, a Slack outage with no
+        coincidental redeploy loses notifications permanently.
+
+        Idempotent per process; the thread is a daemon so it never blocks
+        shutdown.
+
+        Args:
+            interval_seconds: Seconds between recovery sweeps.
+        """
+        with self._lock:
+            if PendingEventQueue._recovery_thread_started:
+                return
+            PendingEventQueue._recovery_thread_started = True
+
+        thread = threading.Thread(
+            target=self._periodic_recovery_loop,
+            args=(interval_seconds,),
+            daemon=True,
+            name="pending-webhook-recovery",
+        )
+        thread.start()
+        logger.info(
+            f"Started periodic pending-webhook recovery (every {interval_seconds}s)"
+        )
+
+    def _periodic_recovery_loop(self, interval_seconds: int) -> None:
+        """Run recovery sweeps forever, surviving individual failures.
+
+        Args:
+            interval_seconds: Seconds between recovery sweeps.
+        """
+        while True:
+            time.sleep(interval_seconds)
+            try:
+                # One worker per fleet sweeps each interval (atomic SET NX).
+                # Overlap would be harmless anyway - per-key processing
+                # locks and the orphan age check guard each event group.
+                sweep_ttl = max(interval_seconds - 30, 30)
+                if cache.add(SWEEP_LOCK_KEY, "1", timeout=sweep_ttl):
+                    self.recover_orphaned_events()
+            except Exception:
+                logger.exception("Periodic pending-webhook recovery sweep failed")
+
+    def recover_orphaned_events(self) -> int:
+        """Recover and process pending events that missed their timer.
+
+        Called on server startup (events queued by a previous instance
+        that died before processing them) and by the periodic recovery
+        sweep (events whose delivery failed, or whose in-memory timer
+        died with its worker).
 
         Only processes events older than ORPHAN_MIN_AGE_SECONDS to avoid
         racing with active timers on other server instances.
@@ -737,27 +805,48 @@ class PendingEventQueue:
         return processed_count
 
     def _get_redis_client(self):
-        """Get Redis client for key scanning.
+        """Get a raw Redis client for key scanning.
+
+        Supports django-redis (``cache.client.get_client()``) and Django's
+        built-in RedisCache backend (``cache._cache.get_client()``). The
+        raw client is used ONLY for SCAN; reads and writes always go
+        through the cache API so key prefixing and serialization stay
+        consistent.
 
         Returns:
             Redis client or None if unavailable.
         """
         try:
             return cache.client.get_client()  # type: ignore[attr-defined]
-        except (AttributeError, Exception) as e:
+        except AttributeError:
+            pass  # Not django-redis; try Django's built-in backend
+        except Exception as e:
+            logger.warning(f"Cannot access Redis client for orphan recovery: {e}")
+            return None
+
+        try:
+            return cache._cache.get_client(None, write=True)  # type: ignore[attr-defined]
+        except Exception as e:
             logger.warning(f"Cannot access Redis client for orphan recovery: {e}")
             return None
 
     def _scan_pending_keys(self, redis_client):
         """Scan Redis for pending webhook keys.
 
+        The cache backend stores entries under its full key (KEY_PREFIX
+        and version, e.g. "notipus:1:pending_webhook:..."), so the SCAN
+        pattern must carry that prefix and it must be stripped again
+        before the keys are used with the cache API. An unprefixed scan
+        matches nothing in production.
+
         Args:
             redis_client: Redis client instance.
 
         Yields:
-            Decoded key strings matching pending_webhook:* pattern.
+            Logical cache keys ("pending_webhook:{workspace}:{idem}").
         """
-        pattern = "pending_webhook:*"
+        prefix = cache.make_key("")
+        pattern = f"{prefix}pending_webhook:*"
         cursor = 0
 
         while True:
@@ -766,6 +855,8 @@ class PendingEventQueue:
             for key in keys:
                 if isinstance(key, bytes):
                     key = key.decode("utf-8")
+                if key.startswith(prefix):
+                    key = key[len(prefix) :]
                 yield key
 
             if cursor == 0:

@@ -922,10 +922,65 @@ class TestOrphanRecovery:
         """Test that _get_redis_client handles errors gracefully."""
         with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
             mock_cache.client.get_client.side_effect = AttributeError("No client")
+            mock_cache._cache.get_client.side_effect = AttributeError("No client")
 
             result = queue._get_redis_client()
 
             assert result is None
+
+    def test_get_redis_client_uses_django_builtin_backend(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test the fallback to Django's built-in RedisCache backend.
+
+        Production uses django.core.cache.backends.redis.RedisCache, which
+        exposes the raw client via cache._cache.get_client - NOT the
+        django-redis cache.client API. Without this fallback, orphan
+        recovery silently returns 0 in production and queued notifications
+        whose delivery failed are never retried.
+        """
+        raw_client = MagicMock(name="raw_redis_client")
+        # Built-in backend has no `.client` attribute at all
+        mock_cache = MagicMock(spec=["_cache"])
+        mock_cache._cache.get_client.return_value = raw_client
+
+        with patch("webhooks.services.pending_event_queue.cache", mock_cache):
+            result = queue._get_redis_client()
+
+        assert result is raw_client
+        mock_cache._cache.get_client.assert_called_once_with(None, write=True)
+
+    def test_scan_pending_keys_uses_and_strips_cache_prefix(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that scanning matches prefixed keys and yields logical keys.
+
+        The backend stores entries under KEY_PREFIX:version:key (e.g.
+        "notipus:1:pending_webhook:..."). An unprefixed SCAN matches
+        nothing, and unstripped keys would miss on cache.get - both make
+        recovery a silent no-op.
+        """
+        redis_client = MagicMock()
+        redis_client.scan.return_value = (
+            0,
+            [
+                b"notipus:1:pending_webhook:ws_123:idem_abc",
+                b"notipus:1:pending_webhook:global:idem_def",
+            ],
+        )
+
+        with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+            mock_cache.make_key.return_value = "notipus:1:"
+
+            keys = list(queue._scan_pending_keys(redis_client))
+
+        redis_client.scan.assert_called_once_with(
+            0, match="notipus:1:pending_webhook:*", count=100
+        )
+        assert keys == [
+            "pending_webhook:ws_123:idem_abc",
+            "pending_webhook:global:idem_def",
+        ]
 
     def test_recover_orphaned_events_returns_zero_when_no_client(
         self, queue: PendingEventQueue
@@ -1206,3 +1261,250 @@ class TestCustomerBasedAggregation:
         # Current bucket should NOT have been created
         curr_key = f"pending_webhook:ws_456:customer:cus_123:t{current_bucket}"
         assert mock_cache.get(curr_key) is None
+
+
+class TestDeliveryRetrySemantics:
+    """Test the delivery-retry window and bounded retry behavior.
+
+    Once queued, the router has acknowledged the webhook to the provider
+    and recorded a dedup marker that suppresses provider redelivery, so
+    delivery is entirely this queue's responsibility.
+    """
+
+    @pytest.fixture
+    def queue(self) -> PendingEventQueue:
+        """Create a fresh queue instance."""
+        queue = PendingEventQueue()
+        with queue._lock:
+            queue._active_timers.clear()
+        return queue
+
+    @pytest.fixture
+    def stateful_cache(self):
+        """Stateful cache mock backing get/set/add/delete with a dict."""
+        cache_data: dict = {}
+
+        def mock_get(key, default=None):
+            return cache_data.get(key, default)
+
+        def mock_set(key, value, timeout=None):
+            cache_data[key] = value
+
+        def mock_add(key, value, timeout=None):
+            if key in cache_data:
+                return False
+            cache_data[key] = value
+            return True
+
+        def mock_delete(key):
+            cache_data.pop(key, None)
+
+        with patch("webhooks.services.pending_event_queue.cache") as mock:
+            mock.get = mock_get
+            mock.set = mock_set
+            mock.add = mock_add
+            mock.delete = mock_delete
+            mock.data = cache_data
+            yield mock
+
+    def test_retry_window_exceeds_dedup_window(self) -> None:
+        """Test that events outlive the provider-retry suppression marker.
+
+        The router records a dedup marker (30 min) when an event is
+        queued, so the provider will not redeliver. If pending events
+        expired before that (the old 300s TTL), a delivery failure lost
+        the notification with no possible retry from either side.
+        """
+        from webhooks.services.event_consolidation import EventConsolidationService
+
+        dedup_seconds = (
+            EventConsolidationService.CONSOLIDATION_WINDOW_SECONDS
+            * EventConsolidationService.DEDUP_WINDOW_MULTIPLIER
+        )
+
+        assert PendingEventQueue.TTL_SECONDS > dedup_seconds
+
+    def test_failed_send_increments_attempt_counter(
+        self, queue: PendingEventQueue, stateful_cache
+    ) -> None:
+        """Test that each failed delivery increments the bounded counter."""
+        key = "pending_webhook:ws_456:idem_123"
+        attempts_key = "pending_webhook_attempts:ws_456:idem_123"
+        stored_items = [
+            {
+                "event_data": {"type": "subscription_created"},
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+        stateful_cache.set(key, stored_items)
+
+        with patch.object(queue, "_send_notification", return_value=False):
+            queue._process_events("idem_123", "ws_456", "stripe", None)
+            queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        # Events remain for the next recovery sweep; counter tracks attempts
+        assert stateful_cache.get(key) == stored_items
+        assert stateful_cache.get(attempts_key) == 2
+
+    def test_gives_up_loudly_after_max_attempts(
+        self, queue: PendingEventQueue, stateful_cache
+    ) -> None:
+        """Test that a permanently failing group is dropped after the cap.
+
+        A revoked Slack webhook URL never succeeds; without a cap the
+        sweep would retry it every interval for the whole TTL window.
+        """
+        from webhooks.services.pending_event_queue import MAX_SEND_ATTEMPTS
+
+        key = "pending_webhook:ws_456:idem_123"
+        attempts_key = "pending_webhook_attempts:ws_456:idem_123"
+        stored_items = [
+            {
+                "event_data": {"type": "subscription_created"},
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+        stateful_cache.set(key, stored_items)
+        stateful_cache.set(attempts_key, MAX_SEND_ATTEMPTS - 1)
+
+        with patch.object(queue, "_send_notification", return_value=False):
+            queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        # Group and counter are dropped - explicitly, not by silent expiry
+        assert stateful_cache.get(key) is None
+        assert stateful_cache.get(attempts_key) is None
+
+    def test_successful_send_clears_attempt_counter(
+        self, queue: PendingEventQueue, stateful_cache
+    ) -> None:
+        """Test that a successful delivery resets the failure bookkeeping."""
+        key = "pending_webhook:ws_456:idem_123"
+        attempts_key = "pending_webhook_attempts:ws_456:idem_123"
+        stored_items = [
+            {
+                "event_data": {"type": "subscription_created"},
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+        stateful_cache.set(key, stored_items)
+        stateful_cache.set(attempts_key, 3)
+
+        with patch.object(queue, "_send_notification", return_value=True):
+            queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        assert stateful_cache.get(key) is None
+        assert stateful_cache.get(attempts_key) is None
+
+
+class TestLockedAppend:
+    """Test the distributed-lock append used for pending event storage."""
+
+    @pytest.fixture
+    def queue(self) -> PendingEventQueue:
+        """Create a fresh queue instance."""
+        return PendingEventQueue()
+
+    def test_append_raises_when_lock_never_acquired(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that lock starvation raises instead of silently dropping.
+
+        A raise propagates to the router, which returns 5xx BEFORE the
+        dedup marker is recorded - so the provider redelivers the webhook
+        instead of the event being lost.
+        """
+        with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+            mock_cache.add.return_value = False  # Lock always held elsewhere
+
+            with patch(
+                "webhooks.services.pending_event_queue.time.sleep"
+            ):  # Don't actually wait
+                with pytest.raises(RuntimeError, match="append lock"):
+                    queue._locked_append("pending_webhook:ws:idem", {"x": 1})
+
+    def test_append_releases_lock_even_on_error(self, queue: PendingEventQueue) -> None:
+        """Test that the append lock is released when cache.set fails."""
+        with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+            mock_cache.add.return_value = True
+            mock_cache.get.return_value = []
+            mock_cache.set.side_effect = RuntimeError("redis down")
+
+            with pytest.raises(RuntimeError, match="redis down"):
+                queue._locked_append("pending_webhook:ws:idem", {"x": 1})
+
+            mock_cache.delete.assert_called_once_with(
+                "append_lock:pending_webhook:ws:idem"
+            )
+
+
+class TestPeriodicRecovery:
+    """Test the background recovery sweep."""
+
+    @pytest.fixture
+    def queue(self) -> PendingEventQueue:
+        """Create a fresh queue instance with the sweeper flag reset."""
+        PendingEventQueue._recovery_thread_started = False
+        yield PendingEventQueue()
+        PendingEventQueue._recovery_thread_started = False
+
+    def test_start_periodic_recovery_starts_thread_once(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that repeated calls start exactly one daemon thread."""
+        with patch(
+            "webhooks.services.pending_event_queue.threading.Thread"
+        ) as mock_thread:
+            queue.start_periodic_recovery()
+            queue.start_periodic_recovery()
+
+        assert mock_thread.call_count == 1
+        assert mock_thread.call_args.kwargs["daemon"] is True
+        mock_thread.return_value.start.assert_called_once()
+
+    def test_sweep_runs_recovery_under_fleet_lock(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that a sweep recovers events only when it wins the lock."""
+        sleep_calls = {"count": 0}
+
+        def fake_sleep(seconds):
+            sleep_calls["count"] += 1
+            if sleep_calls["count"] > 1:
+                raise KeyboardInterrupt  # Break out of the infinite loop
+
+        with patch(
+            "webhooks.services.pending_event_queue.time.sleep",
+            side_effect=fake_sleep,
+        ):
+            with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+                mock_cache.add.return_value = True  # Win the fleet-wide lock
+                with patch.object(
+                    queue, "recover_orphaned_events", return_value=0
+                ) as mock_recover:
+                    with pytest.raises(KeyboardInterrupt):
+                        queue._periodic_recovery_loop(300)
+
+        mock_recover.assert_called_once()
+
+    def test_sweep_skips_when_another_worker_holds_lock(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test that losing the fleet-wide lock skips the sweep."""
+        sleep_calls = {"count": 0}
+
+        def fake_sleep(seconds):
+            sleep_calls["count"] += 1
+            if sleep_calls["count"] > 1:
+                raise KeyboardInterrupt
+
+        with patch(
+            "webhooks.services.pending_event_queue.time.sleep",
+            side_effect=fake_sleep,
+        ):
+            with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+                mock_cache.add.return_value = False  # Another worker sweeps
+                with patch.object(queue, "recover_orphaned_events") as mock_recover:
+                    with pytest.raises(KeyboardInterrupt):
+                        queue._periodic_recovery_loop(300)
+
+        mock_recover.assert_not_called()

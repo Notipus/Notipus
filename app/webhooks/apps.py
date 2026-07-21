@@ -17,9 +17,12 @@ class WebhooksConfig(AppConfig):
 
         On ephemeral infrastructure, servers can die at any time. When a new
         server starts, we check Redis for any pending webhook events that
-        were queued by a previous server instance and process them.
+        were queued by a previous server instance and process them, then
+        start the periodic recovery sweep that retries failed deliveries
+        for as long as the events' retry window lasts.
 
-        This prevents notification loss during deployments and restarts.
+        This prevents notification loss during deployments, restarts, and
+        destination (Slack) outages.
         """
         import os
 
@@ -39,6 +42,7 @@ class WebhooksConfig(AppConfig):
                 return  # Let the inner process handle it
 
         self._recover_orphaned_events()
+        self._start_periodic_recovery()
 
     def _recover_orphaned_events(self) -> None:
         """Recover orphaned events from Redis."""
@@ -53,3 +57,13 @@ class WebhooksConfig(AppConfig):
         except Exception as e:
             # Don't prevent server startup if recovery fails
             logger.error(f"Failed to recover orphaned events on startup: {e}")
+
+    def _start_periodic_recovery(self) -> None:
+        """Start the background sweep that retries undelivered events."""
+        try:
+            from webhooks.services.pending_event_queue import pending_event_queue
+
+            pending_event_queue.start_periodic_recovery()
+        except Exception as e:
+            # Don't prevent server startup if the sweeper fails to start
+            logger.error(f"Failed to start periodic webhook recovery: {e}")
