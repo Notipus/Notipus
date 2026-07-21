@@ -148,15 +148,21 @@ OFFICE_SPACE_EVENTS: list[dict[str, Any]] = [
 
 @pytest.fixture(autouse=True)
 def screenshot_settings(settings) -> None:
-    """Cache the seeded activity feed where the live server can read it.
+    """Marketing-friendly settings for every capture.
 
     ``test_settings`` uses DummyCache, which would leave the dashboard's
     Recent Activity empty. LocMemCache is shared across threads, so the
     live-server thread sees what the fixture seeds.
+
+    BASE_URL feeds the webhook URLs shown on the integration setup pages
+    (Stripe/Shopify/Chargify); the default would render
+    ``http://localhost:8000/...`` on camera, so use the production
+    domain instead.
     """
     settings.CACHES = {
         "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
     }
+    settings.BASE_URL = "https://app.notipus.com"
 
 
 def _seed_activity(workspace: Workspace) -> None:
