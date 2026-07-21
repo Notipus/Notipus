@@ -349,7 +349,13 @@ class TestShopifySourcePlugin:
         assert result["last_name"] == "Smith"
 
     def test_get_customer_data_defaults(self, provider):
-        """Test get_customer_data with missing fields using defaults"""
+        """Test get_customer_data with missing fields using defaults.
+
+        History fields (orders_count/total_spent) must be ABSENT, not
+        defaulted to zero: newer Shopify API versions omit them from
+        order webhooks, and a defaulted 0 would make every order read
+        as a first payment from a zero-LTV customer.
+        """
         provider._current_webhook_data = {"customer": {}}
 
         result = provider.get_customer_data("12345")
@@ -358,8 +364,8 @@ class TestShopifySourcePlugin:
         assert result["email"] == ""
         assert result["first_name"] == ""
         assert result["last_name"] == ""
-        assert result["orders_count"] == 0
-        assert result["total_spent"] == "0.00"
+        assert "orders_count" not in result
+        assert "total_spent" not in result
 
     def test_validate_webhook_missing_hmac(self, provider):
         """Test webhook validation with missing HMAC header"""

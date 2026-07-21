@@ -203,9 +203,6 @@ class BaseSourcePlugin(BasePlugin):
 
     Subclasses may override:
     - get_customer_data(): Retrieve customer information
-    - get_payment_history(): Get payment history for a customer
-    - get_usage_metrics(): Get usage metrics for a customer
-    - get_related_events(): Get related events for a customer
 
     Example:
         class MySourcePlugin(BaseSourcePlugin):
@@ -283,28 +280,6 @@ class BaseSourcePlugin(BasePlugin):
         """
         pass
 
-    def get_payment_history(self, customer_id: str) -> list[dict[str, Any]]:
-        """Get payment history for a customer.
-
-        Args:
-            customer_id: The customer's unique identifier.
-
-        Returns:
-            List of payment records.
-        """
-        return []
-
-    def get_usage_metrics(self, customer_id: str) -> dict[str, Any]:
-        """Get usage metrics for a customer.
-
-        Args:
-            customer_id: The customer's unique identifier.
-
-        Returns:
-            Dictionary of usage metrics.
-        """
-        return {}
-
     def get_customer_data(self, customer_id: str) -> dict[str, Any]:
         """Get customer data from the source provider.
 
@@ -320,14 +295,3 @@ class BaseSourcePlugin(BasePlugin):
             - customer_id: The customer identifier for fallback display
         """
         return {"customer_id": customer_id}
-
-    def get_related_events(self, customer_id: str) -> list[dict[str, Any]]:
-        """Get related events for a customer.
-
-        Args:
-            customer_id: The customer's unique identifier.
-
-        Returns:
-            List of related event records.
-        """
-        return []

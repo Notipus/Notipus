@@ -517,20 +517,33 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         if not customer and isinstance(data.get("order"), dict):
             customer = data["order"].get("customer") or {}
 
-        return {
+        customer_data: dict[str, Any] = {
             "company": customer.get("company", "Individual"),
             "email": customer.get("email", ""),
             "first_name": customer.get("first_name", ""),
             "last_name": customer.get("last_name", ""),
-            "orders_count": customer.get("orders_count", 0),
-            "total_spent": customer.get("total_spent", "0.00"),
             "customer_id": customer_id,
+            # Customer signup date (feeds tenure display and anniversary
+            # detection); None when Shopify omits it.
+            "created_at": customer.get("created_at"),
             "metadata": {
                 "shop_domain": data.get("shop_domain", ""),
                 "tags": customer.get("tags", []),
                 "note": customer.get("note", ""),
             },
         }
+
+        # History fields, only when the payload actually carries them.
+        # Newer Shopify API versions omit orders_count/total_spent from
+        # the customer object in order webhooks; defaulting them to 0
+        # would make every order look like a brand-new customer's first
+        # payment. Missing key -> the detectors stay silent instead.
+        if customer.get("orders_count") is not None:
+            customer_data["orders_count"] = customer["orders_count"]
+        if customer.get("total_spent") is not None:
+            customer_data["total_spent"] = customer["total_spent"]
+
+        return customer_data
 
     def validate_webhook(self, request: HttpRequest) -> bool:
         """Validate the webhook signature using HMAC verification.

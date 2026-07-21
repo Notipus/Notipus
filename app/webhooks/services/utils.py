@@ -6,6 +6,36 @@ to avoid code duplication.
 
 from typing import Any, cast
 
+# Billing period to headline interval suffix mapping. Unknown or missing
+# periods fall back to "/mo" explicitly (most subscriptions are monthly).
+INTERVAL_SUFFIX_MAP: dict[str, str] = {
+    "monthly": "/mo",
+    "month": "/mo",
+    "annual": "/yr",
+    "annually": "/yr",
+    "yearly": "/yr",
+    "year": "/yr",
+    "quarterly": "/qtr",
+    "quarter": "/qtr",
+    "weekly": "/wk",
+    "week": "/wk",
+    "daily": "/day",
+    "day": "/day",
+}
+
+
+def interval_suffix(billing_period: Any) -> str:
+    """Map a billing period to a headline interval suffix.
+
+    Args:
+        billing_period: Billing period value from event metadata
+            (e.g. "monthly", "annual"), or None.
+
+    Returns:
+        Interval suffix such as "/mo" or "/yr", defaulting to "/mo".
+    """
+    return INTERVAL_SUFFIX_MAP.get(str(billing_period or "").lower(), "/mo")
+
 
 def get_display_name(customer_data: dict[str, Any]) -> str:
     """Get display name from customer data with smart fallbacks.

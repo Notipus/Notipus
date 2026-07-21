@@ -701,7 +701,9 @@ class TestChargifySourcePluginIntegration:
         assert customer_data["first_name"] == "John"
         assert customer_data["last_name"] == "Doe"
         assert customer_data["plan_name"] == "Premium Plan"
-        assert customer_data["total_revenue"] == 2999.0
+        # Lifetime spend surfaces under total_spent - the key the LTV/VIP
+        # detectors and the notification builder read
+        assert customer_data["total_spent"] == 2999.0
 
     def test_event_type_mapping(self, provider):
         """Test event type mapping functionality"""

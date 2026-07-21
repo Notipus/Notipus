@@ -60,7 +60,6 @@ def custom_detector() -> InsightDetector:
     """Create an InsightDetector with custom config."""
     config = MilestoneConfig(
         ltv_milestones=[500, 1000, 2500],
-        payment_growth_threshold=0.15,
         vip_ltv_threshold=5000,
     )
     return InsightDetector(config)
@@ -136,7 +135,7 @@ class TestInsightDetectorBasic:
         """Test default milestone configuration."""
         assert 1000 in detector.config.ltv_milestones
         assert 5000 in detector.config.ltv_milestones
-        assert detector.config.payment_growth_threshold == 0.20
+        assert detector.config.vip_ltv_threshold == 10000
 
 
 class TestFirstPaymentDetection:
@@ -177,6 +176,21 @@ class TestFirstPaymentDetection:
         # Should not be first payment insight
         if result is not None:
             assert "First payment" not in result.text
+
+    def test_no_first_payment_without_orders_count(
+        self, detector: InsightDetector, payment_success_event: dict
+    ) -> None:
+        """Test that missing history data never reads as a first payment.
+
+        Stripe/Chargify webhook payloads carry no order count. Absence of
+        history is not evidence of a first payment - defaulting to 0 would
+        label every renewal "First payment from this customer".
+        """
+        customer = {"email": "renewal@example.com", "customer_id": "cus_123"}
+
+        result = detector.detect(payment_success_event, customer)
+
+        assert result is None or "First payment" not in result.text
 
 
 class TestLTVMilestoneDetection:
@@ -240,6 +254,30 @@ class TestLTVMilestoneDetection:
 
         assert result is not None
         assert "500" in result.text
+
+    def test_no_milestone_without_ltv_data(self, detector: InsightDetector) -> None:
+        """Test that unknown LTV never fires a milestone.
+
+        Stripe payloads carry no lifetime spend; treating unknown as $0
+        would make a single $5k invoice from a years-old customer claim
+        "Crossed $5,000 lifetime!".
+        """
+        event = {"type": "payment_success", "amount": 5000.00, "orders_count": 9}
+        customer = {"email": "big@example.com", "customer_id": "cus_123"}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_milestone_uses_event_currency(self, detector: InsightDetector) -> None:
+        """Test that milestone text uses the payment's currency, not $."""
+        event = {"type": "payment_success", "amount": 200.00, "currency": "EUR"}
+        customer = {"orders_count": 5, "total_spent": 900.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is not None
+        assert "€1,000" in result.text
 
 
 class TestLargestLTVMilestone:
@@ -635,45 +673,6 @@ class TestInitialPaymentFailureDetection:
         assert "Next retry" not in result.text
 
 
-class TestPaymentGrowthDetection:
-    """Test payment growth detection."""
-
-    def test_detect_payment_growth(self, detector: InsightDetector) -> None:
-        """Test detection of significant payment growth."""
-        event = {"type": "payment_success", "amount": 600.00}  # 100% larger than avg
-        customer = {
-            "orders_count": 10,
-            "total_spent": 3000.00,
-            "payment_history": [
-                {"status": "success", "amount": 300},
-                {"status": "success", "amount": 300},
-                {"status": "success", "amount": 300},
-            ],  # Average is 300
-        }
-
-        result = detector.detect(event, customer)
-
-        assert result is not None
-        assert "%" in result.text or "larger" in result.text.lower()
-
-    def test_no_growth_detection_without_history(
-        self, detector: InsightDetector
-    ) -> None:
-        """Test no growth detection without enough payment history."""
-        event = {"type": "payment_success", "amount": 600.00}
-        customer = {
-            "orders_count": 1,
-            "total_spent": 100.00,
-            "payment_history": [{"status": "success", "amount": 100}],  # Only 1 payment
-        }
-
-        result = detector.detect(event, customer)
-
-        # Should not be growth insight due to insufficient history
-        if result is not None:
-            assert "larger" not in result.text.lower() or "%" not in result.text
-
-
 class TestFailedAttemptDetection:
     """Test failed payment attempt detection."""
 
@@ -688,22 +687,6 @@ class TestFailedAttemptDetection:
         assert result is not None
         assert "declined" in result.text.lower()
         assert result.icon == "warning"
-
-    def test_detect_multiple_failures(
-        self, detector: InsightDetector, payment_failure_event: dict
-    ) -> None:
-        """Test detection of multiple failed attempts."""
-        customer = {
-            "payment_history": [
-                {"status": "failed", "type": "payment_failure"},
-                {"status": "failed", "type": "payment_failure"},
-            ],
-        }
-
-        result = detector.detect(payment_failure_event, customer)
-
-        assert result is not None
-        assert "Attempt #3" in result.text or "#3" in result.text
 
 
 class TestVIPDetection:
@@ -723,6 +706,27 @@ class TestVIPDetection:
         # VIP detection might not be highest priority, check if detected
         # when no higher priority milestones are crossed
         assert result is not None
+
+    def test_vip_text_reflects_threshold_and_currency(
+        self, custom_detector: InsightDetector
+    ) -> None:
+        """Test VIP text renders the configured threshold in event currency."""
+        event = {"type": "payment_success", "amount": 100.00, "currency": "EUR"}
+        customer = {"total_spent": 6000.00}
+
+        result = custom_detector._detect_vip_status(event, customer)
+
+        assert result is not None
+        assert "€5,000+" in result.text
+
+    def test_no_vip_without_ltv_data(self, detector: InsightDetector) -> None:
+        """Test that unknown LTV never claims VIP status."""
+        event = {"type": "payment_success", "amount": 100.00}
+        customer = {"email": "unknown@example.com"}
+
+        result = detector._detect_vip_status(event, customer)
+
+        assert result is None
 
 
 class TestRiskStatusDetection:
@@ -754,22 +758,15 @@ class TestRiskStatusDetection:
 
         assert "vip" in flags
 
-    def test_detect_at_risk_multiple_failures(
+    def test_no_flags_without_ltv_data(
         self, detector: InsightDetector, payment_failure_event: dict
     ) -> None:
-        """Test at_risk flag with multiple recent failures."""
-        customer = {
-            "total_spent": 500.00,
-            "payment_history": [
-                {"status": "failed"},
-                {"status": "failed"},
-                {"status": "success"},
-            ],
-        }
+        """Test that unknown LTV yields no flags (never guessed from $0)."""
+        customer = {"email": "unknown@example.com", "customer_id": "cus_123"}
 
         flags = detector.detect_risk_status(payment_failure_event, customer)
 
-        assert "at_risk" in flags
+        assert flags == []
 
     def test_no_flags_normal_customer(
         self, detector: InsightDetector, payment_success_event: dict
@@ -819,11 +816,6 @@ class TestMilestoneConfigDefaults:
         config = MilestoneConfig()
         assert config.anniversary_months == [12, 24, 36, 48, 60]
 
-    def test_default_growth_threshold(self) -> None:
-        """Test default payment growth threshold."""
-        config = MilestoneConfig()
-        assert config.payment_growth_threshold == 0.20
-
     def test_default_vip_threshold(self) -> None:
         """Test default VIP LTV threshold."""
         config = MilestoneConfig()
@@ -838,13 +830,11 @@ class TestMilestoneConfigDefaults:
         """Test custom configuration."""
         config = MilestoneConfig(
             ltv_milestones=[100, 500, 1000],
-            payment_growth_threshold=0.10,
             vip_ltv_threshold=2500,
             large_payment_threshold=500,
         )
 
         assert config.ltv_milestones == [100, 500, 1000]
-        assert config.payment_growth_threshold == 0.10
         assert config.vip_ltv_threshold == 2500
         assert config.large_payment_threshold == 500
 
@@ -923,25 +913,19 @@ class TestInsightPriority:
         assert result is not None
         assert "First payment" in result.text or "Welcome" in result.text
 
-    def test_ltv_milestone_over_growth(self, detector: InsightDetector) -> None:
-        """Test LTV milestone takes priority over growth."""
-        # Payment that both crosses milestone AND is large growth
-        event = {"type": "payment_success", "amount": 500.00}
+    def test_ltv_milestone_over_large_payment(self, detector: InsightDetector) -> None:
+        """Test LTV milestone takes priority over the large-payment insight."""
+        # Payment that both crosses a milestone AND clears the large threshold
+        event = {"type": "payment_success", "amount": 1500.00}
         customer = {
             "orders_count": 5,
             "total_spent": 900.00,  # Will cross $1000
-            "payment_history": [
-                {"status": "success", "amount": 100},  # Average is 100
-                {"status": "success", "amount": 100},
-                {"status": "success", "amount": 100},
-            ],
         }
 
         result = detector.detect(event, customer)
 
         assert result is not None
-        # Should be milestone, not growth
-        assert "1,000" in result.text or "Crossed" in result.text
+        assert "Crossed" in result.text
 
 
 class TestFailedAttemptsWithAttemptCount:
@@ -1016,50 +1000,21 @@ class TestFailedAttemptsWithAttemptCount:
         assert result is not None
         assert "Card declined" in result.text
 
-    def test_attempt_count_takes_priority_over_payment_history(
-        self, detector: InsightDetector
-    ) -> None:
-        """Test that attempt_count from metadata takes priority over payment_history."""
-        event: dict = {
-            "type": "payment_failure",
-            "amount": 53.20,
-            "metadata": {"attempt_count": 2},
-        }
-        # Payment history also shows failures but attempt_count should win
-        customer: dict = {
-            "payment_history": [
-                {"status": "failed", "type": "payment_failure"},
-                {"status": "failed", "type": "payment_failure"},
-                {"status": "failed", "type": "payment_failure"},
-            ],
-        }
+    def test_no_attempt_data_yields_no_insight(self, detector: InsightDetector) -> None:
+        """Test that a failure with no metadata yields no insight.
 
-        result = detector.detect(event, customer)
-
-        assert result is not None
-        # Should use attempt_count (2), not payment_history count (3+1=4)
-        assert "Retry #2" in result.text
-
-    def test_no_attempt_count_falls_back_to_payment_history(
-        self, detector: InsightDetector
-    ) -> None:
-        """Test that without attempt_count, payment_history fallback works."""
+        Webhook payloads carry no cross-event history, so with neither
+        attempt_count nor failure_reason there is nothing truthful to say.
+        """
         event: dict = {
             "type": "payment_failure",
             "amount": 53.20,
             "metadata": {},
         }
-        customer: dict = {
-            "payment_history": [
-                {"status": "failed", "type": "payment_failure"},
-                {"status": "failed", "type": "payment_failure"},
-            ],
-        }
 
-        result = detector.detect(event, customer)
+        result = detector.detect(event, {})
 
-        assert result is not None
-        assert "Attempt #3" in result.text
+        assert result is None
 
     def test_string_next_attempt_timestamp_formatted(
         self, detector: InsightDetector

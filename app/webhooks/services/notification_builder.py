@@ -25,6 +25,7 @@ from webhooks.utils.email_classifier import classify_email
 
 from .insight_detector import InsightDetector
 from .utils import get_display_name
+from .utils import interval_suffix as _interval_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -151,37 +152,6 @@ EVENT_SEVERITY_MAP: dict[str, NotificationSeverity] = {
     "fulfillment_updated": NotificationSeverity.INFO,
     "shipment_delivered": NotificationSeverity.SUCCESS,
 }
-
-# Billing period to headline interval suffix mapping. Unknown or missing
-# periods fall back to "/mo" explicitly (most subscriptions are monthly).
-INTERVAL_SUFFIX_MAP: dict[str, str] = {
-    "monthly": "/mo",
-    "month": "/mo",
-    "annual": "/yr",
-    "annually": "/yr",
-    "yearly": "/yr",
-    "year": "/yr",
-    "quarterly": "/qtr",
-    "quarter": "/qtr",
-    "weekly": "/wk",
-    "week": "/wk",
-    "daily": "/day",
-    "day": "/day",
-}
-
-
-def _interval_suffix(billing_period: Any) -> str:
-    """Map a billing period to a headline interval suffix.
-
-    Args:
-        billing_period: Billing period value from event metadata
-            (e.g. "monthly", "annual"), or None.
-
-    Returns:
-        Interval suffix such as "/mo" or "/yr", defaulting to "/mo".
-    """
-    return INTERVAL_SUFFIX_MAP.get(str(billing_period or "").lower(), "/mo")
-
 
 # Event type to headline icon mapping (semantic names)
 EVENT_ICON_MAP: dict[str, str] = {

@@ -11,6 +11,9 @@ from typing import Any
 
 from django.core.cache import cache
 from webhooks.models.rich_notification import InsightInfo
+from webhooks.utils.currency import format_money
+
+from .utils import interval_suffix
 
 # How long the "anniversary fired" dedup marker lives. Must be longer than
 # the +/- ANNIVERSARY_TOLERANCE_DAYS detection window so a customer paying
@@ -41,13 +44,37 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _get_ltv(customer_data: dict[str, Any]) -> float | None:
+    """Extract the customer's lifetime value, or None when unknown.
+
+    We only ever see webhook payloads (no provider API access), so a
+    missing LTV means "unknown", not "zero". Detectors must skip rather
+    than guess in that case: treating unknown as 0 makes a $5k invoice
+    look like it just "crossed $5,000 lifetime" for a years-old customer.
+
+    Mirrors NotificationBuilder's precedence: total_spent wins even when
+    it is a legitimate zero; lifetime_value is only consulted when
+    total_spent is absent.
+
+    Args:
+        customer_data: Customer data dictionary from the source plugin.
+
+    Returns:
+        LTV in major currency units, or None when the payload carried
+        no lifetime-spend field.
+    """
+    for key in ("total_spent", "lifetime_value"):
+        if customer_data.get(key) is not None:
+            return _to_float(customer_data[key])
+    return None
+
+
 @dataclass
 class MilestoneConfig:
     """Configuration for milestone detection.
 
     Attributes:
         ltv_milestones: LTV amounts that trigger celebrations.
-        payment_growth_threshold: Percentage increase to highlight.
         vip_ltv_threshold: LTV amount for VIP status.
         anniversary_months: Months that trigger anniversary messages.
         large_payment_threshold: Amount to consider a payment "large".
@@ -56,7 +83,6 @@ class MilestoneConfig:
     ltv_milestones: list[float] = field(
         default_factory=lambda: [1000, 5000, 10000, 50000, 100000]
     )
-    payment_growth_threshold: float = 0.20  # 20% growth
     vip_ltv_threshold: float = 10000
     anniversary_months: list[int] = field(default_factory=lambda: [12, 24, 36, 48, 60])
     large_payment_threshold: float = 1000
@@ -77,7 +103,6 @@ class InsightDetector:
         "trial_converted": "celebration",
         "ltv_milestone": "celebration",
         "anniversary": "celebration",
-        "payment_growth": "chart",
         "vip_status": "trophy",
         "failed_attempt": "warning",
         "at_risk": "warning",
@@ -114,7 +139,6 @@ class InsightDetector:
             self._detect_first_payment,
             self._detect_ltv_milestone,
             self._detect_anniversary,
-            self._detect_payment_growth,
             self._detect_vip_status,
             self._detect_failed_attempts,
             self._detect_large_payment,
@@ -141,26 +165,18 @@ class InsightDetector:
         """
         flags: list[str] = []
 
-        # Check for VIP status
-        ltv = _to_float(customer_data.get("total_spent")) or _to_float(
-            customer_data.get("lifetime_value")
-        )
+        # LTV-based flags require the provider to have sent a lifetime
+        # spend field; an unknown LTV must not read as $0.
+        ltv = _get_ltv(customer_data)
+        if ltv is None:
+            return flags
+
         if ltv >= self.config.vip_ltv_threshold:
             flags.append("vip")
 
-        # Check for at-risk status (high LTV + recent failures)
+        # At-risk: a payment failure from a high-LTV customer
         event_type = event_data.get("type", "")
         if event_type == "payment_failure" and ltv >= 1000:
-            flags.append("at_risk")
-
-        # Check for multiple recent failures
-        payment_history = customer_data.get("payment_history", [])
-        recent_failures = sum(
-            1
-            for p in payment_history[-5:]
-            if p.get("status") == "failed" or p.get("type") == "payment_failure"
-        )
-        if recent_failures >= 2:
             flags.append("at_risk")
 
         return flags
@@ -169,6 +185,11 @@ class InsightDetector:
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
     ) -> InsightInfo | None:
         """Detect if this is the customer's first payment.
+
+        Requires the provider to have sent an order count (Shopify embeds
+        it in order webhooks). Absence of history data is NOT evidence of
+        a first payment - Stripe/Chargify payloads carry no history, and
+        defaulting to 0 would label every renewal a "first payment".
 
         Args:
             event_data: Event data dictionary.
@@ -187,12 +208,12 @@ class InsightDetector:
         if metadata.get("is_trial"):
             return None
 
-        # Check order count or payment history
-        orders_count = customer_data.get("orders_count", 0)
-        payment_count = len(customer_data.get("payment_history", []))
+        orders_count = customer_data.get("orders_count")
+        if orders_count is None:
+            return None
 
         # First payment if count is 0 or 1 (including current)
-        if orders_count <= 1 and payment_count <= 1:
+        if orders_count <= 1:
             return InsightInfo(
                 icon=self.ICONS["first_payment"],
                 text="First payment from this customer",
@@ -221,10 +242,14 @@ class InsightDetector:
         trial_days = metadata.get("trial_days")
         plan_amount = metadata.get("plan_amount")
 
-        if trial_days and plan_amount:
+        # "is not None" so a $0 trial plan still renders its amount
+        if trial_days and plan_amount is not None:
+            currency = event_data.get("currency") or "USD"
+            money = format_money(_to_float(plan_amount), currency)
+            suffix = interval_suffix(metadata.get("billing_period"))
             return InsightInfo(
                 icon=self.ICONS["trial_started"],
-                text=f"{trial_days}-day trial, then ${plan_amount:,.2f}/mo",
+                text=f"{trial_days}-day trial, then {money}{suffix}",
             )
         elif trial_days:
             return InsightInfo(
@@ -336,6 +361,11 @@ class InsightDetector:
     ) -> InsightInfo | None:
         """Detect if this payment crosses an LTV milestone.
 
+        Requires a real lifetime-spend field in the customer payload.
+        When the provider sends none (Stripe), unknown LTV must not be
+        treated as $0 - a single large payment would falsely "cross"
+        every milestone below its amount.
+
         Args:
             event_data: Event data dictionary.
             customer_data: Customer data dictionary.
@@ -347,10 +377,11 @@ class InsightDetector:
         if event_type != "payment_success":
             return None
 
+        previous_ltv = _get_ltv(customer_data)
+        if previous_ltv is None:
+            return None
+
         current_amount = _to_float(event_data.get("amount"))
-        previous_ltv = _to_float(customer_data.get("total_spent")) or _to_float(
-            customer_data.get("lifetime_value")
-        )
         new_ltv = previous_ltv + current_amount
 
         # Celebrate the LARGEST milestone crossed by this payment (a big
@@ -361,9 +392,11 @@ class InsightDetector:
             if previous_ltv < milestone <= new_ltv
         ]
         if crossed:
+            currency = event_data.get("currency") or "USD"
+            money = format_money(max(crossed), currency, 0)
             return InsightInfo(
                 icon=self.ICONS["ltv_milestone"],
-                text=f"Crossed ${max(crossed):,.0f} lifetime!",
+                text=f"Crossed {money} lifetime!",
             )
 
         return None
@@ -494,51 +527,6 @@ class InsightDetector:
         dedup_key = f"anniversary_sent:{workspace_id}:{customer_id}:{anniversary_month}"
         return bool(cache.add(dedup_key, True, timeout=ANNIVERSARY_DEDUP_TTL_SECONDS))
 
-    def _detect_payment_growth(
-        self, event_data: dict[str, Any], customer_data: dict[str, Any]
-    ) -> InsightInfo | None:
-        """Detect significant payment growth vs average.
-
-        Args:
-            event_data: Event data dictionary.
-            customer_data: Customer data dictionary.
-
-        Returns:
-            InsightInfo for payment growth or None.
-        """
-        event_type = event_data.get("type", "")
-        if event_type != "payment_success":
-            return None
-
-        current_amount = _to_float(event_data.get("amount"))
-        if current_amount <= 0:
-            return None
-
-        # Calculate average payment from history
-        payment_history = customer_data.get("payment_history", [])
-        successful_payments = [
-            _to_float(p.get("amount"))
-            for p in payment_history
-            if p.get("status") == "success" and _to_float(p.get("amount")) > 0
-        ]
-
-        if len(successful_payments) < 3:  # Need enough history
-            return None
-
-        avg_payment = sum(successful_payments) / len(successful_payments)
-        if avg_payment <= 0:
-            return None
-
-        growth_pct = (current_amount - avg_payment) / avg_payment
-
-        if growth_pct >= self.config.payment_growth_threshold:
-            return InsightInfo(
-                icon=self.ICONS["payment_growth"],
-                text=f"+{growth_pct:.0%} larger than average",
-            )
-
-        return None
-
     def _detect_vip_status(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
     ) -> InsightInfo | None:
@@ -555,14 +543,16 @@ class InsightDetector:
         if event_type != "payment_success":
             return None
 
-        ltv = _to_float(customer_data.get("total_spent")) or _to_float(
-            customer_data.get("lifetime_value")
-        )
+        ltv = _get_ltv(customer_data)
+        if ltv is None:
+            return None
 
         if ltv >= self.config.vip_ltv_threshold:
+            currency = event_data.get("currency") or "USD"
+            threshold = format_money(self.config.vip_ltv_threshold, currency, 0)
             return InsightInfo(
                 icon=self.ICONS["vip_status"],
-                text="VIP customer ($10k+ LTV)",
+                text=f"VIP customer ({threshold}+ LTV)",
             )
 
         return None
@@ -570,19 +560,22 @@ class InsightDetector:
     def _detect_failed_attempts(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
     ) -> InsightInfo | None:
-        """Detect multiple failed payment attempts.
+        """Detect repeated failed payment attempts.
 
-        Uses Stripe's attempt_count from metadata when available (covers most
-        production failures). Falls back to payment_history for non-Stripe
-        providers.
+        Uses the attempt_count/next_payment_attempt the provider put in
+        the event metadata (Stripe sends both). Falls back to the bare
+        failure reason - webhook payloads carry no cross-event history,
+        so there is nothing else to truthfully count.
 
         Args:
             event_data: Event data dictionary.
-            customer_data: Customer data dictionary.
+            customer_data: Customer data dictionary (unused but required
+                for the detector interface).
 
         Returns:
             InsightInfo for failed attempts or None.
         """
+        _ = customer_data  # unused
         event_type = event_data.get("type", "")
         if event_type != "payment_failure":
             return None
@@ -590,7 +583,6 @@ class InsightDetector:
         metadata = event_data.get("metadata", {})
         failure_reason = metadata.get("failure_reason", "")
 
-        # Use Stripe's attempt_count from metadata (most reliable for Stripe)
         attempt_count = metadata.get("attempt_count")
         if attempt_count is not None and attempt_count >= 1:
             next_date = self._format_short_date(metadata.get("next_payment_attempt"))
@@ -605,20 +597,6 @@ class InsightDetector:
                     icon=self.ICONS["failed_attempt"],
                     text=f"Next retry {next_date}",
                 )
-
-        # Fallback: count recent failures from payment_history (non-Stripe)
-        payment_history = customer_data.get("payment_history", [])
-        recent_failures = sum(
-            1
-            for p in payment_history[-5:]
-            if p.get("status") == "failed" or p.get("type") == "payment_failure"
-        )
-
-        if recent_failures >= 2:
-            text = f"Attempt #{recent_failures + 1}"
-            if failure_reason:
-                text += f" - {failure_reason}"
-            return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
 
         if failure_reason:
             return InsightInfo(

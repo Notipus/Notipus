@@ -76,7 +76,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
             capabilities={
                 PluginCapability.WEBHOOK_VALIDATION,
                 PluginCapability.CUSTOMER_DATA,
-                PluginCapability.PAYMENT_HISTORY,
             },
             priority=100,
         )

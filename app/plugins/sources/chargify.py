@@ -307,7 +307,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
 
         try:
             # Extract customer data from form fields
-            return {
+            customer_data: dict[str, Any] = {
                 "company_name": self._current_webhook_data.get(
                     "payload[subscription][customer][organization]", ""
                 ),
@@ -321,20 +321,33 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     "payload[subscription][customer][last_name]", ""
                 ),
                 "customer_id": customer_id,
-                "created_at": self._current_webhook_data.get("created_at", ""),
+                # The customer's signup date (NOT the webhook's timestamp)
+                # feeds tenure display and anniversary detection. Absent
+                # field -> empty -> those features simply stay silent.
+                "created_at": self._current_webhook_data.get(
+                    "payload[subscription][customer][created_at]", ""
+                ),
                 "plan_name": self._current_webhook_data.get(
                     "payload[subscription][product][name]", ""
                 ),
                 "team_size": self._current_webhook_data.get(
                     "payload[subscription][team_size]", ""
                 ),
-                "total_revenue": float(
-                    self._current_webhook_data.get(
-                        "payload[subscription][total_revenue_in_cents]", 0
-                    )
-                )
-                / 100,
             }
+
+            # Lifetime spend, under the key InsightDetector and
+            # NotificationBuilder read (LTV display, VIP, milestones).
+            # Only set when the payload actually carries the field:
+            # LTV-based detectors treat a missing key as "unknown" and
+            # stay silent, whereas a defaulted 0 would let a single big
+            # payment falsely "cross" milestones.
+            total_revenue_cents = self._current_webhook_data.get(
+                "payload[subscription][total_revenue_in_cents]"
+            )
+            if total_revenue_cents is not None:
+                customer_data["total_spent"] = float(total_revenue_cents) / 100
+
+            return customer_data
         except (KeyError, ValueError) as e:
             raise CustomerNotFoundError(
                 f"Failed to extract customer data: {e!s}"
