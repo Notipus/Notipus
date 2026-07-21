@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 _CHARGIFY_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+# A Shopify shop domain is a full hostname (e.g. "acme.myshopify.com")
+# that gets interpolated into a URL host. Validate it as a dotted series
+# of DNS labels so an attacker-controlled value cannot smuggle a path,
+# port, credentials, scheme, or an alternate host into the link.
+_SHOPIFY_SHOP_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)"
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+
+
 def _normalize_chargify_subdomain(value: Any) -> str | None:
     """Normalize and validate a Chargify site subdomain.
 
@@ -54,6 +65,31 @@ def _normalize_chargify_subdomain(value: Any) -> str | None:
         return None
     normalized = value.strip().lower()
     if not _CHARGIFY_SUBDOMAIN_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
+def _normalize_shopify_shop_domain(value: Any) -> str | None:
+    """Normalize and validate a Shopify shop domain.
+
+    The shop domain originates from webhook payload data and is
+    interpolated into a URL host, so it is normalized (surrounding
+    whitespace stripped, lowercased) and then required to be a plain
+    dotted hostname (a series of valid DNS labels). Values carrying a
+    scheme, port, path, credentials, interior whitespace, or other
+    unexpected characters are rejected.
+
+    Args:
+        value: Raw shop domain value from event metadata.
+
+    Returns:
+        The normalized shop domain, or None when the value is missing or
+        not a safe hostname.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not _SHOPIFY_SHOP_DOMAIN_RE.fullmatch(normalized):
         return None
     return normalized
 
@@ -740,7 +776,11 @@ class NotificationBuilder:
 
         elif provider == "shopify":
             order_id = metadata.get("order_id")
-            shop_domain = metadata.get("shop_domain")
+            # The shop domain comes from webhook payload data and is
+            # interpolated into the URL host, so reject anything that is
+            # not a plain dotted hostname (defends against smuggling a
+            # scheme, path, port, or alternate host into the link).
+            shop_domain = _normalize_shopify_shop_domain(metadata.get("shop_domain"))
             if order_id and shop_domain:
                 return ActionButton(
                     text="View Order",
