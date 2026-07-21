@@ -76,17 +76,32 @@ class TestDecryptCacheValue:
         bogus = TOKEN_PREFIX + "A" * 64
         assert decrypt_cache_value(bogus) is None
 
-    def test_raw_encrypt_token_returns_plaintext(self) -> None:
+    @pytest.mark.parametrize(
+        "plain",
+        [
+            "plain@example.com",
+            "null",  # valid JSON scalar - must stay the string "null"
+            "42",  # valid JSON scalar - must stay the string "42"
+            '{"a": 1}',  # valid JSON object without the envelope key
+        ],
+    )
+    def test_raw_encrypt_token_returns_plaintext(self, plain: str) -> None:
         """A token from core.encryption.encrypt (no JSON layer) still reads.
 
         The Stripe email cache (PR #125) encrypts the raw string without
         JSON-serializing; reading such a token through this helper must
-        return the plaintext, not raise JSONDecodeError.
+        return the plaintext unchanged - even when the plaintext happens
+        to be valid JSON, which the envelope marker disambiguates.
         """
         from core.encryption import encrypt
 
-        token = encrypt("plain@example.com")
-        assert decrypt_cache_value(token) == "plain@example.com"
+        token = encrypt(plain)
+        assert decrypt_cache_value(token) == plain
+
+    @pytest.mark.parametrize("value", [None, True, 42, "null", {"a": 1}])
+    def test_enveloped_scalars_roundtrip_exactly(self, value: Any) -> None:
+        """Enveloped values keep their type, including JSON-scalar lookalikes."""
+        assert decrypt_cache_value(encrypt_cache_value(value)) == value
 
     def test_log_failures_false_suppresses_warning(
         self, caplog: pytest.LogCaptureFixture

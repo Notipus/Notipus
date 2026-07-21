@@ -34,9 +34,19 @@ from core.encryption import InvalidToken, decrypt, encrypt, looks_like_token
 
 logger = logging.getLogger(__name__)
 
+# Envelope marker distinguishing JSON-wrapped cache values from tokens
+# produced by core.encryption.encrypt() on a raw string (e.g. the Stripe
+# email cache). Without it, a raw plaintext that happens to be valid
+# JSON ("null", "42") would be JSON-decoded on read and change type.
+_ENVELOPE_KEY = "__encrypted_cache_v1__"
+
 
 def encrypt_cache_value(value: Any) -> str:
     """Serialize a value to JSON and encrypt it for cache storage.
+
+    The value is wrapped in a one-key envelope object before
+    serialization so :func:`decrypt_cache_value` can reliably tell these
+    tokens apart from raw-``encrypt()`` tokens.
 
     Args:
         value: Any JSON-representable value (non-JSON types are
@@ -45,7 +55,7 @@ def encrypt_cache_value(value: Any) -> str:
     Returns:
         A ``pqc1:``-prefixed ciphertext token string.
     """
-    token: str = encrypt(json.dumps(value, default=str))
+    token: str = encrypt(json.dumps({_ENVELOPE_KEY: value}, default=str))
     return token
 
 
@@ -80,10 +90,15 @@ def decrypt_cache_value(stored: Any, *, log_failures: bool = True) -> Any:
                 )
             return None
         try:
-            return json.loads(plaintext)
+            decoded = json.loads(plaintext)
         except ValueError:
             # A token written with core.encryption.encrypt() directly
             # (no JSON layer, e.g. the Stripe email cache) - the
             # decrypted plaintext IS the value.
             return plaintext
+        if isinstance(decoded, dict) and _ENVELOPE_KEY in decoded:
+            return decoded[_ENVELOPE_KEY]
+        # Raw-encrypt token whose plaintext is coincidentally valid JSON
+        # ("null", "42"): still the raw value, not an enveloped one.
+        return plaintext
     return stored
