@@ -70,6 +70,9 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         "subscription_updated": "subscription_updated",
         "subscription_cancelled": "subscription_canceled",
         "subscription_expired": "subscription_canceled",
+        # A successful signup creates the subscription; trialing signups
+        # are re-typed to trial_started by _parse_signup_success.
+        "signup_success": "subscription_created",
     }
 
     # Subscription states that represent the end of a subscription. A
@@ -92,7 +95,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "invoice_created",
             "invoice_updated",
             "invoice_paid",
-            "signup_success",
             "signup_failure",
             "component_allocation_change",
         }
@@ -354,12 +356,22 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             # Only set when the payload actually carries the field:
             # LTV-based detectors treat a missing key as "unknown" and
             # stay silent, whereas a defaulted 0 would let a single big
-            # payment falsely "cross" milestones.
+            # payment falsely "cross" milestones. A malformed value is
+            # skipped the same way - this optional analytics field must
+            # never fail the whole webhook (a 400 makes Chargify retry
+            # the event forever).
             total_revenue_cents = self._current_webhook_data.get(
                 "payload[subscription][total_revenue_in_cents]"
             )
             if total_revenue_cents is not None:
-                customer_data["total_spent"] = float(total_revenue_cents) / 100
+                try:
+                    customer_data["total_spent"] = float(total_revenue_cents) / 100
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Ignoring malformed total_revenue_in_cents in "
+                        "Chargify customer data",
+                        extra={"customer_id": customer_id},
+                    )
 
             return customer_data
         except (KeyError, ValueError) as e:
@@ -423,6 +435,8 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         ):
             # Product and billing date changes are handled like state changes
             return self._parse_subscription_state_change(event_type, data)
+        elif event_type == "signup_success":
+            return self._parse_signup_success(data)
         elif event_type in self.EVENT_TYPE_MAPPING:
             # Remaining routable events are subscription lifecycle events
             return self._parse_subscription_lifecycle(event_type, data)
@@ -825,6 +839,58 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             },
             "customer_data": customer_data,
         }
+
+    def _parse_signup_success(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Parse signup_success webhook data.
+
+        A signup CREATES the subscription, so the payload's
+        total_revenue_in_cents can only contain money collected by this
+        signup - prior payments are impossible on a brand-new
+        subscription. Revenue > 0 therefore proves a first payment
+        (surfaced as ``is_signup_payment`` metadata for InsightDetector);
+        a missing or still-zero revenue counter merely loses the insight,
+        never fabricates one.
+
+        Trialing signups are emitted as ``trial_started`` (mirroring the
+        Stripe parser's re-typing) with no payment claim, even when a
+        setup fee collected revenue - conservative over clever.
+
+        Args:
+            data: Form data dictionary.
+
+        Returns:
+            Parsed event data dictionary.
+        """
+        event = self._parse_subscription_lifecycle("signup_success", data)
+
+        if data.get("payload[subscription][state]") == "trialing":
+            event["type"] = "trial_started"
+            event["metadata"]["is_trial"] = True
+            return event
+
+        revenue_cents = data.get("payload[subscription][total_revenue_in_cents]")
+        if revenue_cents in (None, ""):
+            return event
+
+        currency = self._extract_currency(data)
+        try:
+            revenue = self._parse_amount_cents(revenue_cents, currency)
+        except InvalidDataError:
+            # A malformed optional field must not reject the signup event
+            logger.warning(
+                "Ignoring malformed total_revenue_in_cents on signup_success",
+                extra={
+                    "subscription_id": data.get("payload[subscription][id]", ""),
+                },
+            )
+            return event
+
+        if revenue > 0:
+            event["amount"] = float(revenue)
+            event["currency"] = currency
+            event["metadata"]["is_signup_payment"] = True
+
+        return event
 
     def get_event_type(self, event_data: dict[str, Any]) -> str:
         """Get event type from webhook data.
