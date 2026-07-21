@@ -205,7 +205,8 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             n: RichNotification to format.
 
         Returns:
-            Dict with fallback 'text' and 'attachments' for Slack API.
+            Dict with 'attachments' for the Slack API; the attachment
+            carries a plain-text 'fallback' for notification previews.
         """
         blocks: list[dict[str, Any]] = []
 
@@ -249,11 +250,16 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         # Use attachments format for colored sidebar
         # Top-level "color" is invalid for incoming webhooks
         color = SEVERITY_COLORS.get(n.severity, "#17a2b8")
+        # The preview summary lives in the attachment's "fallback", not a
+        # top-level "text": Slack only hides top-level text when blocks
+        # are top-level too, so here it would render in-channel and
+        # duplicate the header. "fallback" feeds push banners and sidebar
+        # previews without appearing in the message itself.
         return {
-            "text": self._format_fallback_text(n),
             "attachments": [
                 {
                     "color": color,
+                    "fallback": self._format_fallback_text(n),
                     "blocks": blocks,
                 }
             ],
@@ -294,7 +300,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         return identity
 
     def _format_fallback_text(self, n: RichNotification) -> str:
-        """Build the top-level fallback text for the message.
+        """Build the attachment fallback text for the message.
 
         Slack renders this text in mobile push banners, desktop
         notifications, and the channel sidebar preview. Attachment
@@ -648,9 +654,22 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         Returns:
             Slack section block dict.
         """
-        name_line = f"*{safe_mrkdwn(company.name)}*"
-        if company.domain:
-            domain_link = safe_mrkdwn_link(f"https://{company.domain}", company.domain)
+        # When enrichment found no real name it falls back to the domain,
+        # which would render as "acme.com · acme.com" - show the linked
+        # domain once instead.
+        name_is_domain = bool(
+            company.domain
+            and company.name.strip().casefold() == company.domain.strip().casefold()
+        )
+        domain_link = (
+            safe_mrkdwn_link(f"https://{company.domain}", company.domain)
+            if company.domain
+            else None
+        )
+        if name_is_domain and domain_link:
+            name_line = f"*{domain_link}*"
+        else:
+            name_line = f"*{safe_mrkdwn(company.name)}*"
             if domain_link:
                 name_line += f" · {domain_link}"
         text_parts = [name_line]

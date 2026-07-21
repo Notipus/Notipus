@@ -40,6 +40,22 @@ def get_blocks(result: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def get_fallback(result: dict[str, Any]) -> str:
+    """Extract the notification-preview fallback text.
+
+    Args:
+        result: Formatted Slack message dict.
+
+    Returns:
+        The attachment fallback string, or empty string if absent.
+    """
+    if "attachments" in result and result["attachments"]:
+        fallback = result["attachments"][0].get("fallback", "")
+        assert isinstance(fallback, str)
+        return fallback
+    return ""
+
+
 def get_color(result: dict[str, Any]) -> str | None:
     """Extract color from Slack message format.
 
@@ -605,6 +621,31 @@ class TestSlackDestinationPluginCompanySection:
                 return
         pytest.fail("Company section not found")
 
+    def test_company_section_dedupes_name_equal_to_domain(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the domain shows once when enrichment used it as the name.
+
+        Without a real company name, enrichment falls back to the domain,
+        which used to render as "test.com · test.com".
+        """
+        basic_notification.company = CompanyInfo(
+            name="test.com",
+            domain="Test.com",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if (
+                block["type"] == "section"
+                and "test.com" in str(block.get("text", {})).casefold()
+            ):
+                text = str(block.get("text", {}).get("text", ""))
+                assert "*<https://Test.com|Test.com>*" in text
+                assert " · " not in text
+                return
+        pytest.fail("Company section not found")
+
     def test_company_section_skips_unsafe_domain_link(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:
@@ -1035,15 +1076,28 @@ class TestSlackDestinationPluginBlockOrder:
 
 
 class TestSlackDestinationPluginFallbackText:
-    """Test the top-level fallback text used for notification previews."""
+    """Test the attachment fallback text used for notification previews."""
 
     def test_fallback_text_present(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:
-        """Test the payload carries a top-level text fallback."""
+        """Test the attachment carries a fallback preview text."""
         result = formatter.format(basic_notification)
 
-        assert "$299.00 from Acme Inc" in result["text"]
+        assert "$299.00 from Acme Inc" in get_fallback(result)
+
+    def test_no_top_level_text(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the payload has no top-level text.
+
+        With blocks living inside an attachment, Slack renders top-level
+        text in-channel above the attachment, duplicating the header.
+        The preview summary must ride in the attachment fallback instead.
+        """
+        result = formatter.format(basic_notification)
+
+        assert "text" not in result
 
     def test_fallback_text_includes_insight(
         self,
@@ -1053,7 +1107,7 @@ class TestSlackDestinationPluginFallbackText:
         """Test the fallback text carries the insight when present."""
         result = formatter.format(notification_with_insight)
 
-        assert "Crossed $5,000 lifetime!" in result["text"]
+        assert "Crossed $5,000 lifetime!" in get_fallback(result)
 
     def test_fallback_text_sanitized(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
@@ -1067,7 +1121,7 @@ class TestSlackDestinationPluginFallbackText:
         basic_notification.headline = "Upgraded to <!channel> plan"
         result = formatter.format(basic_notification)
 
-        assert "<!channel>" not in result["text"]
+        assert "<!channel>" not in get_fallback(result)
 
     def test_fallback_text_is_single_line(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
@@ -1079,9 +1133,10 @@ class TestSlackDestinationPluginFallbackText:
         )
         result = formatter.format(basic_notification)
 
-        assert "\n" not in result["text"]
-        assert "\t" not in result["text"]
-        assert "Card declined: insufficient funds" in result["text"]
+        fallback = get_fallback(result)
+        assert "\n" not in fallback
+        assert "\t" not in fallback
+        assert "Card declined: insufficient funds" in fallback
 
     def test_fallback_text_includes_customer_email(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
@@ -1090,7 +1145,7 @@ class TestSlackDestinationPluginFallbackText:
         basic_notification.headline = "New subscription!"
         result = formatter.format(basic_notification)
 
-        assert "alice@acme.com" in result["text"]
+        assert "alice@acme.com" in get_fallback(result)
 
     def test_fallback_text_prefers_company_name(
         self,
@@ -1101,8 +1156,9 @@ class TestSlackDestinationPluginFallbackText:
         notification_with_company.headline = "New subscription!"
         result = formatter.format(notification_with_company)
 
-        assert "Acme Corporation" in result["text"]
-        assert "alice@acme.com" not in result["text"]
+        fallback = get_fallback(result)
+        assert "Acme Corporation" in fallback
+        assert "alice@acme.com" not in fallback
 
     def test_fallback_text_skips_identity_already_in_headline(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
@@ -1111,7 +1167,7 @@ class TestSlackDestinationPluginFallbackText:
         basic_notification.headline = "$299.00 from alice@acme.com"
         result = formatter.format(basic_notification)
 
-        assert result["text"].count("alice@acme.com") == 1
+        assert get_fallback(result).count("alice@acme.com") == 1
 
     def test_fallback_text_identity_dedup_is_case_insensitive(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
@@ -1120,7 +1176,7 @@ class TestSlackDestinationPluginFallbackText:
         basic_notification.headline = "$299.00 from Alice@Acme.com"
         result = formatter.format(basic_notification)
 
-        assert result["text"].casefold().count("alice@acme.com") == 1
+        assert get_fallback(result).casefold().count("alice@acme.com") == 1
 
 
 class TestSlackDestinationPluginEcommerceDetails:
