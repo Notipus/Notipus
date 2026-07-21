@@ -314,5 +314,9 @@ def create_pinned_session(url: str) -> requests.Session:
 
     adapter = _PinnedIPAdapter(hostname, _prefer_ipv4(ips), use_tls=(scheme == "https"))
     session = requests.Session()
+    # Ignore environment proxy settings (HTTP_PROXY/HTTPS_PROXY/NO_PROXY):
+    # an env-configured proxy could route the request through an internal
+    # host, bypassing the validated/pinned connection (SSRF).
+    session.trust_env = False
     session.mount(f"{scheme}://", adapter)
     return session

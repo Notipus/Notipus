@@ -155,8 +155,8 @@ class TestAssertSafePublicUrl:
     """Tests for :func:`assert_safe_public_url`."""
 
     def test_raises_on_unsafe_url(self) -> None:
-        """An unsafe URL raises ValueError."""
-        with pytest.raises(ValueError):
+        """An unsafe URL raises the concrete UnsafeUrlError."""
+        with pytest.raises(UnsafeUrlError):
             assert_safe_public_url("ftp://example.com/")
 
     def test_passes_on_safe_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,6 +181,17 @@ class TestCreatePinnedSession:
             assert isinstance(adapter, _PinnedIPAdapter)
             assert adapter._hostname == "example.com"
             assert adapter._validated_ip == "93.184.216.34"
+        finally:
+            session.close()
+
+    def test_disables_env_proxies(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The pinned session ignores env proxy vars (SSRF bypass guard)."""
+        monkeypatch.setattr(
+            url_safety.socket, "getaddrinfo", _fake_getaddrinfo_for("93.184.216.34")
+        )
+        session = create_pinned_session("https://example.com/logo.png")
+        try:
+            assert session.trust_env is False
         finally:
             session.close()
 
