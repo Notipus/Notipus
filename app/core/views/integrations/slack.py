@@ -16,7 +16,7 @@ from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect
 
-from ...models import Integration, Workspace
+from ...models import Integration, UserProfile, Workspace, WorkspaceMember
 from .base import (
     DEFAULT_API_TIMEOUT,
     require_admin_role,
@@ -33,14 +33,48 @@ DISPLAY_NAME = "Slack"
 SLACK_CONNECT_STATE_SESSION_KEY = "slack_connect_oauth_state"
 
 
+def _get_admin_workspace(request: HttpRequest) -> Workspace | None:
+    """Return the user's workspace iff they are an admin/owner, else None.
+
+    Pure check with NO Django messages or redirect side effects, so it is
+    safe for JSON endpoints (a persisted flash message could otherwise
+    surface later on an unrelated full-page navigation) and for fail-fast
+    gating. Mirrors the role logic in ``require_admin_role``.
+
+    Args:
+        request: The HTTP request object.
+
+    Returns:
+        The workspace if the user is an admin/owner, otherwise None.
+    """
+    if not request.user.is_authenticated:
+        return None
+
+    member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()
+    if member is None:
+        # UserProfile users are treated as owners for backward compatibility.
+        try:
+            profile_workspace: Workspace = UserProfile.objects.get(
+                user=request.user
+            ).workspace
+            return profile_workspace
+        except UserProfile.DoesNotExist:
+            return None
+
+    if member.role not in ("owner", "admin"):
+        return None
+    member_workspace: Workspace = member.workspace
+    return member_workspace
+
+
 def _require_admin_role_json(
     request: HttpRequest,
 ) -> tuple[Workspace | None, JsonResponse | None]:
     """Require admin/owner role for JSON (fetch) endpoints.
 
-    Unlike ``require_admin_role``, which redirects, this returns a JSON 403
-    so ``fetch()`` callers that parse the body as JSON don't choke on an HTML
-    redirect target.
+    Returns a JSON 403 (no Django messages, no redirect) so ``fetch()``
+    callers that parse the body as JSON don't choke on an HTML redirect
+    target and no flash message leaks onto a later page navigation.
 
     Args:
         request: The HTTP request object.
@@ -49,8 +83,8 @@ def _require_admin_role_json(
         Tuple of (workspace, error_response). On success error_response is
         None; on failure workspace is None and a JsonResponse 403 is returned.
     """
-    workspace, redirect_response = require_admin_role(request)
-    if redirect_response is not None:
+    workspace = _get_admin_workspace(request)
+    if workspace is None:
         return None, JsonResponse(
             {"error": "You don't have permission to perform this action."},
             status=403,
@@ -71,6 +105,7 @@ def integrate_slack(request: HttpRequest) -> HttpResponseRedirect:
     return redirect("core:slack_connect")
 
 
+@login_required
 def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
     """Initialize Slack connection for workspace notifications.
 
@@ -78,8 +113,15 @@ def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
         request: The HTTP request object.
 
     Returns:
-        Redirect to Slack OAuth authorization.
+        Redirect to Slack OAuth authorization, or back to integrations if the
+        user is not an admin/owner.
     """
+    # Fail fast: only mint OAuth state for users who could actually complete
+    # the admin-gated callback (mirrors Shopify's gate-at-start).
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+
     # Generate a state parameter and store it in the session for CSRF
     # protection. It is validated on callback before the code is exchanged.
     state = secrets.token_urlsafe(32)

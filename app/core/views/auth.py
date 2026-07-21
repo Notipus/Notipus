@@ -215,7 +215,8 @@ def _resolve_user(slack_id: str, email: str, name: str) -> User:
     )
 
     if created:
-        logger.info(f"Created new user: {email}")
+        # Log the non-PII Slack sub instead of the email address.
+        logger.info(f"Created new user (sub={slack_id})")
 
     # Try to find existing UserProfile
     try:

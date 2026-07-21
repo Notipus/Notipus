@@ -357,3 +357,33 @@ class TestConfigureSlackAdminGate:
         assert response.status_code == 200
         integration.refresh_from_db()
         assert integration.integration_settings["channel"] == "#announcements"
+
+    @patch("core.views.integrations.slack.requests.post")
+    def test_non_admin_test_slack_forbidden(
+        self, mock_post: Mock, client: Client
+    ) -> None:
+        """A plain member cannot trigger a test message and none is sent."""
+        user, _, _ = self._make_member("user")
+        client.force_login(user)
+
+        response = client.post(reverse("core:test_slack"))
+
+        # Non-admins are redirected away and no Slack API call is made.
+        assert response.status_code == 302
+        mock_post.assert_not_called()
+
+    @patch("core.views.integrations.slack.requests.post")
+    def test_admin_test_slack_allowed(self, mock_post: Mock, client: Client) -> None:
+        """An admin member can trigger a test message via the Slack API."""
+        user, _, _ = self._make_member("admin")
+        client.force_login(user)
+
+        api_response = Mock()
+        api_response.json.return_value = {"ok": True}
+        mock_post.return_value = api_response
+
+        response = client.post(reverse("core:test_slack"))
+
+        assert response.status_code == 302
+        assert response.url == reverse("core:integrations")
+        mock_post.assert_called_once()
