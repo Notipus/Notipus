@@ -8,7 +8,7 @@ Slack-style window.
 """
 
 import pytest
-from conftest import OUTPUT_DIR, SLACK_FINALE_HTML, shoot
+from conftest import OUTPUT_DIR, shoot, show_slack_finale
 from playwright.sync_api import Page
 
 
@@ -21,8 +21,9 @@ def slack_listing(slack_listing_page: Page) -> None:
     shoot(page, "slack-listing-billing", "/billing/", full_page=False)
 
     # The notification arriving in a Slack-style window
-    page.set_content(SLACK_FINALE_HTML, wait_until="load")
-    page.wait_for_selector("#incoming.shown", timeout=10_000)
+    show_slack_finale(page)
     page.wait_for_timeout(500)
-    page.screenshot(path=str(OUTPUT_DIR / "slack-listing-notification.png"))
+    page.screenshot(
+        path=str(OUTPUT_DIR / "slack-listing-notification.png"), full_page=False
+    )
     print("captured slack-listing-notification.png")

@@ -595,10 +595,15 @@ SLACK_FINALE_HTML = """\
 """
 
 
-def play_slack_finale(page: Page, hold_ms: int = 4500) -> None:
-    """Swap the page for the Slack-style view and let the alert arrive."""
+def show_slack_finale(page: Page) -> None:
+    """Swap the page for the Slack-style view and wait for the alert."""
     page.set_content(SLACK_FINALE_HTML, wait_until="load")
     page.wait_for_selector("#incoming.shown", timeout=10_000)
+
+
+def play_slack_finale(page: Page, hold_ms: int = 4500) -> None:
+    """Show the Slack-style view and hold it on screen for recordings."""
+    show_slack_finale(page)
     pace(page, hold_ms)
 
 
