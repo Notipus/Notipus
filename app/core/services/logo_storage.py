@@ -132,24 +132,32 @@ class LogoStorageService:
                     logger.warning("Invalid content type for logo: %r", content_type)
                     return None, ""
 
-                # Check content length if available
+                # Check content length if available. A malformed header is
+                # treated as unknown length rather than crashing; the streamed
+                # size cap below is the authoritative limit.
                 content_length = response.headers.get("Content-Length")
-                if content_length and int(content_length) > MAX_LOGO_SIZE:
-                    logger.warning("Logo too large: %s bytes", content_length)
-                    return None, ""
+                if content_length is not None:
+                    try:
+                        declared_size = int(content_length)
+                    except (ValueError, TypeError):
+                        declared_size = None
+                    if declared_size is not None and declared_size > MAX_LOGO_SIZE:
+                        logger.warning("Logo too large: %s bytes", content_length)
+                        return None, ""
 
-                # Download with size limit
-                data = b""
+                # Download with size limit. Accumulate into a bytearray to
+                # avoid quadratic-time repeated bytes concatenation.
+                buffer = bytearray()
                 for chunk in response.iter_content(chunk_size=8192):
-                    data += chunk
-                    if len(data) > MAX_LOGO_SIZE:
+                    buffer.extend(chunk)
+                    if len(buffer) > MAX_LOGO_SIZE:
                         logger.warning("Logo exceeded size limit during download")
                         return None, ""
 
-                if not data:
+                if not buffer:
                     return None, ""
 
-                return data, content_type
+                return bytes(buffer), content_type
 
         except requests.exceptions.Timeout:
             logger.warning("Timeout downloading logo from %r", url)

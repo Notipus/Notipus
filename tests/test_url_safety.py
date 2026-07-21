@@ -202,6 +202,12 @@ class TestCreatePinnedSession:
         with pytest.raises(UnsafeUrlError):
             create_pinned_session("https://")
 
+    def test_refuses_malformed_url(self) -> None:
+        """A malformed URL that fails to parse is rejected, not a 500."""
+        # Unbalanced IPv6 brackets make urlsplit raise ValueError.
+        with pytest.raises(UnsafeUrlError):
+            create_pinned_session("http://[::1")
+
     def test_resolves_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """DNS is resolved exactly once so there is no re-resolution window."""
         calls = {"n": 0}

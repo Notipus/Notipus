@@ -275,7 +275,11 @@ def create_pinned_session(url: str) -> requests.Session:
         UnsafeUrlError: If the scheme/host is invalid or the host resolves to
             any non-public address.
     """
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+    except ValueError as e:
+        raise UnsafeUrlError(f"Malformed URL: {url!r}") from e
+
     scheme = parsed.scheme.lower()
     if scheme not in ALLOWED_SCHEMES:
         raise UnsafeUrlError(f"Unsupported URL scheme: {url!r}")

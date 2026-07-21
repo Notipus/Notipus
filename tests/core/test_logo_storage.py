@@ -89,6 +89,30 @@ class TestDownloadLogoSsrf:
         assert content_type == ""
         response.raise_for_status.assert_not_called()
 
+    def test_malformed_content_length_does_not_crash(self) -> None:
+        """A malformed Content-Length is treated as unknown, not an error."""
+        service = LogoStorageService()
+
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status = Mock()
+        response.headers = {
+            "Content-Type": "image/png",
+            "Content-Length": "not-a-number",
+        }
+        response.iter_content = Mock(return_value=[b"dead"])
+        session = _mock_session(response)
+
+        with patch(
+            "core.services.logo_storage.create_pinned_session",
+            return_value=session,
+        ):
+            data, content_type = service._download_logo("https://example.com/logo.png")
+
+        # Falls back to the streamed size cap; the small body succeeds.
+        assert data == b"dead"
+        assert content_type == "image/png"
+
     def test_downloads_safe_public_url(self) -> None:
         """A safe public URL downloads and returns logo bytes."""
         service = LogoStorageService()
