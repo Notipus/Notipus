@@ -524,7 +524,11 @@ class NotificationBuilder:
             return "Payment failed"
 
         elif event_type == "subscription_created":
-            return "New customer!"
+            # "New subscription", not "New customer": the webhook proves a
+            # subscription was created, but an existing customer adding a
+            # second subscription fires the same event - never claim more
+            # than the payload can prove.
+            return "New subscription!"
 
         elif event_type == "subscription_updated":
             # Check for upgrade/downgrade
