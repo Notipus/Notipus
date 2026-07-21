@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from core.models import Integration, Person
 from core.permissions import has_plan_or_higher
+from core.utils import is_timestamp_fresh
 from plugins.enrichment.base_email import (
     EmailNotFoundError,
     GDPRClaimedError,
@@ -51,7 +52,8 @@ class EmailEnrichmentService:
     """
 
     ALLOWED_PLANS = ("pro", "enterprise")
-    CACHE_DURATION_DAYS: int | None = None  # Indefinite cache, like domain enrichment
+    # Cached person data is refreshed once it grows older than this many days.
+    CACHE_DURATION_DAYS: int | None = 30
 
     def __init__(self) -> None:
         """Initialize the email enrichment service."""
@@ -158,26 +160,21 @@ class EmailEnrichmentService:
     def _is_fresh(self, person: Person) -> bool:
         """Check if cached person data is still fresh.
 
-        Currently uses indefinite caching (like domain enrichment).
-        Checks for the _enriched_at timestamp in hunter_data.
+        Cached data is valid only when an ``_enriched_at`` timestamp exists
+        and is newer than ``CACHE_DURATION_DAYS``. Older (or missing) data is
+        treated as stale so it gets refreshed on next access.
 
         Args:
             person: The Person model instance.
 
         Returns:
-            True if the cached data is still valid.
+            True if the cached data is still valid and non-stale.
         """
         if not person.hunter_data:
             return False
 
-        # Check if we have enrichment timestamp
         enriched_at = person.hunter_data.get("_enriched_at")
-        if not enriched_at:
-            return False
-
-        # Currently using indefinite cache
-        # If CACHE_DURATION_DAYS is set, implement time-based expiry here
-        return True
+        return bool(is_timestamp_fresh(enriched_at, self.CACHE_DURATION_DAYS))
 
     def _call_hunter_api(self, email: str, api_key: str) -> dict[str, Any]:
         """Call the Hunter.io API to enrich an email.
