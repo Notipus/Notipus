@@ -266,7 +266,10 @@ class BillingServiceTest(TestCase):
         self.workspace.refresh_from_db()
         self.assertEqual(self.workspace.subscription_status, "active")
         self.assertTrue(self.workspace.payment_method_added)
-        self.assertEqual(self.workspace.billing_cycle_anchor, 1234567890)
+        # The invoice's period_end (the just-billed period) is NOT written
+        # as the anchor; the sync (mocked here) sets it from the
+        # subscription's current_period_end (next renewal).
+        self.assertNotEqual(self.workspace.billing_cycle_anchor, 1234567890)
 
         mock_logger.info.assert_called_once_with(
             "Applied payment_success for customer cus_test123 (amount_paid=2900)"

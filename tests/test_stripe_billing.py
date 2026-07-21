@@ -850,10 +850,12 @@ class TestBillingServiceWebhooks:
 
             BillingService.handle_invoice_paid(invoice_data)
 
+            # The invoice's period_end (the just-billed period's end) is
+            # NOT written as the billing anchor; the sync below sets it
+            # from the subscription's current_period_end (next renewal).
             mock_filter.return_value.update.assert_called_once_with(
                 subscription_status="active",
                 payment_method_added=True,
-                billing_cycle_anchor=1704067200,
             )
             mock_sync.assert_called_once_with("cus_test123")
 
