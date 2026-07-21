@@ -1461,6 +1461,31 @@ class TestPeriodicRecovery:
         assert mock_thread.call_args.kwargs["daemon"] is True
         mock_thread.return_value.start.assert_called_once()
 
+    def test_failed_thread_start_allows_retry(self, queue: PendingEventQueue) -> None:
+        """Test that a failed thread start does not disable recovery forever.
+
+        If the started-flag stayed True after Thread creation/start raised
+        (e.g. resource exhaustion), every later call would no-op and
+        periodic recovery would be silently disabled for the process.
+        """
+        with patch(
+            "webhooks.services.pending_event_queue.threading.Thread"
+        ) as mock_thread:
+            mock_thread.return_value.start.side_effect = RuntimeError(
+                "can't start new thread"
+            )
+            with pytest.raises(RuntimeError, match="can't start new thread"):
+                queue.start_periodic_recovery()
+
+            assert PendingEventQueue._recovery_thread_started is False
+
+            # A later call must be able to try again and succeed
+            mock_thread.return_value.start.side_effect = None
+            queue.start_periodic_recovery()
+
+        assert mock_thread.call_count == 2
+        assert PendingEventQueue._recovery_thread_started is True
+
     def test_sweep_runs_recovery_under_fleet_lock(
         self, queue: PendingEventQueue
     ) -> None:

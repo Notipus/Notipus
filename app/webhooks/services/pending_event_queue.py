@@ -742,13 +742,20 @@ class PendingEventQueue:
                 return
             PendingEventQueue._recovery_thread_started = True
 
-        thread = threading.Thread(
-            target=self._periodic_recovery_loop,
-            args=(interval_seconds,),
-            daemon=True,
-            name="pending-webhook-recovery",
-        )
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=self._periodic_recovery_loop,
+                args=(interval_seconds,),
+                daemon=True,
+                name="pending-webhook-recovery",
+            )
+            thread.start()
+        except Exception:
+            # Reset so a later call can retry; a stuck True would silently
+            # disable periodic recovery for the process lifetime.
+            with self._lock:
+                PendingEventQueue._recovery_thread_started = False
+            raise
         logger.info(
             f"Started periodic pending-webhook recovery (every {interval_seconds}s)"
         )
