@@ -35,6 +35,11 @@ from ..models import WebAuthnChallenge, WebAuthnCredential
 
 logger = logging.getLogger(__name__)
 
+# Maximum age a stored challenge may reach before it is treated as invalid at
+# verification time. Challenges are single-use and short-lived, so a tight TTL
+# limits the window in which a leaked or stale challenge could be replayed.
+CHALLENGE_TTL = timedelta(minutes=5)
+
 
 class WebAuthnService:
     """Service for handling WebAuthn operations.
@@ -124,6 +129,9 @@ class WebAuthnService:
                 ],
             )
 
+            # Opportunistically trim stale challenges before storing a new one.
+            self._cleanup_expired_challenges_best_effort()
+
             # Store challenge for verification
             challenge_str = base64.urlsafe_b64encode(options.challenge).decode("utf-8")
             WebAuthnChallenge.objects.create(
@@ -161,7 +169,10 @@ class WebAuthnService:
                 return False
 
             challenge = WebAuthnChallenge.objects.get(
-                challenge=challenge_str, user=user, challenge_type="registration"
+                challenge=challenge_str,
+                user=user,
+                challenge_type="registration",
+                created_at__gte=self._challenge_cutoff(),
             )
 
             # Verify the registration response
@@ -232,6 +243,9 @@ class WebAuthnService:
                 user_verification=UserVerificationRequirement.PREFERRED,
             )
 
+            # Opportunistically trim stale challenges before storing a new one.
+            self._cleanup_expired_challenges_best_effort()
+
             # Store challenge for verification
             challenge_str = base64.urlsafe_b64encode(options.challenge).decode("utf-8")
             WebAuthnChallenge.objects.create(
@@ -264,7 +278,9 @@ class WebAuthnService:
                 return None
 
             challenge = WebAuthnChallenge.objects.get(
-                challenge=challenge_str, challenge_type="authentication"
+                challenge=challenge_str,
+                challenge_type="authentication",
+                created_at__gte=self._challenge_cutoff(),
             )
 
             # Find the credential
@@ -360,6 +376,9 @@ class WebAuthnService:
                 ],
             )
 
+            # Opportunistically trim stale challenges before storing a new one.
+            self._cleanup_expired_challenges_best_effort()
+
             # Store challenge for verification with signup context
             challenge_str = base64.urlsafe_b64encode(options.challenge).decode("utf-8")
             WebAuthnChallenge.objects.create(
@@ -400,6 +419,7 @@ class WebAuthnService:
                 challenge=challenge_str,
                 user=None,  # Signup challenges have no user
                 challenge_type="signup_registration",
+                created_at__gte=self._challenge_cutoff(),
             )
 
             # Verify the registration response
@@ -465,16 +485,40 @@ class WebAuthnService:
             )
         return credentials
 
-    def cleanup_expired_challenges(self, hours: int = 1) -> int:
+    def _challenge_cutoff(self) -> Any:
+        """Compute the earliest ``created_at`` a challenge may have to stay valid.
+
+        Challenges created before this cutoff have exceeded ``CHALLENGE_TTL`` and
+        must be rejected at verification, using the same failure path as a
+        missing challenge.
+
+        Returns:
+            Timezone-aware datetime marking the oldest acceptable challenge.
+        """
+        return timezone.now() - CHALLENGE_TTL
+
+    def _cleanup_expired_challenges_best_effort(self) -> None:
+        """Opportunistically purge expired challenges without raising.
+
+        Called when a new challenge is created so the table is trimmed lazily
+        without requiring an external scheduler. Failures are swallowed and
+        logged at debug level so cleanup never blocks the primary flow.
+        """
+        try:
+            self.cleanup_expired_challenges()
+        except Exception as e:  # pragma: no cover - defensive best-effort path
+            logger.debug(f"Best-effort challenge cleanup failed: {e}")
+
+    def cleanup_expired_challenges(self, max_age: timedelta = CHALLENGE_TTL) -> int:
         """Clean up expired WebAuthn challenges.
 
         Args:
-            hours: Hours after which challenges are considered expired.
+            max_age: Age after which challenges are considered expired.
 
         Returns:
             Number of challenges cleaned up.
         """
-        cutoff_time = timezone.now() - timedelta(hours=hours)
+        cutoff_time = timezone.now() - max_age
         count, _ = WebAuthnChallenge.objects.filter(created_at__lt=cutoff_time).delete()
 
         if count > 0:
