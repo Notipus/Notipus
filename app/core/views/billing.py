@@ -121,7 +121,9 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         request: The HTTP request object.
 
     Returns:
-        Upgrade plan page or redirect to workspace creation.
+        Upgrade plan page, redirect to workspace creation if the user has
+        no workspace, or redirect to the dashboard if the user is not an
+        owner/admin (permission denied).
     """
     from core.services.dashboard import BillingService
 
@@ -149,7 +151,9 @@ def payment_methods(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
         request: The HTTP request object.
 
     Returns:
-        Payment methods page or redirect to workspace creation.
+        Payment methods page, redirect to workspace creation if the user
+        has no workspace, or redirect to the dashboard if the user is not
+        an owner/admin (permission denied).
     """
     workspace, redirect_response = require_admin_role(request)
     if redirect_response:
@@ -178,7 +182,9 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
         request: The HTTP request object.
 
     Returns:
-        Billing history page or redirect to workspace creation.
+        Billing history page, redirect to workspace creation if the user
+        has no workspace, or redirect to the dashboard if the user is not
+        an owner/admin (permission denied).
     """
     from datetime import datetime
     from datetime import timezone as dt_timezone
@@ -319,7 +325,9 @@ def checkout(
         plan_name: Name of the plan to checkout (basic, pro, enterprise).
 
     Returns:
-        Redirect to Stripe Checkout or error page.
+        Redirect to Stripe Checkout or error page. Redirects to workspace
+        creation if the user has no workspace, or to the dashboard if the
+        user is not an owner/admin (permission denied).
     """
     from core.services.stripe import StripeAPI
     from django.conf import settings as django_settings
@@ -434,6 +442,8 @@ def billing_portal(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
 
     Returns:
         Redirect to Stripe Customer Portal or billing dashboard on error.
+        Redirects to workspace creation if the user has no workspace, or to
+        the dashboard if the user is not an owner/admin (permission denied).
     """
     from core.services.stripe import StripeAPI
 

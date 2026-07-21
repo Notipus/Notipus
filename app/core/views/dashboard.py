@@ -191,7 +191,9 @@ def workspace_settings(request: HttpRequest) -> HttpResponse | HttpResponseRedir
         request: The HTTP request object.
 
     Returns:
-        Settings page or redirect to workspace creation.
+        Settings page, redirect to workspace creation if the user has no
+        workspace, or redirect to the dashboard if the user is not an
+        owner/admin (permission denied).
     """
     # Modifying workspace settings is an admin capability: shop_domain in
     # particular participates in webhook routing / tenant identity, so gate
