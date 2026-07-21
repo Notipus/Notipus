@@ -370,6 +370,9 @@ class _FakeSlackResponse:
     def json(self) -> dict[str, Any]:
         return self._payload
 
+    def raise_for_status(self) -> None:
+        """Always a 200 — nothing to raise."""
+
 
 def _fake_slack_post(url: str, **kwargs: Any) -> _FakeSlackResponse:
     # oauth.v2.access token exchange
@@ -425,7 +428,9 @@ def recording_page(
     ephemeral port, and attaches a CDP virtual authenticator so
     ``navigator.credentials.create()`` succeeds without hardware.
     """
-    settings.WEBAUTHN_RP_ID = "localhost"
+    # RP ID must be the effective domain of the origin, whatever host
+    # the live server actually bound (localhost vs 127.0.0.1).
+    settings.WEBAUTHN_RP_ID = urlparse(live_server.url).hostname
     settings.WEBAUTHN_ORIGIN = live_server.url
     settings.SLACK_CONNECT_REDIRECT_URI = (
         f"{live_server.url}/api/connect/slack/callback/"
