@@ -1166,17 +1166,8 @@ class StripeSourcePlugin(BaseSourcePlugin):
             },
         )
 
-        # Fail closed on an empty secret: construct_event with an empty
-        # secret would let an attacker forge a valid signature over
-        # arbitrary payloads. Reject before any signature work (even with
-        # DEBUG=True).
-        if not self.webhook_secret:
-            logger.error(
-                "SECURITY: Webhook secret not configured! "
-                "Rejecting webhook to prevent unauthorized access."
-            )
-            raise InvalidDataError("Webhook secret not configured")
-
+        # Signature verification (and the fail-closed empty-secret guard)
+        # is owned by _construct_verified_event.
         event = self._construct_verified_event(request)
 
         # Extract idempotency_key from the event for cross-event deduplication
