@@ -146,20 +146,10 @@ class CompanyAdmin(admin.ModelAdmin):
         (irreversible) purge, mirroring Django's built-in ``delete_selected``
         flow. The purge only runs once the confirmation form is submitted.
         """
-        if request.POST.get("confirm_purge") == "yes":
-            count = queryset.update(
-                name="",
-                brand_info={},
-                logo_url="",
-                logo_data=None,
-                logo_content_type="",
-            )
-            self.message_user(request, f"Purged enrichment data for {count} companies.")
-            return None
-
-        # Guard against enumerating an unbounded "select all" set on the
-        # confirmation page. Detect over-limit cheaply with a LIMITed PK fetch
-        # rather than a full COUNT(*) over a potentially large table.
+        # Enforce the safety cap FIRST, before the confirm short-circuit, so a
+        # crafted confirmed submission (e.g. select_across) can't bypass it.
+        # Detect over-limit cheaply with a LIMITed PK fetch rather than a full
+        # COUNT(*) over a potentially large table.
         limit = self.PURGE_CONFIRM_LIMIT
         over_limit = len(queryset.values_list("pk", flat=True)[: limit + 1]) > limit
         if over_limit:
@@ -172,6 +162,17 @@ class CompanyAdmin(admin.ModelAdmin):
                 ),
                 level=messages.WARNING,
             )
+            return None
+
+        if request.POST.get("confirm_purge") == "yes":
+            count = queryset.update(
+                name="",
+                brand_info={},
+                logo_url="",
+                logo_data=None,
+                logo_content_type="",
+            )
+            self.message_user(request, f"Purged enrichment data for {count} companies.")
             return None
 
         context = {

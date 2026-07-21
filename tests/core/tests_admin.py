@@ -263,6 +263,35 @@ class TestCompanyAdminActions:
         assert sample_company.name == "Acme Corporation"
         assert sample_company.brand_info != {}
 
+    def test_purge_enrichment_data_cap_applies_to_confirmed_submission(
+        self,
+        company_admin: CompanyAdmin,
+        sample_company: Company,
+        request_factory: RequestFactory,
+    ) -> None:
+        """Test the cap is enforced even on a confirmed (yes) submission."""
+        # Lower the cap so a single-row queryset exceeds it.
+        company_admin.PURGE_CONFIRM_LIMIT = 0
+
+        # A crafted confirmed POST must NOT bypass the safety cap.
+        request = request_factory.post("/admin/core/company/", {"confirm_purge": "yes"})
+        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+
+        queryset = Company.objects.filter(pk=sample_company.pk)
+
+        with patch.object(company_admin, "message_user") as mock_message:
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        # Refused: returns to changelist with a warning, no purge performed.
+        assert response is None
+        mock_message.assert_called_once()
+        assert mock_message.call_args.kwargs["level"] == messages.WARNING
+
+        # Data must be untouched despite confirm_purge=yes.
+        sample_company.refresh_from_db()
+        assert sample_company.name == "Acme Corporation"
+        assert sample_company.brand_info != {}
+
     def test_refresh_enrichment(
         self,
         company_admin: CompanyAdmin,
