@@ -56,6 +56,12 @@ APPEND_LOCK_TTL_SECONDS = 5
 APPEND_LOCK_MAX_ATTEMPTS = 20
 APPEND_LOCK_RETRY_DELAY_SECONDS = 0.05
 
+# Finalization (removing sent items) runs in worker threads with no
+# request waiting, so it can afford a budget longer than the lock TTL:
+# even a crashed lock holder expires within the wait, keeping the
+# delete-outright fallback for truly pathological cases only.
+APPEND_LOCK_FINALIZE_MAX_ATTEMPTS = 120  # 120 * 0.05s = 6s > 5s TTL
+
 # How often the background sweep retries undelivered events. Combined
 # with TTL_SECONDS this defines the delivery-retry schedule.
 RECOVERY_SWEEP_INTERVAL_SECONDS = 300
@@ -236,17 +242,23 @@ class PendingEventQueue:
         finally:
             self._release_append_lock(key)
 
-    def _acquire_append_lock(self, key: str) -> bool:
+    def _acquire_append_lock(
+        self, key: str, max_attempts: int = APPEND_LOCK_MAX_ATTEMPTS
+    ) -> bool:
         """Try to acquire the distributed append lock for a pending list.
 
         Args:
             key: Cache key of the pending list the lock protects.
+            max_attempts: Acquisition attempts before giving up. Callers
+                on the request path keep the short default; callers that
+                can wait (finalization) pass a budget exceeding the lock
+                TTL so a crashed holder's lock expires within it.
 
         Returns:
             True when acquired, False when all attempts timed out.
         """
         lock_key = f"append_lock:{key}"
-        for _ in range(APPEND_LOCK_MAX_ATTEMPTS):
+        for _ in range(max_attempts):
             if cache.add(lock_key, "1", timeout=APPEND_LOCK_TTL_SECONDS):
                 return True
             time.sleep(APPEND_LOCK_RETRY_DELAY_SECONDS)
@@ -433,8 +445,10 @@ class PendingEventQueue:
         outright would drop that event unprocessed. Under the append
         lock, remove exactly the items that were aggregated and keep
         anything that arrived after the snapshot. Items are compared by
-        value; ``_queued_at`` timestamps make equal-looking events from
-        distinct webhooks distinguishable.
+        value, removing ONE occurrence per processed item so duplicates
+        with identical content keep their multiplicity (``_queued_at``
+        timestamps make equal-looking events from distinct webhooks
+        distinguishable in practice, but this does not rely on it).
 
         Args:
             key: Cache key of the pending list.
@@ -445,9 +459,12 @@ class PendingEventQueue:
             Items still queued (appended during the send), empty when the
             list is fully drained.
         """
-        if not self._acquire_append_lock(key):
-            # Lock stuck (crashed holder past TTL churn): fall back to the
-            # pre-lock behavior of deleting the whole key rather than
+        if not self._acquire_append_lock(
+            key, max_attempts=APPEND_LOCK_FINALIZE_MAX_ATTEMPTS
+        ):
+            # The finalize budget outlasts the lock TTL, so this means
+            # sustained contention, not one crashed holder. Fall back to
+            # the pre-lock behavior of deleting the whole key rather than
             # leaving the group to be resent forever by the recovery sweep.
             logger.warning(
                 f"Could not acquire append lock to finalize {key}; "
@@ -457,7 +474,14 @@ class PendingEventQueue:
             return []
         try:
             current = decrypt_cache_value(cache.get(key)) or []
-            remainder = [item for item in current if item not in processed_items]
+            remainder = list(current)
+            for item in processed_items:
+                try:
+                    remainder.remove(item)
+                except ValueError:
+                    # Already gone (e.g. the list was rewritten after a
+                    # TTL expiry); nothing to remove for this item.
+                    pass
             if remainder:
                 cache.set(key, encrypt_cache_value(remainder), timeout=self.TTL_SECONDS)
             else:

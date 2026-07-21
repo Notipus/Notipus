@@ -1677,6 +1677,51 @@ class TestProcessDeleteRace:
         assert attempts_key not in fake_cache.store
         mock_schedule.assert_called_once_with("idem_123", "ws_456", "stripe", None)
 
+    def test_identical_duplicate_appended_mid_send_is_kept(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Removal preserves multiplicity for identical items.
+
+        If an item with byte-identical content is appended mid-send,
+        removing "all equal items" would drop both the processed one and
+        the newcomer; exactly one occurrence per processed item must go.
+        """
+        fake_cache = InMemoryCache()
+        item_a = self._item("subscription_created", 1.0)
+        fake_cache.store[self.KEY] = [item_a]
+
+        def append_identical_mid_send(*_args: Any, **_kwargs: Any) -> bool:
+            queue._locked_append(self.KEY, copy.deepcopy(item_a))
+            return True
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            with patch.object(
+                queue, "_send_notification", side_effect=append_identical_mid_send
+            ):
+                with patch.object(queue, "_schedule_processing") as mock_schedule:
+                    queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        assert fake_cache.store[self.KEY] == [item_a]
+        mock_schedule.assert_called_once()
+
+    def test_finalize_lock_budget_outlasts_lock_ttl(self) -> None:
+        """The finalize acquisition budget must exceed the lock TTL.
+
+        A crashed append-lock holder blocks finalization until the lock
+        expires; a budget shorter than the TTL would make finalization
+        reliably fall into the delete-outright fallback in that window.
+        """
+        from webhooks.services.pending_event_queue import (
+            APPEND_LOCK_FINALIZE_MAX_ATTEMPTS,
+            APPEND_LOCK_RETRY_DELAY_SECONDS,
+            APPEND_LOCK_TTL_SECONDS,
+        )
+
+        finalize_budget = (
+            APPEND_LOCK_FINALIZE_MAX_ATTEMPTS * APPEND_LOCK_RETRY_DELAY_SECONDS
+        )
+        assert finalize_budget > APPEND_LOCK_TTL_SECONDS
+
 
 class TestThreadConnectionCleanup:
     """Worker threads must return their ORM connections (issue #101 M3)."""
