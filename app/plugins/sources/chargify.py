@@ -140,6 +140,14 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         missing timestamp is treated as a validation failure so the
         ±window always applies.
 
+        NOTE: This is a window-narrowing mitigation, NOT full replay
+        prevention. Chargify's HMAC covers the body only, not the
+        timestamp header, so a captured (body, signature) pair can still be
+        replayed with a fresh in-tolerance timestamp within the ±window.
+        It layers with the existing webhook-id dedup at the router. Robust
+        signed-content (body-hash) dedup at the router is tracked in
+        https://github.com/Notipus/Notipus/issues/118.
+
         Args:
             request: The incoming HTTP request.
 
