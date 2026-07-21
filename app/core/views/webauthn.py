@@ -7,6 +7,7 @@ import json
 import logging
 from typing import Any, cast
 
+from allauth.account.utils import setup_user_email
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -18,6 +19,13 @@ from ..models import WebAuthnCredential
 from ..services.webauthn import WebAuthnService
 
 logger = logging.getLogger(__name__)
+
+# Backend recorded on passkey-authenticated sessions. login() requires an
+# explicit backend when multiple AUTHENTICATION_BACKENDS are configured
+# (a bare call raises and the flow 500s). Deliberately a fixed constant
+# rather than AUTHENTICATION_BACKENDS[0]: WebAuthn verification is our
+# own, and reordering settings must not change its attribution.
+PASSKEY_LOGIN_BACKEND = "django.contrib.auth.backends.ModelBackend"
 
 
 @csrf_exempt
@@ -137,7 +145,7 @@ def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
 
         if user:
             # Log the user in
-            login(request, user)
+            login(request, user, backend=PASSKEY_LOGIN_BACKEND)
             return JsonResponse(
                 {
                     "success": True,
@@ -264,7 +272,19 @@ def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:
 
         if user:
             # Log the user in
-            login(request, user)
+            login(request, user, backend=PASSKEY_LOGIN_BACKEND)
+
+            # Passkey signups are the one flow that needs outgoing email:
+            # unlike Slack SSO (whose emails are provider-verified), a
+            # passkey user typed their address unverified. Register it
+            # with allauth and send the verification email. Never fail
+            # the signup over email delivery.
+            try:
+                email_address = setup_user_email(request, user, [])
+                if email_address is not None:
+                    email_address.send_confirmation(request, signup=True)
+            except Exception:
+                logger.exception("Failed to send verification email for passkey signup")
 
             return JsonResponse(
                 {

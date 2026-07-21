@@ -391,6 +391,12 @@ SOCIALACCOUNT_PROVIDERS = {
         },
         "SCOPE": ["openid", "profile", "email"],
         "AUTH_PARAMS": {"approval_prompt": "force"},
+        # Slack workspace accounts require a verified email, so emails
+        # from Slack SSO are trusted as verified. This skips the
+        # verification email for SSO signups (outgoing email is only
+        # needed for passkey signups) and lets
+        # SOCIALACCOUNT_EMAIL_AUTHENTICATION match existing accounts.
+        "VERIFIED_EMAIL": True,
     },
     "shopify": {
         "APP": {
