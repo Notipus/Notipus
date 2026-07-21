@@ -150,6 +150,42 @@ class FakeCache:
         self.client = _FakeCacheClientWrapper(client)
 
 
+class _FakeBuiltinBackend:
+    """Mimics the inner backend of Django's built-in RedisCache."""
+
+    def __init__(self, client: FakeRedisClient) -> None:
+        """Store the fake client.
+
+        Args:
+            client: Fake Redis client to expose.
+        """
+        self._client = client
+
+    def get_client(self, key: Any = None, *, write: bool = False) -> FakeRedisClient:
+        """Return the underlying fake Redis client.
+
+        Args:
+            key: Ignored cache key (built-in backend signature).
+            write: Ignored write flag (built-in backend signature).
+
+        Returns:
+            The FakeRedisClient.
+        """
+        return self._client
+
+
+class FakeBuiltinCache:
+    """Mimics Django's built-in RedisCache shape: no .client, has ._cache."""
+
+    def __init__(self, client: FakeRedisClient) -> None:
+        """Wrap the fake Redis client.
+
+        Args:
+            client: Fake Redis client backing this cache.
+        """
+        self._cache = _FakeBuiltinBackend(client)
+
+
 @pytest.fixture
 def fake_redis() -> Any:
     """Install a fake Redis-backed cache for the billing lock.
@@ -160,7 +196,7 @@ def fake_redis() -> Any:
     events: list[str] = []
     lock = FakeLock(events)
     client = FakeRedisClient(lock)
-    with patch("webhooks.services.billing.cache", FakeCache(client)):
+    with patch("webhooks.services.redis_client.cache", FakeCache(client)):
         yield lock, client
 
 
@@ -526,6 +562,25 @@ class TestStripeSyncLock:
         no-ops instead of blocking webhook processing."""
         with stripe_sync_lock(CUSTOMER_ID):
             pass  # DummyCache in test settings: must not raise
+
+    def test_lock_works_with_django_builtin_redis_backend(self) -> None:
+        """The lock must engage under Django's built-in RedisCache.
+
+        Production configures django.core.cache.backends.redis.RedisCache,
+        which exposes the raw client via ``cache._cache.get_client`` — NOT
+        the django-redis ``cache.client`` API. Probing only the latter made
+        the lock silently fail open (run unlocked) in production.
+        """
+        events: list[str] = []
+        lock = FakeLock(events)
+        client = FakeRedisClient(lock)
+
+        with patch("webhooks.services.redis_client.cache", FakeBuiltinCache(client)):
+            with stripe_sync_lock(CUSTOMER_ID):
+                pass
+
+        assert events == ["acquire", "release"]
+        assert client.lock_names == [f"stripe_sync_lock:{CUSTOMER_ID}"]
 
 
 class TestSubscriptionDeletedScoping:

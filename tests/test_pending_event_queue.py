@@ -5,11 +5,16 @@ of webhook events to allow related events to be aggregated before sending
 a single notification.
 """
 
+import copy
 import threading
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from webhooks.services.pending_event_queue import PendingEventQueue
+from webhooks.services.pending_event_queue import (
+    MAX_SEND_ATTEMPTS,
+    PendingEventQueue,
+)
 
 
 class TestPendingEventQueueStorage:
@@ -920,7 +925,7 @@ class TestOrphanRecovery:
         self, queue: PendingEventQueue
     ) -> None:
         """Test that _get_redis_client handles errors gracefully."""
-        with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+        with patch("webhooks.services.redis_client.cache") as mock_cache:
             mock_cache.client.get_client.side_effect = AttributeError("No client")
             mock_cache._cache.get_client.side_effect = AttributeError("No client")
 
@@ -944,7 +949,7 @@ class TestOrphanRecovery:
         mock_cache = MagicMock(spec=["_cache"])
         mock_cache._cache.get_client.return_value = raw_client
 
-        with patch("webhooks.services.pending_event_queue.cache", mock_cache):
+        with patch("webhooks.services.redis_client.cache", mock_cache):
             result = queue._get_redis_client()
 
         assert result is raw_client
@@ -1533,3 +1538,194 @@ class TestPeriodicRecovery:
                         queue._periodic_recovery_loop(300)
 
         mock_recover.assert_not_called()
+
+
+class InMemoryCache:
+    """Minimal stateful stand-in for the Django cache API.
+
+    Deep-copies values on get/set to mimic the serialization round-trip
+    of a real Redis-backed cache, so identity-based shortcuts in the
+    code under test would be caught.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the empty store."""
+        self.store: dict[str, Any] = {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Return a deep copy of the stored value, or the default."""
+        if key not in self.store:
+            return default
+        return copy.deepcopy(self.store[key])
+
+    def set(self, key: str, value: Any, timeout: Any = None) -> None:
+        """Store a deep copy of the value."""
+        self.store[key] = copy.deepcopy(value)
+
+    def add(self, key: str, value: Any, timeout: Any = None) -> bool:
+        """Store the value only if the key is absent (SET NX)."""
+        if key in self.store:
+            return False
+        self.store[key] = copy.deepcopy(value)
+        return True
+
+    def delete(self, key: str) -> None:
+        """Remove the key if present."""
+        self.store.pop(key, None)
+
+
+class TestProcessDeleteRace:
+    """A mid-send append must survive processing (issue #101 finding H4)."""
+
+    KEY = "pending_webhook:ws_456:idem_123"
+
+    @pytest.fixture
+    def queue(self) -> PendingEventQueue:
+        """Create a fresh queue instance with no active timers."""
+        queue = PendingEventQueue()
+        with queue._lock:
+            queue._active_timers.clear()
+        return queue
+
+    @staticmethod
+    def _item(event_type: str, queued_at: float) -> dict[str, Any]:
+        """Build a stored queue item.
+
+        Args:
+            event_type: Normalized event type for the item.
+            queued_at: _queued_at timestamp distinguishing the item.
+
+        Returns:
+            A stored item dict as _store_event would create it.
+        """
+        return {
+            "event_data": {"type": event_type, "_queued_at": queued_at},
+            "customer_data": {"email": "test@example.com"},
+        }
+
+    def test_mid_send_append_survives_successful_send(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """An event appended during the Slack send is kept and rescheduled.
+
+        Before the fix, _process_events deleted the whole key after a
+        successful send, silently dropping any event another worker
+        appended between the read and the delete.
+        """
+        fake_cache = InMemoryCache()
+        item_a = self._item("subscription_created", 1.0)
+        item_b = self._item("invoice_paid", 2.0)
+        fake_cache.store[self.KEY] = [item_a]
+
+        def append_mid_send(*_args: Any, **_kwargs: Any) -> bool:
+            queue._locked_append(self.KEY, item_b)
+            return True
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            with patch.object(queue, "_send_notification", side_effect=append_mid_send):
+                with patch.object(queue, "_schedule_processing") as mock_schedule:
+                    queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        assert fake_cache.store[self.KEY] == [item_b]
+        mock_schedule.assert_called_once_with("idem_123", "ws_456", "stripe", None)
+
+    def test_fully_drained_list_is_deleted(self, queue: PendingEventQueue) -> None:
+        """With no mid-send append, a successful send removes the key."""
+        fake_cache = InMemoryCache()
+        fake_cache.store[self.KEY] = [self._item("subscription_created", 1.0)]
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            with patch.object(queue, "_send_notification", return_value=True):
+                with patch.object(queue, "_schedule_processing") as mock_schedule:
+                    queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        assert self.KEY not in fake_cache.store
+        mock_schedule.assert_not_called()
+
+    def test_give_up_drops_only_processed_items(self, queue: PendingEventQueue) -> None:
+        """Exhausting MAX_SEND_ATTEMPTS drops the sent group, not newcomers.
+
+        A mid-send append is a new group: it stays queued, gets a fresh
+        attempt budget (the counter is reset), and is rescheduled.
+        """
+        fake_cache = InMemoryCache()
+        attempts_key = "pending_webhook_attempts:ws_456:idem_123"
+        item_a = self._item("subscription_created", 1.0)
+        item_b = self._item("invoice_paid", 2.0)
+        fake_cache.store[self.KEY] = [item_a]
+        fake_cache.store[attempts_key] = MAX_SEND_ATTEMPTS - 1
+
+        def append_mid_send(*_args: Any, **_kwargs: Any) -> bool:
+            queue._locked_append(self.KEY, item_b)
+            return False
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            with patch.object(queue, "_send_notification", side_effect=append_mid_send):
+                with patch.object(queue, "_schedule_processing") as mock_schedule:
+                    queue._process_events("idem_123", "ws_456", "stripe", None)
+
+        assert fake_cache.store[self.KEY] == [item_b]
+        assert attempts_key not in fake_cache.store
+        mock_schedule.assert_called_once_with("idem_123", "ws_456", "stripe", None)
+
+
+class TestThreadConnectionCleanup:
+    """Worker threads must return their ORM connections (issue #101 M3)."""
+
+    @pytest.fixture
+    def queue(self) -> PendingEventQueue:
+        """Create a fresh queue instance with no active timers."""
+        queue = PendingEventQueue()
+        with queue._lock:
+            queue._active_timers.clear()
+        return queue
+
+    def test_timer_thread_wrapper_closes_connections(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """The timer entry point closes DB connections after processing."""
+        with patch.object(queue, "_process_events") as mock_process:
+            with patch(
+                "webhooks.services.pending_event_queue.connections"
+            ) as mock_connections:
+                queue._process_events_in_thread("idem_123", "ws_456", "stripe", None)
+
+        mock_process.assert_called_once_with("idem_123", "ws_456", "stripe", None)
+        mock_connections.close_all.assert_called_once()
+
+    def test_timer_thread_wrapper_closes_connections_on_error(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Connections are closed even when processing raises."""
+        with patch.object(queue, "_process_events", side_effect=RuntimeError("boom")):
+            with patch(
+                "webhooks.services.pending_event_queue.connections"
+            ) as mock_connections:
+                with pytest.raises(RuntimeError):
+                    queue._process_events_in_thread(
+                        "idem_123", "ws_456", "stripe", None
+                    )
+
+        mock_connections.close_all.assert_called_once()
+
+    def test_scheduled_timer_targets_thread_wrapper(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Timers run the connection-closing wrapper, not _process_events."""
+        queue._schedule_processing("idem_x", "ws_x", "stripe", None)
+        timer = queue._active_timers["ws_x:idem_x"]
+        try:
+            assert timer.function == queue._process_events_in_thread
+        finally:
+            timer.cancel()
+
+    def test_recovery_sweep_closes_connections(self, queue: PendingEventQueue) -> None:
+        """Each recovery sweep closes the thread's DB connections."""
+        with patch.object(queue, "_get_redis_client", return_value=MagicMock()):
+            with patch.object(queue, "_scan_pending_keys", return_value=iter([])):
+                with patch(
+                    "webhooks.services.pending_event_queue.connections"
+                ) as mock_connections:
+                    queue.recover_orphaned_events()
+
+        mock_connections.close_all.assert_called_once()

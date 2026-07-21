@@ -23,8 +23,9 @@ from typing import Any, cast
 import stripe
 from core.models import Workspace
 from core.services.stripe import StripeAPI
-from django.core.cache import cache
 from django.db.models import Q
+
+from .redis_client import get_raw_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,8 @@ def _get_lock_client() -> Any | None:
         backend is not Redis (e.g. DummyCache in tests) so callers can
         fail open.
     """
-    try:
-        client = cache.client.get_client()  # type: ignore[attr-defined]
-    except Exception:
+    client = get_raw_redis_client()
+    if client is None:
         return None
     # Don't treat MagicMocks from broadly-patched test caches as clients.
     if "Mock" in client.__class__.__name__:

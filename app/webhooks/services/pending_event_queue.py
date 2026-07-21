@@ -31,6 +31,9 @@ from typing import Any, ClassVar, cast
 from core.models import Integration, Workspace
 from django.conf import settings
 from django.core.cache import cache
+from django.db import connections
+
+from .redis_client import get_raw_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -221,18 +224,38 @@ class PendingEventQueue:
         Raises:
             RuntimeError: If the append lock could not be acquired.
         """
+        if not self._acquire_append_lock(key):
+            raise RuntimeError(f"Could not acquire append lock for {key}")
+        try:
+            existing = cache.get(key) or []
+            existing.append(item)
+            cache.set(key, existing, timeout=self.TTL_SECONDS)
+        finally:
+            self._release_append_lock(key)
+
+    def _acquire_append_lock(self, key: str) -> bool:
+        """Try to acquire the distributed append lock for a pending list.
+
+        Args:
+            key: Cache key of the pending list the lock protects.
+
+        Returns:
+            True when acquired, False when all attempts timed out.
+        """
         lock_key = f"append_lock:{key}"
         for _ in range(APPEND_LOCK_MAX_ATTEMPTS):
             if cache.add(lock_key, "1", timeout=APPEND_LOCK_TTL_SECONDS):
-                try:
-                    existing = cache.get(key) or []
-                    existing.append(item)
-                    cache.set(key, existing, timeout=self.TTL_SECONDS)
-                finally:
-                    cache.delete(lock_key)
-                return
+                return True
             time.sleep(APPEND_LOCK_RETRY_DELAY_SECONDS)
-        raise RuntimeError(f"Could not acquire append lock for {key}")
+        return False
+
+    def _release_append_lock(self, key: str) -> None:
+        """Release the distributed append lock for a pending list.
+
+        Args:
+            key: Cache key of the pending list the lock protects.
+        """
+        cache.delete(f"append_lock:{key}")
 
     def _schedule_processing(
         self,
@@ -260,7 +283,7 @@ class PendingEventQueue:
 
             timer = threading.Timer(
                 self.DELAY_SECONDS,
-                self._process_events,
+                self._process_events_in_thread,
                 args=[idempotency_key, workspace_id, provider_name, workspace],
             )
             timer.daemon = True  # Don't block shutdown
@@ -272,6 +295,32 @@ class PendingEventQueue:
                 f"Scheduled processing in {self.DELAY_SECONDS}s for "
                 f"idempotency_key {idempotency_key}"
             )
+
+    def _process_events_in_thread(
+        self,
+        idempotency_key: str,
+        workspace_id: str,
+        provider_name: str,
+        workspace: Workspace | None,
+    ) -> None:
+        """Run ``_process_events`` in a timer thread, then close DB connections.
+
+        Timer threads die right after this call; without an explicit
+        close, the ORM connection each one opened is never returned to
+        PostgreSQL, leaking one server connection per processed group.
+
+        Args:
+            idempotency_key: Stripe idempotency key.
+            workspace_id: Workspace UUID string.
+            provider_name: Name of the provider.
+            workspace: Workspace model instance.
+        """
+        try:
+            self._process_events(
+                idempotency_key, workspace_id, provider_name, workspace
+            )
+        finally:
+            connections.close_all()
 
     def _process_events(
         self,
@@ -335,9 +384,14 @@ class PendingEventQueue:
 
             attempts_key = f"pending_webhook_attempts:{workspace_id}:{idempotency_key}"
             if success:
-                # Delete pending events only after successful send
-                cache.delete(key)
+                # Remove exactly the items that were sent; events appended
+                # by another worker mid-send stay queued for their own cycle.
+                remainder = self._remove_processed_items(key, stored_items)
                 cache.delete(attempts_key)
+                if remainder:
+                    self._schedule_processing(
+                        idempotency_key, workspace_id, provider_name, workspace
+                    )
             else:
                 # Leave events for the periodic recovery sweep, but give
                 # up loudly on groups that will never deliver (e.g. a
@@ -348,8 +402,14 @@ class PendingEventQueue:
                         f"Giving up on notification for {idempotency_key} after "
                         f"{attempts} failed delivery attempts; dropping events"
                     )
-                    cache.delete(key)
+                    # Drop only what we tried to send; a mid-send append is
+                    # a new group and gets a fresh attempt budget.
+                    remainder = self._remove_processed_items(key, stored_items)
                     cache.delete(attempts_key)
+                    if remainder:
+                        self._schedule_processing(
+                            idempotency_key, workspace_id, provider_name, workspace
+                        )
                 else:
                     logger.warning(
                         f"Notification failed for {idempotency_key}, events left "
@@ -358,6 +418,50 @@ class PendingEventQueue:
         finally:
             # Always release the lock
             self._release_lock(lock_key)
+
+    def _remove_processed_items(
+        self, key: str, processed_items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Atomically remove the processed items from the pending list.
+
+        The read-aggregate-send sequence runs without the append lock (a
+        Slack HTTP call is far too slow to hold it), so another worker
+        can append an event to the list mid-send. Deleting the key
+        outright would drop that event unprocessed. Under the append
+        lock, remove exactly the items that were aggregated and keep
+        anything that arrived after the snapshot. Items are compared by
+        value; ``_queued_at`` timestamps make equal-looking events from
+        distinct webhooks distinguishable.
+
+        Args:
+            key: Cache key of the pending list.
+            processed_items: Snapshot of the items that were aggregated
+                and sent (or given up on).
+
+        Returns:
+            Items still queued (appended during the send), empty when the
+            list is fully drained.
+        """
+        if not self._acquire_append_lock(key):
+            # Lock stuck (crashed holder past TTL churn): fall back to the
+            # pre-lock behavior of deleting the whole key rather than
+            # leaving the group to be resent forever by the recovery sweep.
+            logger.warning(
+                f"Could not acquire append lock to finalize {key}; "
+                f"deleting the pending list outright"
+            )
+            cache.delete(key)
+            return []
+        try:
+            current = cache.get(key) or []
+            remainder = [item for item in current if item not in processed_items]
+            if remainder:
+                cache.set(key, remainder, timeout=self.TTL_SECONDS)
+            else:
+                cache.delete(key)
+            return remainder
+        finally:
+            self._release_append_lock(key)
 
     def _record_failed_attempt(self, attempts_key: str) -> int:
         """Increment and return the failed-delivery counter for a group.
@@ -808,34 +912,25 @@ class PendingEventQueue:
 
         except Exception as e:
             logger.error(f"Error during orphan recovery scan: {e}", exc_info=True)
+        finally:
+            # Sweeps run in the long-lived recovery thread (or the startup
+            # thread); return their ORM connections instead of holding one
+            # PostgreSQL connection open per thread between sweeps.
+            connections.close_all()
 
         return processed_count
 
-    def _get_redis_client(self):
+    def _get_redis_client(self) -> Any | None:
         """Get a raw Redis client for key scanning.
 
-        Supports django-redis (``cache.client.get_client()``) and Django's
-        built-in RedisCache backend (``cache._cache.get_client()``). The
-        raw client is used ONLY for SCAN; reads and writes always go
+        The raw client is used ONLY for SCAN; reads and writes always go
         through the cache API so key prefixing and serialization stay
         consistent.
 
         Returns:
             Redis client or None if unavailable.
         """
-        try:
-            return cache.client.get_client()  # type: ignore[attr-defined]
-        except AttributeError:
-            pass  # Not django-redis; try Django's built-in backend
-        except Exception as e:
-            logger.warning(f"Cannot access Redis client for orphan recovery: {e}")
-            return None
-
-        try:
-            return cache._cache.get_client(None, write=True)  # type: ignore[attr-defined]
-        except Exception as e:
-            logger.warning(f"Cannot access Redis client for orphan recovery: {e}")
-            return None
+        return get_raw_redis_client()
 
     def _scan_pending_keys(self, redis_client):
         """Scan Redis for pending webhook keys.
