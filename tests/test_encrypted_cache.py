@@ -75,3 +75,21 @@ class TestDecryptCacheValue:
         """
         bogus = TOKEN_PREFIX + "A" * 64
         assert decrypt_cache_value(bogus) is None
+
+    def test_log_failures_false_suppresses_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Callers with their own failure logging can silence the warning.
+
+        The pending queue logs a key-specific error for poisoned
+        entries; a second generic warning per entry would be noise.
+        """
+        bogus = TOKEN_PREFIX + "A" * 64
+
+        with caplog.at_level("WARNING", logger="core.encrypted_cache"):
+            assert decrypt_cache_value(bogus, log_failures=False) is None
+        assert caplog.records == []
+
+        with caplog.at_level("WARNING", logger="core.encrypted_cache"):
+            assert decrypt_cache_value(bogus) is None
+        assert len(caplog.records) == 1

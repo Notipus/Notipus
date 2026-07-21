@@ -49,19 +49,23 @@ def encrypt_cache_value(value: Any) -> str:
     return token
 
 
-def decrypt_cache_value(stored: Any) -> Any:
+def decrypt_cache_value(stored: Any, *, log_failures: bool = True) -> Any:
     """Decode a cache read that may hold an encrypted or legacy value.
 
     Args:
         stored: The raw value returned by ``cache.get``: None (miss), a
             ciphertext token written via :func:`encrypt_cache_value`, or
             a legacy plaintext value written before encryption.
+        log_failures: Warn when a token cannot be decrypted. Callers
+            that detect the failure themselves (raw value present but
+            result None) and emit their own key-specific log pass False
+            to avoid duplicate lines per poisoned entry.
 
     Returns:
         The decrypted, JSON-decoded value; the legacy value unchanged;
         or None for a miss. A token that no configured key can decrypt
-        (key rotated away too early) is logged and treated as a miss
-        rather than surfacing garbage.
+        (key rotated away too early) is treated as a miss rather than
+        surfacing garbage.
     """
     if stored is None:
         return None
@@ -69,9 +73,10 @@ def decrypt_cache_value(stored: Any) -> Any:
         try:
             return json.loads(decrypt(stored))
         except InvalidToken:
-            logger.warning(
-                "Cache value could not be decrypted with any configured key; "
-                "treating as a cache miss"
-            )
+            if log_failures:
+                logger.warning(
+                    "Cache value could not be decrypted with any configured "
+                    "key; treating as a cache miss"
+                )
             return None
     return stored

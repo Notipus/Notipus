@@ -535,7 +535,9 @@ class PendingEventQueue:
             when a poisoned entry was found and purged.
         """
         raw = cache.get(key)
-        items = decrypt_cache_value(raw)
+        # log_failures=False: the key-specific error below covers the
+        # poisoned case; the generic warning would just duplicate it.
+        items = decrypt_cache_value(raw, log_failures=False)
         if raw is not None and items is None:
             logger.error(
                 f"Pending events under {key} could not be decrypted with any "
