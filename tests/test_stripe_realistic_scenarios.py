@@ -1057,6 +1057,26 @@ class TestWebhookCustomerDataExtraction:
             assert result == "cached@example.com"
             mock_cache.get.assert_called_once_with("stripe_customer_email:cus_test123")
 
+    def test_get_cached_customer_email_evicts_undecryptable_token(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test an undecryptable cached token is evicted, not retried forever.
+
+        A token no configured key can decrypt (e.g. after a bad key
+        rotation) can never succeed again; it must be deleted so every
+        subsequent lookup doesn't repeat the warning and decrypt attempt
+        until TTL expiry.
+        """
+        with patch("plugins.sources.stripe.cache") as mock_cache:
+            mock_cache.get.return_value = "pqc1:not-a-valid-token"
+
+            result = stripe_plugin._get_cached_customer_email("cus_test123")
+
+            assert result == ""
+            mock_cache.delete.assert_called_once_with(
+                "stripe_customer_email:cus_test123"
+            )
+
     def test_get_cached_customer_email_legacy_plaintext(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:

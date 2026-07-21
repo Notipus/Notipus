@@ -1374,9 +1374,13 @@ class StripeSourcePlugin(BaseSourcePlugin):
                     try:
                         email = decrypt(email)
                     except InvalidToken:
+                        # Evict the entry: it can never decrypt again, and
+                        # leaving it would repeat this warning (and a doomed
+                        # decrypt attempt) on every lookup until TTL expiry.
+                        cache.delete(cache_key)
                         logger.warning(
                             f"Cached email for {customer_id} could not be "
-                            "decrypted; treating as cache miss"
+                            "decrypted; evicted and treated as cache miss"
                         )
                         return ""
                 logger.debug(f"Found cached email for {customer_id}")
