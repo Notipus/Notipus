@@ -25,8 +25,8 @@ Signal                  Stripe                  Chargify            Shopify
 first payment           metadata.billing_reason (none - silent)     orders_count
                         == "subscription_create"
 lifetime spend (LTV,    (none - silent)         total_spent from    total_spent
-VIP, at-risk)                                   total_revenue_
-                                                in_cents
+VIP, at-risk)                                   total_revenue_      (see note)
+                                                in_cents (see note)
 customer created_at     (none - anniversary     customer.           customer.
 (anniversary, tenure)   silent)                 created_at          created_at
 trial metadata          parser-derived          (none)              n/a
@@ -36,6 +36,17 @@ customer email          invoices only; cached   customer.email      customer.
                         (encrypted) for                             email
                         subscription events
 ======================  ======================  ==================  ==========
+
+Note on lifetime-spend semantics (issue #110): neither Shopify nor
+Chargify documents whether the lifetime-spend snapshot embedded in a
+payment webhook already includes the payment being reported, and
+Shopify's customer aggregates are known to update asynchronously (the
+snapshot can lag the triggering order; the fields were removed from
+webhook payloads entirely in API 2025-01). The LTV-milestone detector
+therefore uses the conservative post-payment reading - the reported
+total is treated as the NEW lifetime value, a proven floor under every
+scenario - so a milestone can fire late but never early or falsely.
+See _detect_ltv_milestone for the full reasoning.
 
 Note on aggregation: the pending event queue keeps only the winning event's
 metadata. If a detector needs a field from a lower-priority event in the
@@ -436,6 +447,32 @@ class InsightDetector:
         treated as $0 - a single large payment would falsely "cross"
         every milestone below its amount.
 
+        Semantics of the reported total (issue #110): neither Shopify
+        nor Chargify documents whether the lifetime-spend snapshot in a
+        payment webhook already includes the payment being reported.
+        For Shopify it is known to be updated ASYNCHRONOUSLY - the
+        customer aggregates can lag the order that triggered the
+        webhook (Shopify's own Flow troubleshooting doc says
+        orders_count/total_spent/last_order_id "will be invalid" for a
+        customer who just ordered until the record refreshes, and the
+        fields were removed from webhook payloads entirely in API
+        2025-01). So the snapshot may be pre-payment, post-payment, or
+        stale, and we must never guess.
+
+        The only reading that can never celebrate EARLY is to treat the
+        reported total as the post-payment ceiling: fire a milestone
+        only when the reported total itself proves it was reached
+        (milestone <= reported) and this payment's window plausibly
+        crossed it (milestone > reported - amount). The reported total
+        is a floor on true lifetime spend under every scenario
+        (post-payment: exact; pre-payment or stale: undercount), so a
+        fired milestone is always genuinely reached. If the snapshot
+        turns out to be pre-payment, the celebration arrives one
+        payment late - per product rule, a delayed celebration beats a
+        false one. Note the strict "crossed under both interpretations"
+        test is the empty set (pre window (r, r+a] and post window
+        (r-a, r] never overlap), so this is the conservative rule.
+
         Args:
             event_data: Event data dictionary.
             customer_data: Customer data dictionary.
@@ -447,12 +484,16 @@ class InsightDetector:
         if event_type != "payment_success":
             return None
 
-        previous_ltv = _get_ltv(customer_data)
-        if previous_ltv is None:
+        reported_total = _get_ltv(customer_data)
+        if reported_total is None:
             return None
 
         current_amount = _to_float(event_data.get("amount"))
-        new_ltv = previous_ltv + current_amount
+        # Post-payment (conservative) reading: the reported total is the
+        # new LTV; the pre-payment LTV is at least reported - amount,
+        # clamped at 0 (a stale snapshot can be smaller than the payment).
+        new_ltv = reported_total
+        previous_ltv = max(reported_total - current_amount, 0.0)
 
         # Celebrate the LARGEST milestone crossed by this payment (a big
         # payment can cross several at once - one Slack message per event).
