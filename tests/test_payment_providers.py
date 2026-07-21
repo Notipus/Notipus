@@ -5,6 +5,7 @@ including signature validation, data parsing, and deduplication.
 """
 
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
@@ -177,6 +178,10 @@ def test_chargify_webhook_validation() -> None:
     mock_request.headers = {
         "X-Chargify-Webhook-Signature-Hmac-Sha-256": "1234567890abcdef",
         "X-Chargify-Webhook-Id": "webhook_123",
+        # A current timestamp header is now required (replay protection).
+        "X-Chargify-Webhook-Timestamp": (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        ),
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Chargify Webhooks",
     }

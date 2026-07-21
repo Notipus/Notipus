@@ -133,16 +133,38 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     def _validate_webhook_timestamp(self, request: HttpRequest) -> bool:
         """Validate webhook timestamp to prevent replay attacks.
 
+        The timestamp header is required and fails closed when absent: the
+        signature only proves the body is authentic, not fresh, so a
+        captured signed body could otherwise be replayed indefinitely by
+        omitting the timestamp (and varying the unsigned webhook id). A
+        missing timestamp is treated as a validation failure so the
+        ±window always applies.
+
+        NOTE: This is a window-narrowing mitigation, NOT full replay
+        prevention. Chargify's HMAC covers the body only, not the
+        timestamp header, so a captured (body, signature) pair can still be
+        replayed with a fresh in-tolerance timestamp within the ±window.
+        It layers with the existing webhook-id dedup at the router. Robust
+        signed-content (body-hash) dedup at the router is tracked in
+        https://github.com/Notipus/Notipus/issues/118.
+
+        This helper is side-effect-free: it returns a boolean and never
+        logs, so the single caller (``validate_webhook``) logs a failure
+        once. Logging here would let an unauthenticated caller emit two
+        warning lines per request and flood the logs.
+
         Args:
             request: The incoming HTTP request.
 
         Returns:
-            True if timestamp is valid or not present, False if invalid.
+            True if the timestamp is present and within tolerance, False
+            if it is missing or invalid.
         """
         timestamp_header = request.headers.get("X-Chargify-Webhook-Timestamp")
         if not timestamp_header:
-            # Timestamp is optional, so continue if not present
-            return True
+            # Fail closed: a missing timestamp would bypass the replay
+            # window, so reject rather than accept.
+            return False
 
         try:
             webhook_time = datetime.fromisoformat(
@@ -155,26 +177,11 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             # only a small clock-skew allowance in the future. A symmetric
             # abs() check would widen the replay window for future-dated
             # webhooks.
-            if age_seconds > self._TIMESTAMP_TOLERANCE_SECONDS or age_seconds < -(
-                self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS
-            ):
-                logger.warning(
-                    "Webhook timestamp outside tolerance window",
-                    extra={
-                        "webhook_timestamp": timestamp_header,
-                        "age_seconds": age_seconds,
-                        "past_tolerance": self._TIMESTAMP_TOLERANCE_SECONDS,
-                        "future_tolerance": (self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS),
-                    },
-                )
-                return False
-
-            return True
-        except (ValueError, TypeError) as e:
-            logger.warning(
-                "Invalid webhook timestamp format",
-                extra={"timestamp": timestamp_header, "error": str(e)},
+            return not (
+                age_seconds > self._TIMESTAMP_TOLERANCE_SECONDS
+                or age_seconds < -self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS
             )
+        except (ValueError, TypeError):
             return False
 
     def validate_webhook(self, request: HttpRequest) -> bool:
@@ -429,11 +436,15 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             InvalidDataError: If webhook data is invalid or the
                 ``X-Chargify-Webhook-Id`` header is missing.
         """
+        # Never log the raw form body: it carries customer PII (email,
+        # name, card last-4) and revenue on every request. Log only
+        # non-sensitive metadata.
         logger.info(
             "Parsing Chargify webhook data",
             extra={
                 "content_type": request.content_type,
-                "form_data": (request.POST.dict() if request.POST else None),
+                "event_type": request.POST.get("event") if request.POST else None,
+                "webhook_id": request.headers.get("X-Chargify-Webhook-Id"),
                 "headers": mask_sensitive_headers(request.headers),
             },
         )
