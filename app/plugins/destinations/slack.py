@@ -300,7 +300,10 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         parts = [n.headline]
         if n.insight:
             parts.append(n.insight.text)
-        fallback: str = safe_mrkdwn(" — ".join(parts))
+        # Collapse all whitespace (payload-derived strings like failure
+        # reasons can contain newlines) so the preview stays one line.
+        one_line = " ".join(" — ".join(parts).split())
+        fallback: str = safe_mrkdwn(one_line)
         return fallback
 
     def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
@@ -681,22 +684,24 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         # Build main text content
         text_parts: list[str] = []
 
-        # Person name with icon, job info (title + seniority) inline
+        # Person name with icon, job info (title + seniority) inline.
+        # Hunter.io enrichment data is third-party input, so every field
+        # is sanitized before interpolation into mrkdwn.
         display_name = person.full_name or person.email
-        name_line = f":bust_in_silhouette: *{display_name}*"
+        name_line = f":bust_in_silhouette: *{safe_mrkdwn(display_name)}*"
         job_parts: list[str] = []
         if person.position:
-            job_parts.append(person.position)
+            job_parts.append(safe_mrkdwn(person.position))
         if person.seniority:
             # Capitalize seniority for display (e.g., "senior" -> "Senior")
-            job_parts.append(person.seniority.title())
+            job_parts.append(safe_mrkdwn(person.seniority.title()))
         if job_parts:
             name_line += f" — _{' • '.join(job_parts)}_"
         text_parts.append(name_line)
 
         # Location line
         if person.location:
-            text_parts.append(f":round_pushpin: {person.location}")
+            text_parts.append(f":round_pushpin: {safe_mrkdwn(person.location)}")
 
         # Main section block
         blocks.append(

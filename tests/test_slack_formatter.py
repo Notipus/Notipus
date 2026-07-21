@@ -760,6 +760,25 @@ class TestSlackDestinationPluginCustomerFooter:
         ]
         assert len(email_contexts) == 1
 
+    def test_person_fields_sanitized(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test Hunter.io person fields cannot inject Slack syntax."""
+        basic_notification.person = PersonInfo(
+            email="alice@acme.com",
+            first_name="<!channel>",
+            last_name="Smith",
+            position="<https://evil.example|CEO>",
+            location="<!here> HQ",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            text = str(block)
+            assert "<!channel>" not in text
+            assert "<!here>" not in text
+            assert "<https://evil.example|" not in text
+
     def test_customer_footer_shows_risk_flag(
         self, formatter: SlackDestinationPlugin
     ) -> None:
@@ -921,6 +940,20 @@ class TestSlackDestinationPluginFallbackText:
         result = formatter.format(basic_notification)
 
         assert "<!channel>" not in result["text"]
+
+    def test_fallback_text_is_single_line(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test whitespace in payload-derived text collapses to one line."""
+        basic_notification.insight = InsightInfo(
+            icon="warning",
+            text="Card declined:\ninsufficient\tfunds",
+        )
+        result = formatter.format(basic_notification)
+
+        assert "\n" not in result["text"]
+        assert "\t" not in result["text"]
+        assert "Card declined: insufficient funds" in result["text"]
 
 
 class TestSlackDestinationPluginEcommerceDetails:
