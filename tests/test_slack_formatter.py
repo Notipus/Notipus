@@ -422,6 +422,17 @@ class TestSlackDestinationPluginPaymentDetails:
 
         assert get_fields_text(result) == ""
 
+    def test_amount_fields_sanitize_currency(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test a malformed payload currency cannot inject Slack syntax."""
+        basic_notification.headline = "New subscription!"
+        assert basic_notification.payment is not None
+        basic_notification.payment.currency = "<!channel>"
+        result = formatter.format(basic_notification)
+
+        assert "<!channel>" not in get_fields_text(result).lower()
+
     def test_failure_reason_shown_with_fields(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:

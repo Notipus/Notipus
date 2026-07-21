@@ -568,6 +568,11 @@ class TestSafeMrkdwnLink:
         """Test javascript: URLs are rejected."""
         assert safe_mrkdwn_link("javascript:alert(1)", "Label") is None
 
+    def test_rejects_missing_host(self) -> None:
+        """Test scheme-only URLs with no host are rejected."""
+        assert safe_mrkdwn_link("https://", "Label") is None
+        assert safe_mrkdwn_link("https:///path-only", "Label") is None
+
     def test_rejects_pipe_in_url(self) -> None:
         """Test a pipe in the URL cannot break the link syntax."""
         assert safe_mrkdwn_link("https://evil.example/|phish", "Label") is None

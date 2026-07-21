@@ -301,7 +301,13 @@ def safe_mrkdwn_link(url: str | None, label: str) -> str | None:
     if not url:
         return None
     url = _clean_control_characters(url.strip())
-    if _sanitize_url(url) is None:
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    # Require a host as well as an http(s) scheme - a bare "https://"
+    # would render as a broken link.
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
         return None
     if any(c in url for c in "<>|") or any(c.isspace() for c in url):
         return None

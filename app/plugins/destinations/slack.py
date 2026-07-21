@@ -491,9 +491,12 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         amount_display: str = format_money(payment.amount, payment.currency)
         arr = payment.get_arr()
         if amount_display not in headline:
-            fields.append(f"*Amount*\n{payment.format_amount_with_arr()}")
+            # Sanitized because format_money falls back to the raw
+            # payload currency code for unknown currencies.
+            fields.append(f"*Amount*\n{safe_mrkdwn(payment.format_amount_with_arr())}")
         elif arr is not None:
-            fields.append(f"*ARR*\n{format_money(arr, payment.currency, 0)}")
+            arr_display = safe_mrkdwn(format_money(arr, payment.currency, 0))
+            fields.append(f"*ARR*\n{arr_display}")
 
         if payment.subscription_id:
             fields.append(f"*Subscription*\n#{safe_mrkdwn(payment.subscription_id)}")
