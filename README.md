@@ -9,9 +9,12 @@ Managed service: [notipus.com](https://notipus.com) · Self-hosting: [see below]
 - **Three payment sources**: Stripe, Shopify, and Maxio (Chargify) webhooks, with signature validation on every request
 - **One-click setup**: OAuth-based connections for Slack, Stripe (Stripe Connect creates the webhook endpoint for you), and Shopify — no manual token copying
 - **Automatic enrichment**: company data (logo, industry, size) via Brandfetch and person data (name, job title, seniority, LinkedIn) via Hunter.io
-- **Insight detection**: VIP and at-risk flags, lifetime-value milestones ($1k–$100k), trial start/conversion, upgrade and downgrade detection, payment-retry tracking, customer anniversaries
+- **Email domain badges**: customer emails are tagged as education, government, military, healthcare, free-provider, or disposable — so you see at a glance who's paying
+- **Insight detection**: VIP and at-risk flags, lifetime-value milestones ($1k–$100k), trial start/conversion, upgrade and downgrade detection, payment-retry tracking, customer anniversaries. Insights are emitted only when the webhook data supports them — lifetime-spend insights come from Maxio and Shopify payloads (Stripe events carry no lifetime spend, so Notipus never guesses)
 - **Noise reduction**: related events are consolidated and deduplicated into a single message instead of five pings
-- **Full event coverage**: new subscriptions, payment success/failure, refunds, cancellations and reactivations, Shopify orders and fulfillment
+- **Reliable delivery**: queued notifications are retried automatically for up to 6 hours with bounded attempts and duplicate suppression — a Slack hiccup doesn't mean a missed or doubled alert
+- **Full event coverage**: new subscriptions, payment success/failure, refunds, cancellations and reactivations, Shopify orders, fulfillment with real carrier status, and carrier-confirmed delivery
+- **Correct in every currency**: amounts respect each currency's real minor unit, including zero-decimal (JPY, KRW) and three-decimal (BHD, KWD) currencies
 - **Engaging messages**: Slack Block Kit formatting with action buttons that deep-link back to the originating dashboard
 
 ## Self-Hosting
@@ -596,21 +599,27 @@ Customer webhook integrations are configured per-tenant through the web interfac
 
 **Shopify**:
 
-- `orders/paid` - New order payments
+- `orders/create`, `orders/paid`, `orders/cancelled`, `orders/fulfilled` - Order lifecycle
+- `fulfillments/create`, `fulfillments/update` - Fulfillment progress with the carrier's real shipment status; a carrier-reported `shipment_status: delivered` becomes an order-delivered notification
 - `customers/create`, `customers/update` - Customer lifecycle events
 
 **Chargify/Maxio**:
 
-- `payment_success`, `payment_failure` - Payment outcomes
-- `subscription_created`, `subscription_updated` - Subscription lifecycle
+- `payment_success`, `payment_failure` - Payment outcomes (with retry tracking)
 - `renewal_success`, `renewal_failure` - Renewal events
+- `refund_success` - Refunds
+- `subscription_state_change`, `subscription_product_change`, `billing_date_change` - Plan, state, and billing changes (upgrades/downgrades include the previous plan)
+- `signup_success`, `signup_failure` - Signups
+- `customer_create`, `customer_update`, `customer_delete` - Customer lifecycle events
+- `component_allocation_change` - Usage component changes
+- Invoice and statement events
 
 **Stripe**:
 
-- `customer.subscription.created` - New subscription created
+- `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` - Subscription lifecycle (upgrades/downgrades include the previous plan)
 - `customer.subscription.trial_will_end` - Trial ending notification (3 days before)
-- `invoice.payment_succeeded` - Invoice payment successful
-- `invoice.payment_failed` - Invoice payment failed
+- `invoice.payment_succeeded` - Invoice payment successful (trial conversions called out)
+- `invoice.payment_failed` - Invoice payment failed (decline reason, retry count, next retry date)
 - `invoice.paid` - Invoice paid confirmation
 - `invoice.payment_action_required` - Payment requires customer action (3DS)
 - `checkout.session.completed` - Checkout completion
