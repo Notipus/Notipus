@@ -132,32 +132,11 @@ class LogoStorageService:
                     logger.warning("Invalid content type for logo: %r", content_type)
                     return None, ""
 
-                # Check content length if available. A malformed header is
-                # treated as unknown length rather than crashing; the streamed
-                # size cap below is the authoritative limit.
-                content_length = response.headers.get("Content-Length")
-                if content_length is not None:
-                    try:
-                        declared_size = int(content_length)
-                    except (ValueError, TypeError):
-                        declared_size = None
-                    if declared_size is not None and declared_size > MAX_LOGO_SIZE:
-                        logger.warning("Logo too large: %s bytes", content_length)
-                        return None, ""
-
-                # Download with size limit. Accumulate into a bytearray to
-                # avoid quadratic-time repeated bytes concatenation.
-                buffer = bytearray()
-                for chunk in response.iter_content(chunk_size=8192):
-                    buffer.extend(chunk)
-                    if len(buffer) > MAX_LOGO_SIZE:
-                        logger.warning("Logo exceeded size limit during download")
-                        return None, ""
-
-                if not buffer:
+                data = self._read_capped_body(response)
+                if not data:
                     return None, ""
 
-                return bytes(buffer), content_type
+                return data, content_type
 
         except requests.exceptions.Timeout:
             logger.warning("Timeout downloading logo from %r", url)
@@ -165,6 +144,41 @@ class LogoStorageService:
         except requests.exceptions.RequestException as e:
             logger.warning("Error downloading logo from %r: %s", url, e)
             return None, ""
+
+    def _read_capped_body(self, response: requests.Response) -> bytes | None:
+        """Read a response body, enforcing the maximum logo size.
+
+        Rejects up front if the Content-Length header declares a size over the
+        cap (a malformed header is treated as unknown length), then streams the
+        body into a bytearray and aborts if it exceeds the cap.
+
+        Args:
+            response: Streaming response to read from.
+
+        Returns:
+            The body bytes, or None if the size cap is exceeded.
+        """
+        # A malformed Content-Length is treated as unknown length rather than
+        # crashing; the streamed cap below is the authoritative limit.
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except (ValueError, TypeError):
+                declared_size = None
+            if declared_size is not None and declared_size > MAX_LOGO_SIZE:
+                logger.warning("Logo too large: %s bytes", content_length)
+                return None
+
+        # Accumulate into a bytearray to avoid quadratic-time concatenation.
+        buffer = bytearray()
+        for chunk in response.iter_content(chunk_size=8192):
+            buffer.extend(chunk)
+            if len(buffer) > MAX_LOGO_SIZE:
+                logger.warning("Logo exceeded size limit during download")
+                return None
+
+        return bytes(buffer)
 
     def refresh_logo(self, company: Company) -> bool:
         """Refresh logo from original URL.
