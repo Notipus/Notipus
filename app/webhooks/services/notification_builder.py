@@ -672,35 +672,35 @@ class NotificationBuilder:
         Returns:
             List of ActionButton objects.
         """
+        # Note: the company website is linked inline in the Slack company
+        # section, so it no longer gets its own button - buttons are
+        # reserved for actions.
+        _ = company
+
         event_type = event_data.get("type", "")
 
         actions: list[ActionButton] = []
 
         # Provider-specific dashboard link
         dashboard_action = self._build_provider_dashboard_action(event_data)
-        if dashboard_action:
-            actions.append(dashboard_action)
 
-        # Add company website link if enriched
-        if company and company.domain:
-            actions.append(
-                ActionButton(
-                    text="Website",
-                    url=f"https://{company.domain}",
-                    style="default",
-                )
-            )
-
-        # Add contact customer link for failures
+        # On a payment failure the account-saving action is contacting
+        # the customer, so it takes the primary style and first position;
+        # the dashboard link becomes secondary.
         email = customer_data.get("email")
         if event_type == "payment_failure" and email:
             actions.append(
                 ActionButton(
                     text="Contact Customer",
                     url=f"mailto:{email}",
-                    style="default",
+                    style="primary",
                 )
             )
+            if dashboard_action:
+                dashboard_action.style = "default"
+                actions.append(dashboard_action)
+        elif dashboard_action:
+            actions.append(dashboard_action)
 
         return actions
 

@@ -443,8 +443,8 @@ class TestSlackPersonSection:
         assert len(blocks) == 2
         links_block = blocks[1]
 
-        assert ":briefcase:" in links_block["elements"][0]["text"]
         assert "linkedin.com" in links_block["elements"][0]["text"]
+        assert "|LinkedIn>" in links_block["elements"][0]["text"]
 
     def test_person_section_has_twitter_link(
         self, slack_plugin, person_info: PersonInfo
@@ -453,8 +453,8 @@ class TestSlackPersonSection:
         blocks = slack_plugin._format_person_section(person_info)
         links_block = blocks[1]
 
-        assert ":bird:" in links_block["elements"][0]["text"]
         assert "twitter.com/johndoe" in links_block["elements"][0]["text"]
+        assert "|Twitter>" in links_block["elements"][0]["text"]
 
     def test_person_section_has_github_link(
         self, slack_plugin, person_info: PersonInfo
@@ -463,8 +463,8 @@ class TestSlackPersonSection:
         blocks = slack_plugin._format_person_section(person_info)
         links_block = blocks[1]
 
-        assert ":octocat:" in links_block["elements"][0]["text"]
         assert "github.com/johndoe" in links_block["elements"][0]["text"]
+        assert "|GitHub>" in links_block["elements"][0]["text"]
 
     def test_person_section_no_links_without_data(self, slack_plugin) -> None:
         """Test person section without social links."""

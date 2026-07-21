@@ -24,6 +24,7 @@ from webhooks.models.rich_notification import (
     PersonInfo,
     RichNotification,
 )
+from webhooks.utils.currency import format_money
 
 logger = logging.getLogger(__name__)
 
@@ -86,48 +87,10 @@ EMAIL_TAG_BADGES: dict[str, str] = {
     "disposable": ":wastebasket: Disposable email",
 }
 
-# Provider display icons
-PROVIDER_ICONS: dict[str, str] = {
-    # Payment providers
-    "shopify": "shopping_bags",
-    "chargify": "dollar",
-    "stripe": "credit_card",
-    "stripe_customer": "credit_card",
-    # Other providers
-    "intercom": "speech_balloon",
-    "zendesk": "ticket",
-    "segment": "bar_chart",
-    "mixpanel": "chart_with_upwards_trend",
-    "amplitude": "chart_with_upwards_trend",
-    "slack": "slack",
-    "github": "octocat",
-    "webhook": "link",
-    "api": "gear",
-    "system": "gear",
-    "unknown": "globe_with_meridians",
-}
-
-# Default icon for unknown providers (must be a valid Slack emoji)
-DEFAULT_PROVIDER_ICON = "globe_with_meridians"
-
-# Payment method icons
-PAYMENT_METHOD_ICONS: dict[str, str] = {
-    # Card brands
-    "visa": "credit_card",
-    "mastercard": "credit_card",
-    "amex": "credit_card",
-    "discover": "credit_card",
-    # Bank/ACH
-    "bank_account": "bank",
-    "us_bank_account": "bank",
-    "ach": "bank",
-    "sepa_debit": "bank",
-    # Digital wallets
-    "paypal": "paypal",
-    "apple_pay": "apple",
-    "google_pay": "iphone",
-    "shop_pay": "shopping_bags",
-}
+# Company descriptions are enrichment boilerplate; anything longer than
+# this dominates the message and can push the customer footer and action
+# buttons behind Slack's "Show more" collapse.
+MAX_DESCRIPTION_LENGTH = 160
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:
@@ -155,6 +118,34 @@ def _coerce_float(value: Any, default: float = 0.0) -> float:
     if not math.isfinite(result):
         return default
     return result
+
+
+def _truncate_mrkdwn(text: str, max_length: int) -> str:
+    """Truncate mrkdwn text without breaking link syntax.
+
+    Cutting inside a ``<url|label>`` link would leave a dangling ``<``
+    that Slack renders as broken markup, so a partial link at the cut
+    point is dropped entirely. The cut then backs up to a word boundary
+    and an ellipsis is appended.
+
+    Args:
+        text: Already-sanitized mrkdwn text.
+        max_length: Maximum length of the result, including the ellipsis.
+
+    Returns:
+        The text unchanged if it fits, otherwise a truncated version
+        ending in an ellipsis.
+    """
+    if len(text) <= max_length:
+        return text
+    cut = text[: max_length - 1]
+    open_bracket = cut.rfind("<")
+    if open_bracket > cut.rfind(">"):
+        cut = cut[:open_bracket]
+    space = cut.rfind(" ")
+    if space > 0:
+        cut = cut[:space]
+    return cut.rstrip() + "…"
 
 
 # Severity to color mapping
@@ -209,7 +200,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             n: RichNotification to format.
 
         Returns:
-            Dict with 'blocks' and 'color' for Slack API.
+            Dict with fallback 'text' and 'attachments' for Slack API.
         """
         blocks: list[dict[str, Any]] = []
 
@@ -225,33 +216,21 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
 
         # Payment/order details (for payment events)
         if n.payment:
-            blocks.append(self._format_payment_details(n))
+            payment_block = self._format_payment_details(n)
+            if payment_block:
+                blocks.append(payment_block)
 
         # Generic detail sections (for non-payment events or extras)
         for section in n.detail_sections:
             blocks.append(self._format_detail_section(section))
 
-        # Divider before company/customer section
-        blocks.append({"type": "divider"})
-
-        # Company section with logo (if enriched)
-        if n.company:
-            blocks.append(self._format_company_section(n.company))
-            # Add website & LinkedIn links below company section
-            links_block = self._format_company_links(n.company)
-            if links_block:
-                blocks.append(links_block)
-
-        # Person section (if enriched via Hunter.io)
-        if n.person:
-            person_blocks = self._format_person_section(n.person)
-            blocks.extend(person_blocks)
-
-        # Customer footer (optional - only shown when there's meaningful data)
-        if n.customer:
-            customer_footer = self._format_customer_footer(n.customer)
-            if customer_footer:
-                blocks.append(customer_footer)
+        # Company/person/customer blocks, preceded by a divider only when
+        # at least one is present - sparse events (e.g. an integration
+        # error with no customer) must not end on a dangling rule.
+        tail = self._format_tail_blocks(n)
+        if tail:
+            blocks.append({"type": "divider"})
+            blocks.extend(tail)
 
         # Action buttons (if present)
         if n.actions:
@@ -261,6 +240,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         # Top-level "color" is invalid for incoming webhooks
         color = SEVERITY_COLORS.get(n.severity, "#17a2b8")
         return {
+            "text": self._format_fallback_text(n),
             "attachments": [
                 {
                     "color": color,
@@ -268,6 +248,60 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
                 }
             ],
         }
+
+    def _format_tail_blocks(self, n: RichNotification) -> list[dict[str, Any]]:
+        """Build the company/person/customer blocks shown after the divider.
+
+        Args:
+            n: RichNotification.
+
+        Returns:
+            List of Slack blocks; empty when no enrichment or customer
+            data is available.
+        """
+        tail: list[dict[str, Any]] = []
+
+        # Company section with logo (if enriched)
+        if n.company:
+            tail.append(self._format_company_section(n.company))
+            # Add LinkedIn link below company section
+            links_block = self._format_company_links(n.company)
+            if links_block:
+                tail.append(links_block)
+
+        # Person section (if enriched via Hunter.io). It absorbs the
+        # customer facts (email, tenure, LTV, flags) so the reader gets
+        # one person block instead of two overlapping ones.
+        if n.person:
+            tail.extend(self._format_person_section(n.person, n.customer))
+        # Standalone customer footer (only shown when there's meaningful
+        # data and no person section already carries it)
+        elif n.customer:
+            customer_footer = self._format_customer_footer(n.customer)
+            if customer_footer:
+                tail.append(customer_footer)
+
+        return tail
+
+    def _format_fallback_text(self, n: RichNotification) -> str:
+        """Build the top-level fallback text for the message.
+
+        Slack renders this text in mobile push banners, desktop
+        notifications, and the channel sidebar preview. Attachment
+        blocks are invisible on those surfaces, so without it every
+        event shows up as a generic "sent a message" line.
+
+        Args:
+            n: RichNotification.
+
+        Returns:
+            Plain one-line summary, sanitized for mrkdwn.
+        """
+        parts = [n.headline]
+        if n.insight:
+            parts.append(n.insight.text)
+        fallback: str = safe_mrkdwn(" — ".join(parts))
+        return fallback
 
     def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
         """Send formatted notification to Slack via webhook.
@@ -331,27 +365,31 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
     def _format_insight(self, insight: InsightInfo) -> dict[str, Any]:
         """Format the insight/milestone line.
 
+        Insights (milestones, failure reasons, retry dates) are the
+        highest-value line in the message, so they render as a full-size
+        section block rather than muted context text.
+
         Args:
             insight: InsightInfo object.
 
         Returns:
-            Slack context block dict.
+            Slack section block dict.
         """
         emoji_name = SLACK_ICONS.get(insight.icon, "star")
         return {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f":{emoji_name}: *{insight.text}*",
-                }
-            ],
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":{emoji_name}: *{safe_mrkdwn(insight.text)}*",
+            },
         }
 
     def _format_provider_badge(self, n: RichNotification) -> dict[str, Any]:
         """Format the provider/source badge.
 
-        Adapts based on whether this is a payment event or not.
+        Adapts based on whether this is a payment event or not. Kept
+        emoji-free so the headline severity emoji stays the only icon
+        above the fold.
 
         Args:
             n: RichNotification.
@@ -359,15 +397,14 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         Returns:
             Slack context block dict.
         """
-        provider_emoji = PROVIDER_ICONS.get(n.provider, DEFAULT_PROVIDER_ICON)
-        elements = [f":{provider_emoji}: {n.provider_display}"]
+        elements = [n.provider_display]
 
         # Only add payment-specific badges for payment events
         if n.is_payment_event:
             # Check for trial events - show "Trial" badge instead of payment type
             if n.type in TRIAL_NOTIFICATION_TYPES:
-                elements.append(":rocket: Trial")
-            # Add payment type (recurring/one-time) without extra emojis
+                elements.append("Trial")
+            # Add payment type (recurring/one-time)
             elif n.is_recurring:
                 if n.billing_interval:
                     elements.append(f"Recurring ({n.billing_interval.title()})")
@@ -376,27 +413,15 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             elif n.payment:
                 elements.append("One-Time")
 
-            # Add payment method if available (keep credit_card emoji for clarity)
+            # Add payment method if available
             if n.payment and n.payment.payment_method:
-                pm_emoji = PAYMENT_METHOD_ICONS.get(
-                    n.payment.payment_method.lower(), "credit_card"
-                )
                 pm_display = n.payment.payment_method.title()
                 if n.payment.card_last4:
                     pm_display += f" ••••{n.payment.card_last4}"
-                elements.append(f":{pm_emoji}: {pm_display}")
+                elements.append(pm_display)
         else:
             # For non-payment events, add category badge
-            category = n.category.value.title()
-            category_icons = {
-                "usage": "bar_chart",
-                "support": "ticket",
-                "customer": "bust_in_silhouette",
-                "system": "gear",
-                "custom": "link",
-            }
-            cat_emoji = category_icons.get(n.category.value, "information_source")
-            elements.append(f":{cat_emoji}: {category}")
+            elements.append(n.category.value.title())
 
         return {
             "type": "context",
@@ -405,51 +430,75 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             ],
         }
 
-    def _format_payment_details(self, n: RichNotification) -> dict[str, Any]:
+    def _format_payment_details(self, n: RichNotification) -> dict[str, Any] | None:
         """Format payment/order details section.
 
         Args:
             n: RichNotification with payment info.
 
         Returns:
-            Slack section block dict.
+            Slack section block dict, or None when there is nothing to
+            show beyond what the headline already carries.
         """
         payment = n.payment
         if not payment:
-            return {"type": "section", "text": {"type": "mrkdwn", "text": ""}}
+            return None
 
         # Check if this is e-commerce (has order number or line items)
         is_ecommerce = payment.order_number or payment.line_items
 
         if is_ecommerce:
             return self._format_ecommerce_details(payment)
-        return self._format_subscription_details(payment)
+        return self._format_subscription_details(payment, n.headline)
 
-    def _format_subscription_details(self, payment: PaymentInfo) -> dict[str, Any]:
-        """Format SaaS subscription payment details.
+    def _format_subscription_details(
+        self, payment: PaymentInfo, headline: str
+    ) -> dict[str, Any] | None:
+        """Format SaaS subscription payment details as a two-column grid.
+
+        The headline usually carries the base amount already (e.g.
+        "$299.00 received"), so repeating it here would be noise - in
+        that case only the ARR is surfaced. Headlines without an amount
+        (e.g. "New subscription!") get the full amount-with-ARR field so
+        the money is never lost.
 
         Args:
             payment: PaymentInfo object.
+            headline: The notification headline, used to detect whether
+                the amount is already visible.
 
         Returns:
-            Slack section block dict.
+            Slack section block dict with a ``fields`` grid, or None
+            when every detail would duplicate the headline.
         """
-        lines = ["*Payment Details*"]
-
-        # Amount with ARR
-        lines.append(f"*Amount:* {payment.format_amount_with_arr()}")
+        fields: list[str] = []
 
         if payment.plan_name:
-            lines.append(f"*Plan:* {safe_mrkdwn(payment.plan_name)}")
-        if payment.subscription_id:
-            lines.append(f"*Subscription:* #{safe_mrkdwn(payment.subscription_id)}")
-        if payment.failure_reason:
-            lines.append(f":x: *Reason:* {safe_mrkdwn(payment.failure_reason)}")
+            fields.append(f"*Plan*\n{safe_mrkdwn(payment.plan_name)}")
 
-        return {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "\n".join(lines)},
-        }
+        amount_display: str = format_money(payment.amount, payment.currency)
+        arr = payment.get_arr()
+        if amount_display not in headline:
+            fields.append(f"*Amount*\n{payment.format_amount_with_arr()}")
+        elif arr is not None:
+            fields.append(f"*ARR*\n{format_money(arr, payment.currency, 0)}")
+
+        if payment.subscription_id:
+            fields.append(f"*Subscription*\n#{safe_mrkdwn(payment.subscription_id)}")
+
+        block: dict[str, Any] = {"type": "section"}
+        if fields:
+            block["fields"] = [{"type": "mrkdwn", "text": f} for f in fields]
+        # The failure insight does not always carry the reason (it may
+        # show retry info instead), so the reason stays here as well.
+        if payment.failure_reason:
+            block["text"] = {
+                "type": "mrkdwn",
+                "text": f":x: *Reason:* {safe_mrkdwn(payment.failure_reason)}",
+            }
+        if "fields" not in block and "text" not in block:
+            return None
+        return block
 
     def _format_ecommerce_details(self, payment: PaymentInfo) -> dict[str, Any]:
         """Format e-commerce order details with line items.
@@ -540,13 +589,19 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
     def _format_company_section(self, company: CompanyInfo) -> dict[str, Any]:
         """Format company enrichment section with logo.
 
+        The company domain is linked inline next to the name, so the
+        website does not need its own action button.
+
         Args:
             company: CompanyInfo object.
 
         Returns:
             Slack section block dict.
         """
-        text_parts = [f":office: *{safe_mrkdwn(company.name)}*"]
+        name_line = f"*{safe_mrkdwn(company.name)}*"
+        if company.domain:
+            name_line += f" · <https://{company.domain}|{safe_mrkdwn(company.domain)}>"
+        text_parts = [name_line]
 
         # Company details line
         details: list[str] = []
@@ -559,9 +614,12 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         if details:
             text_parts.append(f"_{' • '.join(details)}_")
 
-        # Description as blockquote
+        # Description as blockquote, truncated so enrichment boilerplate
+        # cannot dominate the message or push the actions behind Slack's
+        # "Show more" collapse.
         if company.description:
             desc = html_to_slack_mrkdwn(company.description)
+            desc = _truncate_mrkdwn(desc, MAX_DESCRIPTION_LENGTH)
             text_parts.append(f">{desc}")
 
         block: dict[str, Any] = {
@@ -594,34 +652,38 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         if not company.linkedin_url:
             return None
 
-        link_text = f":briefcase: <{company.linkedin_url}|LinkedIn>"
+        link_text = f"<{company.linkedin_url}|LinkedIn>"
         return {
             "type": "context",
             "elements": [{"type": "mrkdwn", "text": link_text}],
         }
 
-    def _format_person_section(self, person: PersonInfo) -> list[dict[str, Any]]:
+    def _format_person_section(
+        self, person: PersonInfo, customer: CustomerInfo | None = None
+    ) -> list[dict[str, Any]]:
         """Format person enrichment section (from Hunter.io).
 
         Displays person information from email enrichment, including
-        name, job title, seniority, location, and social links.
+        name, job title, seniority, location, and social links. When
+        customer info is passed, its facts line (email, tenure, LTV,
+        flags) is folded in below the person so the message shows a
+        single merged person block instead of a separate footer.
 
         Args:
             person: PersonInfo object from Hunter.io enrichment.
+            customer: Optional CustomerInfo to merge into this section.
 
         Returns:
-            List of Slack blocks (section and optional context block).
+            List of Slack blocks (section and optional context blocks).
         """
         blocks: list[dict[str, Any]] = []
 
         # Build main text content
         text_parts: list[str] = []
 
-        # Person name with icon
+        # Person name with icon, job info (title + seniority) inline
         display_name = person.full_name or person.email
-        text_parts.append(f":bust_in_silhouette: *{display_name}*")
-
-        # Job info line (title + seniority)
+        name_line = f":bust_in_silhouette: *{display_name}*"
         job_parts: list[str] = []
         if person.position:
             job_parts.append(person.position)
@@ -629,7 +691,8 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             # Capitalize seniority for display (e.g., "senior" -> "Senior")
             job_parts.append(person.seniority.title())
         if job_parts:
-            text_parts.append(f"_{' • '.join(job_parts)}_")
+            name_line += f" — _{' • '.join(job_parts)}_"
+        text_parts.append(name_line)
 
         # Location line
         if person.location:
@@ -643,42 +706,67 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             }
         )
 
-        # Social links as context block
-        links: list[str] = []
-        if person.linkedin_url:
-            links.append(f":briefcase: <{person.linkedin_url}|LinkedIn>")
-        if person.twitter_handle:
-            twitter_url = f"https://twitter.com/{person.twitter_handle}"
-            links.append(f":bird: <{twitter_url}|Twitter>")
-        if person.github_handle:
-            github_url = f"https://github.com/{person.github_handle}"
-            links.append(f":octocat: <{github_url}|GitHub>")
+        # Customer facts folded in under the person (icon suppressed -
+        # the name line above already carries it)
+        if customer:
+            customer_facts = self._format_customer_footer(customer, include_icon=False)
+            if customer_facts:
+                blocks.append(customer_facts)
 
-        if links:
-            blocks.append(
-                {
-                    "type": "context",
-                    "elements": [{"type": "mrkdwn", "text": " | ".join(links)}],
-                }
-            )
+        # Social links as context block
+        links_block = self._format_person_links(person)
+        if links_block:
+            blocks.append(links_block)
 
         return blocks
 
-    def _format_customer_footer(self, customer: CustomerInfo) -> dict[str, Any] | None:
+    def _format_person_links(self, person: PersonInfo) -> dict[str, Any] | None:
+        """Format the person's social links as a context block.
+
+        Args:
+            person: PersonInfo object from Hunter.io enrichment.
+
+        Returns:
+            Slack context block dict, or None when no links available.
+        """
+        links: list[str] = []
+        if person.linkedin_url:
+            links.append(f"<{person.linkedin_url}|LinkedIn>")
+        if person.twitter_handle:
+            twitter_url = f"https://twitter.com/{person.twitter_handle}"
+            links.append(f"<{twitter_url}|Twitter>")
+        if person.github_handle:
+            github_url = f"https://github.com/{person.github_handle}"
+            links.append(f"<{github_url}|GitHub>")
+
+        if not links:
+            return None
+        return {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": " · ".join(links)}],
+        }
+
+    def _format_customer_footer(
+        self, customer: CustomerInfo, include_icon: bool = True
+    ) -> dict[str, Any] | None:
         """Format customer info footer.
 
         Args:
             customer: CustomerInfo object.
+            include_icon: Whether to prefix the email/name with the
+                person icon. Pass False when a person section already
+                shows it, so the icon appears once per message.
 
         Returns:
             Slack context block dict, or None if no meaningful data.
         """
         elements: list[str] = []
+        icon_prefix = ":bust_in_silhouette: " if include_icon else ""
 
         # Email, with compact domain-type badges (e.g.
         # ":bust_in_silhouette: jane@stanford.edu · :mortar_board: Education")
         if customer.email:
-            email_parts = [f":bust_in_silhouette: {safe_mrkdwn(customer.email)}"]
+            email_parts = [f"{icon_prefix}{safe_mrkdwn(customer.email)}"]
             email_parts.extend(
                 EMAIL_TAG_BADGES[tag]
                 for tag in customer.email_tags
@@ -688,7 +776,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
 
         # Name if no email
         if not customer.email and customer.name:
-            elements.append(f":bust_in_silhouette: {safe_mrkdwn(customer.name)}")
+            elements.append(f"{icon_prefix}{safe_mrkdwn(customer.name)}")
 
         # Tenure (no emoji for cleaner look)
         if customer.tenure_display:

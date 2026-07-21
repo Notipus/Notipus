@@ -627,30 +627,61 @@ class TestActionButtons:
             == "https://acme-corp.chargify.com/subscriptions/sub_456"
         )
 
-    def test_website_button_with_company(
+    def test_no_website_button_with_company(
         self,
         builder: NotificationBuilder,
         payment_success_event: dict,
         customer_data: dict,
         mock_company: MagicMock,
     ) -> None:
-        """Test website button added when company is enriched."""
+        """Test no website button - the domain is linked inline instead.
+
+        Buttons are reserved for actions; the company website is shown
+        as an inline link in the Slack company section.
+        """
         result = builder.build(payment_success_event, customer_data, mock_company)
 
         action_texts = [a.text for a in result.actions]
-        assert "Website" in action_texts
+        assert "Website" not in action_texts
 
-    def test_contact_button_on_failure(
+    def test_contact_button_primary_on_failure(
         self,
         builder: NotificationBuilder,
         payment_failure_event: dict,
         customer_data: dict,
     ) -> None:
-        """Test contact customer button on payment failure."""
+        """Test contact customer is the primary action on payment failure."""
         result = builder.build(payment_failure_event, customer_data)
 
+        contact_buttons = [a for a in result.actions if a.text == "Contact Customer"]
+        assert len(contact_buttons) == 1
+        assert contact_buttons[0].style == "primary"
+        assert result.actions[0].text == "Contact Customer"
+
+    def test_dashboard_secondary_on_failure(
+        self, builder: NotificationBuilder, customer_data: dict
+    ) -> None:
+        """Test the dashboard link is demoted to secondary on failures.
+
+        The account-saving action on a failure is contacting the
+        customer, so the provider dashboard link loses the primary
+        style and second position it has on other events.
+        """
+        event = {
+            "type": "payment_failure",
+            "provider": "stripe",
+            "customer_id": "cus_123",
+            "amount": 99.00,
+            "currency": "USD",
+            "metadata": {"failure_reason": "Card declined"},
+        }
+        result = builder.build(event, customer_data)
+
         action_texts = [a.text for a in result.actions]
-        assert "Contact Customer" in action_texts
+        assert action_texts == ["Contact Customer", "View in Stripe"]
+        styles = {a.text: a.style for a in result.actions}
+        assert styles["Contact Customer"] == "primary"
+        assert styles["View in Stripe"] == "default"
 
 
 class TestInsightDetection:
