@@ -16,6 +16,11 @@ from webhooks.services.billing import map_stripe_status
 
 logger = logging.getLogger(__name__)
 
+# Plan keys accepted for Workspace.subscription_plan. Anything a Stripe
+# product name normalizes to that isn't in this set is rejected rather than
+# persisted, since QuerySet.update() bypasses model field-choice validation.
+_VALID_PLAN_KEYS = frozenset(key for key, _label in Workspace.STRIPE_PLANS)
+
 
 class Command(BaseCommand):
     """Django management command to sync Stripe subscriptions globally.
@@ -227,10 +232,31 @@ class Command(BaseCommand):
         return cast("str | None", self._safe_get(product, "name"))
 
     def _normalize_plan_name(self, product_name: str | None) -> str | None:
-        """Convert product name to internal plan name."""
+        """Convert a Stripe product name to a valid internal plan key.
+
+        Rejects anything that doesn't normalize to a known
+        ``Workspace.STRIPE_PLANS`` key (logging a warning) so a drifted
+        product name never reaches ``subscription_plan`` via the
+        validation-bypassing ``QuerySet.update()``.
+
+        Args:
+            product_name: Product display name from the subscription, or None.
+
+        Returns:
+            A valid plan key, or None when absent or unrecognized.
+        """
         if not product_name:
             return None
-        return product_name.lower().replace("notipus ", "").replace(" plan", "").strip()
+        normalized = (
+            product_name.lower().replace("notipus ", "").replace(" plan", "").strip()
+        )
+        if normalized in _VALID_PLAN_KEYS:
+            return normalized
+        logger.warning(
+            f"Unrecognized plan name {product_name!r} (normalized to "
+            f"{normalized!r}); leaving workspace plan unchanged"
+        )
+        return None
 
     def _process_customer(
         self,
@@ -330,6 +356,12 @@ class Command(BaseCommand):
             update_data["subscription_plan"] = plan
         if sub.id:
             update_data["stripe_subscription_id"] = sub.id
+
+        # Keep the billing cycle anchor in sync (the next renewal timestamp),
+        # matching the model contract; the prior BillingService path wrote it.
+        billing_anchor = self._safe_get(sub, "current_period_end")
+        if billing_anchor is not None:
+            update_data["billing_cycle_anchor"] = billing_anchor
 
         Workspace.objects.filter(id=workspace.id).update(**update_data)
         self.stdout.write(

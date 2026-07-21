@@ -8,6 +8,7 @@ from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
+import stripe
 from core.models import Workspace
 from django.core.management import call_command
 from webhooks.services.billing import STRIPE_STATUS_MAPPING, BillingService
@@ -24,13 +25,18 @@ def workspace(db) -> Workspace:
     )
 
 
-def _make_mock_sub(
+def _make_stripe_sub(
     sub_id: str,
     customer_id: str,
     status: str,
     product_name: str | None = None,
-) -> MagicMock:
-    """Build a MagicMock shaped like a Stripe Subscription object.
+    current_period_end: int | None = None,
+) -> stripe.Subscription:
+    """Build a real ``stripe.Subscription`` object for the command to parse.
+
+    A genuine Stripe object (not a MagicMock) is used so the command's
+    ``_get_product_name`` / plan-parsing logic is actually exercised;
+    MagicMock's auto-``.get`` would silently short-circuit that path.
 
     Args:
         sub_id: Subscription id.
@@ -38,27 +44,37 @@ def _make_mock_sub(
         status: Stripe subscription status.
         product_name: Product name exposed via items.data[0].price.product,
             or None to leave items empty.
+        current_period_end: Billing anchor timestamp, or None to omit.
 
     Returns:
-        A MagicMock mimicking the attribute access the command performs.
+        A ``stripe.Subscription`` mirroring the API's nested shape.
     """
-    sub = MagicMock()
-    sub.id = sub_id
-    sub.customer = customer_id
-    sub.status = status
+    data: dict = {
+        "id": sub_id,
+        "object": "subscription",
+        "customer": customer_id,
+        "status": status,
+    }
+    if current_period_end is not None:
+        data["current_period_end"] = current_period_end
 
-    items = MagicMock()
     if product_name is None:
-        items.data = []
+        item_data: list = []
     else:
-        price = MagicMock()
-        price.product = MagicMock()
-        price.product.name = product_name
-        item = MagicMock()
-        item.price = price
-        items.data = [item]
-    sub.items = items
-    return sub
+        item_data = [
+            {
+                "price": {
+                    "product": {
+                        "id": "prod_test",
+                        "object": "product",
+                        "name": product_name,
+                    }
+                }
+            }
+        ]
+    data["items"] = {"object": "list", "data": item_data}
+
+    return stripe.Subscription.construct_from(data, "sk_test")
 
 
 @pytest.fixture
@@ -447,12 +463,20 @@ class TestSyncStripeSubscriptionsCommand:
             name="Stored Sub Workspace",
             stripe_customer_id="cus_stored",
             subscription_status="trial",
-            subscription_plan="pro",
+            subscription_plan="basic",
             stripe_subscription_id="sub_stored",
         )
 
-        other = _make_mock_sub("sub_other", "cus_stored", "active")
-        stored = _make_mock_sub("sub_stored", "cus_stored", "active")
+        other = _make_stripe_sub(
+            "sub_other", "cus_stored", "active", "Notipus Enterprise Plan"
+        )
+        stored = _make_stripe_sub(
+            "sub_stored",
+            "cus_stored",
+            "active",
+            "Notipus Pro Plan",
+            current_period_end=1710000000,
+        )
 
         mock_response = MagicMock()
         mock_response.data = [other, stored]  # other is first-seen
@@ -470,8 +494,10 @@ class TestSyncStripeSubscriptionsCommand:
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "active"
-        # The stored subscription won, so its id is preserved (not "sub_other").
+        # The stored subscription won, so its plan/id/anchor win (not "sub_other").
         assert workspace.stripe_subscription_id == "sub_stored"
+        assert workspace.subscription_plan == "pro"
+        assert workspace.billing_cycle_anchor == 1710000000
 
     def test_downgrades_workspace_with_only_canceled_subscription(self, db) -> None:
         """Verify a workspace whose only subscription is canceled downgrades.
@@ -486,7 +512,9 @@ class TestSyncStripeSubscriptionsCommand:
             subscription_plan="pro",
         )
 
-        canceled = _make_mock_sub("sub_canceled", "cus_canceled", "canceled")
+        canceled = _make_stripe_sub(
+            "sub_canceled", "cus_canceled", "canceled", "Notipus Pro Plan"
+        )
 
         mock_response = MagicMock()
         mock_response.data = [canceled]
@@ -505,6 +533,43 @@ class TestSyncStripeSubscriptionsCommand:
         workspace.refresh_from_db()
         assert workspace.subscription_status == "cancelled"
         assert workspace.subscription_status != "active"
+
+    def test_invalid_plan_name_is_not_persisted(self, db) -> None:
+        """Verify an unrecognized plan name is skipped, not written.
+
+        ``QuerySet.update()`` bypasses field-choice validation, so a Stripe
+        product name that doesn't normalize to a known plan key must leave
+        the existing plan intact while other state still syncs.
+        """
+        workspace = Workspace.objects.create(
+            name="Bad Plan Workspace",
+            stripe_customer_id="cus_badplan",
+            subscription_status="trial",
+            subscription_plan="basic",
+        )
+
+        sub = _make_stripe_sub(
+            "sub_bad", "cus_badplan", "active", "Notipus Mystery Plan"
+        )
+
+        mock_response = MagicMock()
+        mock_response.data = [sub]
+        mock_response.has_more = False
+
+        with patch("stripe.api_key", "sk_test"):
+            with patch("stripe.api_version", "2025-01-01"):
+                with patch("stripe.Account.retrieve") as mock_account:
+                    mock_account.return_value = MagicMock(id="acct_test")
+                    with patch("stripe.Subscription.list") as mock_list:
+                        mock_list.return_value = mock_response
+
+                        out = StringIO()
+                        call_command("sync_stripe_subscriptions", stdout=out)
+
+        workspace.refresh_from_db()
+        # Status still synced, but the garbage plan was NOT persisted.
+        assert workspace.subscription_status == "active"
+        assert workspace.subscription_plan == "basic"
 
     def test_fetches_subscriptions_with_status_all(self, workspace: Workspace) -> None:
         """Verify the Stripe list call passes status="all"."""
