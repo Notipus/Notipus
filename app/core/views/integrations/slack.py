@@ -50,7 +50,14 @@ def _get_admin_workspace(request: HttpRequest) -> Workspace | None:
     if not request.user.is_authenticated:
         return None
 
-    member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()
+    # Order deterministically so selection is stable when a user belongs to
+    # multiple workspaces (explicit current-workspace resolution is a
+    # pre-existing codebase concern and out of scope for this PR).
+    member = (
+        WorkspaceMember.objects.filter(user=request.user, is_active=True)
+        .order_by("joined_at", "id")
+        .first()
+    )
     if member is None:
         # UserProfile users are treated as owners for backward compatibility.
         try:
