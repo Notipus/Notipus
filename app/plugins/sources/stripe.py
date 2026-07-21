@@ -81,13 +81,24 @@ class StripeSourcePlugin(BaseSourcePlugin):
             priority=100,
         )
 
-    def __init__(self, webhook_secret: str = "") -> None:
+    def __init__(
+        self, webhook_secret: str = "", process_billing_events: bool = False
+    ) -> None:
         """Initialize Stripe plugin with webhook secret.
 
         Args:
             webhook_secret: Stripe webhook signing secret.
+            process_billing_events: When True, dispatch parsed events to
+                BillingService, mutating Notipus workspace subscription
+                state. Only the global billing endpoint
+                (/webhook/billing/stripe/, Notipus's own Stripe account)
+                may set this. Tenant notification endpoints
+                (/webhook/customer/<uuid>/stripe/) validate against a
+                tenant-supplied secret, so events arriving there are
+                tenant-controlled and must never reach BillingService.
         """
         super().__init__(webhook_secret)
+        self.process_billing_events = process_billing_events
         # Store webhook data for customer lookup (we can't call Stripe API
         # because we don't have the customer's API key - only the webhook)
         self._current_webhook_data: dict[str, Any] | None = None
@@ -103,9 +114,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             True if signature is valid, False otherwise.
         """
-        if settings.DISABLE_BILLING:
-            return False
-
         # Pre-validation: log only minimal, non-attacker-controlled fields
         # so unauthenticated callers cannot flood logs with payload content.
         logger.debug(
@@ -398,10 +406,34 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
         return None
 
+    def _dispatch_billing_handler(
+        self, handler_name: str, data: dict[str, Any]
+    ) -> None:
+        """Invoke a BillingService handler iff billing processing is enabled.
+
+        Tenant notification endpoints construct this plugin with
+        process_billing_events=False (the default), so tenant-signed
+        events can never mutate Notipus workspace billing state.
+
+        Args:
+            handler_name: Name of the BillingService static method.
+            data: Event data dictionary to pass to the handler.
+        """
+        if not self.process_billing_events:
+            return
+
+        from webhooks.services.billing import BillingService
+
+        getattr(BillingService, handler_name)(data)
+
     def _get_amount_and_dispatch_billing(
         self, event_type: str, data: dict[str, Any]
     ) -> int:
         """Get amount in cents and dispatch to appropriate billing handler.
+
+        Billing handlers only run when this plugin instance was created
+        with process_billing_events=True (the global billing endpoint);
+        amount extraction and notification metadata always run.
 
         Args:
             event_type: The normalized event type.
@@ -410,8 +442,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             Amount in cents.
         """
-        from webhooks.services.billing import BillingService
-
         if event_type == "subscription_created":
             return self._handle_subscription_created(data)
 
@@ -419,30 +449,30 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return self._handle_subscription_updated(data)
 
         if event_type == "subscription_deleted":
-            BillingService.handle_subscription_deleted(data)
+            self._dispatch_billing_handler("handle_subscription_deleted", data)
             return 0
 
         if event_type == "payment_success":
             return self._handle_payment_success(data)
 
         if event_type == "payment_failure":
-            BillingService.handle_payment_failed(data)
+            self._dispatch_billing_handler("handle_payment_failed", data)
             return int(data.get("amount_due", 0))
 
         if event_type == "checkout_completed":
-            BillingService.handle_checkout_completed(data)
+            self._dispatch_billing_handler("handle_checkout_completed", data)
             return int(data.get("amount_total", 0))
 
         if event_type == "trial_ending":
-            BillingService.handle_trial_ending(data)
+            self._dispatch_billing_handler("handle_trial_ending", data)
             return 0
 
         if event_type == "invoice_paid":
-            BillingService.handle_invoice_paid(data)
+            self._dispatch_billing_handler("handle_invoice_paid", data)
             return int(data.get("amount_paid", 0))
 
         if event_type == "payment_action_required":
-            BillingService.handle_payment_action_required(data)
+            self._dispatch_billing_handler("handle_payment_action_required", data)
             return int(data.get("amount_due", 0))
 
         return 0
@@ -456,9 +486,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             Amount in cents (0 for trials, plan amount otherwise).
         """
-        from webhooks.services.billing import BillingService
-
-        BillingService.handle_subscription_created(data)
+        self._dispatch_billing_handler("handle_subscription_created", data)
 
         # Check if this is a trial subscription
         if data.get("status") == "trialing":
@@ -497,8 +525,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             Current plan amount in cents.
         """
-        from webhooks.services.billing import BillingService
-
         current_amount: int = self._extract_subscription_amount(data)
         prev_amount = self._get_previous_plan_amount(data)
         change_direction = self._detect_change_direction(current_amount, prev_amount)
@@ -506,7 +532,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if change_direction:
             data["_change_direction"] = change_direction
 
-        BillingService.handle_subscription_updated(data)
+        self._dispatch_billing_handler("handle_subscription_updated", data)
         return current_amount
 
     def _handle_payment_success(self, data: dict[str, Any]) -> int:
@@ -518,8 +544,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             Amount paid in cents.
         """
-        from webhooks.services.billing import BillingService
-
         # Use amount_paid, not amount_due (amount_due is 0 after payment succeeds)
         amount_cents: int = int(data.get("amount_paid", 0))
 
@@ -535,7 +559,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         ):
             data["_is_trial_conversion"] = True
 
-        BillingService.handle_payment_success(data)
+        self._dispatch_billing_handler("handle_payment_success", data)
         return amount_cents
 
     def _extract_invoice_trial_end(self, data: dict[str, Any]) -> int | None:

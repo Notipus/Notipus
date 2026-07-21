@@ -96,8 +96,11 @@ class StripeAPI:
                      settings.STRIPE_SECRET_KEY (for Notipus billing).
         """
         self.api_key = api_key or settings.STRIPE_SECRET_KEY
-        # Configure Stripe with the secret key and API version
-        stripe.api_key = self.api_key
+        # The key is passed per SDK call (api_key=self.api_key), never
+        # assigned to the module-global stripe.api_key: a global would
+        # leak this instance's key into concurrent requests using a
+        # different one. The API version is safe to set globally — it is
+        # identical for every caller.
         stripe.api_version = settings.STRIPE_API_VERSION
 
     def get_account_info(self) -> dict[str, Any] | None:
@@ -107,11 +110,8 @@ class StripeAPI:
             Dict with account info if successful, None if API key is invalid.
         """
         try:
-            # Temporarily set the API key for this request
-            stripe.api_key = self.api_key
-
             # Retrieve the connected account info
-            account = stripe.Account.retrieve()
+            account = stripe.Account.retrieve(api_key=self.api_key)
             return {
                 "id": account.id,
                 "business_profile": {
@@ -148,10 +148,8 @@ class StripeAPI:
         """
         try:
             # Configure Stripe API key for this operation
-            stripe.api_key = self.api_key
-
             # Use Stripe SDK to create customer
-            customer = stripe.Customer.create(**customer_data)
+            customer = stripe.Customer.create(api_key=self.api_key, **customer_data)
             return customer.to_dict()
         except stripe.StripeError as e:
             logger.error(f"Stripe error creating customer: {e!s}")
@@ -175,12 +173,13 @@ class StripeAPI:
             Created customer data dictionary, or None on failure.
         """
         try:
-            # Configure Stripe API key and version for this operation
-            stripe.api_key = settings.STRIPE_SECRET_KEY
             stripe.api_version = settings.STRIPE_API_VERSION
 
-            # Use Stripe SDK to create customer
-            customer = stripe.Customer.create(**customer_data)
+            # Use Stripe SDK to create customer; key passed per call, not
+            # via the module-global (see __init__).
+            customer = stripe.Customer.create(
+                api_key=settings.STRIPE_SECRET_KEY, **customer_data
+            )
             return customer.to_dict()
         except stripe.StripeError as e:
             logger.error(f"Stripe error creating customer: {e!s}")
@@ -207,6 +206,7 @@ class StripeAPI:
         exists and is correctly linked via metadata.
         """
         customer = stripe.Customer.create(
+            api_key=self.api_key,
             idempotency_key=f"workspace-customer-{workspace_uuid}",
             metadata={
                 "workspace_id": str(workspace_id),
@@ -218,7 +218,7 @@ class StripeAPI:
         if member_email:
             modify_params["email"] = member_email
         try:
-            stripe.Customer.modify(customer.id, **modify_params)
+            stripe.Customer.modify(customer.id, api_key=self.api_key, **modify_params)
         except stripe.StripeError as modify_err:
             logger.warning(
                 f"Failed to set name/email on Stripe customer "
@@ -251,8 +251,6 @@ class StripeAPI:
         from core.models import Workspace as WorkspaceModel
 
         try:
-            stripe.api_key = self.api_key
-
             # Phase 1: short locked read. If a customer already exists,
             # confirm it with Stripe and return early.
             with transaction.atomic():
@@ -272,7 +270,9 @@ class StripeAPI:
 
             if existing_customer_id:
                 try:
-                    customer = stripe.Customer.retrieve(existing_customer_id)
+                    customer = stripe.Customer.retrieve(
+                        existing_customer_id, api_key=self.api_key
+                    )
                     if not _safe_getattr(customer, "deleted", False):
                         workspace.stripe_customer_id = existing_customer_id
                         return customer.to_dict()
@@ -324,7 +324,9 @@ class StripeAPI:
             # match what's stored on the workspace.
             if customer.id == persisted_customer_id:
                 return customer.to_dict()
-            return stripe.Customer.retrieve(persisted_customer_id).to_dict()
+            return stripe.Customer.retrieve(
+                persisted_customer_id, api_key=self.api_key
+            ).to_dict()
 
         except stripe.StripeError as e:
             logger.error(f"Stripe error in get_or_create_customer: {e!s}")
@@ -362,8 +364,6 @@ class StripeAPI:
             Checkout session data with 'url' for redirect, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             # Append session_id to success URL for retrieval after redirect
             # This avoids session cookie issues with cross-site redirects
             from urllib.parse import urlparse
@@ -404,7 +404,9 @@ class StripeAPI:
             if idempotency_key:
                 session_params["idempotency_key"] = idempotency_key
 
-            session = stripe.checkout.Session.create(**session_params)
+            session = stripe.checkout.Session.create(
+                api_key=self.api_key, **session_params
+            )
 
             logger.info(
                 f"Created checkout session {session.id} for customer {customer_id}"
@@ -438,8 +440,7 @@ class StripeAPI:
             return None
 
         try:
-            stripe.api_key = self.api_key
-            session = stripe.checkout.Session.retrieve(session_id)
+            session = stripe.checkout.Session.retrieve(session_id, api_key=self.api_key)
 
             return {
                 "id": session.id,
@@ -474,9 +475,8 @@ class StripeAPI:
             Portal session data with 'url' for redirect, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             session = stripe.billing_portal.Session.create(
+                api_key=self.api_key,
                 customer=customer_id,
                 return_url=return_url or settings.STRIPE_PORTAL_RETURN_URL,
             )
@@ -567,8 +567,6 @@ class StripeAPI:
             List of price dictionaries with product info.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {
                 "limit": limit,
                 "expand": ["data.product"],
@@ -577,13 +575,13 @@ class StripeAPI:
             if active_only:
                 params["active"] = True
 
-            prices = stripe.Price.list(**params)
+            prices = stripe.Price.list(api_key=self.api_key, **params)
 
             result = []
             for price in prices.data:
                 product = price.product
                 if isinstance(product, str):
-                    product = stripe.Product.retrieve(product)
+                    product = stripe.Product.retrieve(product, api_key=self.api_key)
 
                 # Apply filters
                 if product_ids and product.id not in product_ids:
@@ -661,7 +659,9 @@ class StripeAPI:
             if isinstance(product, str):
                 # Product is not expanded, fetch it from Stripe
                 try:
-                    fetched_product = stripe.Product.retrieve(product)
+                    fetched_product = stripe.Product.retrieve(
+                        product, api_key=self.api_key
+                    )
                     product_name = fetched_product.name
                     # Prefer metadata.plan_name if available (more reliable)
                     plan_name = _metadata_to_dict(
@@ -722,10 +722,12 @@ class StripeAPI:
             "past_due",
         )
         try:
-            stripe.api_key = self.api_key
             for status in live_statuses:
                 response = stripe.Subscription.list(
-                    customer=customer_id, status=status, limit=1
+                    customer=customer_id,
+                    status=status,
+                    limit=1,
+                    api_key=self.api_key,
                 )
                 if response.data:
                     return True
@@ -774,8 +776,6 @@ class StripeAPI:
                 call fails. Default callers continue to receive [] on error.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {
                 "customer": customer_id,
                 # Note: Can't expand data.items.data.price.product (5 levels > 4 max)
@@ -795,7 +795,8 @@ class StripeAPI:
             # subscriptions than fits on one page (e.g. an account with many
             # canceled ones) doesn't hide an off-page live one from callers.
             result = []
-            for sub in stripe.Subscription.list(**params).auto_paging_iter():
+            subscription_list = stripe.Subscription.list(api_key=self.api_key, **params)
+            for sub in subscription_list.auto_paging_iter():
                 # Use _safe_getattr for attributes that may be missing
                 # on canceled/incomplete subscriptions. Stripe SDK's __getattr__
                 # raises KeyError (not AttributeError) for missing attributes.
@@ -846,11 +847,10 @@ class StripeAPI:
             List of invoice dictionaries.
         """
         try:
-            stripe.api_key = self.api_key
-
             invoices = stripe.Invoice.list(
                 customer=customer_id,
                 limit=limit,
+                api_key=self.api_key,
             )
 
             result = []
@@ -892,11 +892,10 @@ class StripeAPI:
             Price data dictionary, or None if not found.
         """
         try:
-            stripe.api_key = self.api_key
-
             prices = stripe.Price.list(
                 lookup_keys=[lookup_key],
                 expand=["data.product"],
+                api_key=self.api_key,
             )
 
             if not prices.data:
@@ -939,8 +938,6 @@ class StripeAPI:
             Created product data dictionary, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             product_params: dict[str, Any] = {
                 "name": name,
             }
@@ -951,7 +948,7 @@ class StripeAPI:
             if metadata:
                 product_params["metadata"] = metadata
 
-            product = stripe.Product.create(**product_params)
+            product = stripe.Product.create(api_key=self.api_key, **product_params)
 
             logger.info(f"Created Stripe product {product.id}: {name}")
             return _product_to_dict(product)
@@ -984,8 +981,6 @@ class StripeAPI:
             Created price data dictionary, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             price_params: dict[str, Any] = {
                 "product": product_id,
                 "unit_amount": unit_amount,
@@ -998,7 +993,7 @@ class StripeAPI:
                 # Transfer lookup key if it already exists on another price
                 price_params["transfer_lookup_key"] = True
 
-            price = stripe.Price.create(**price_params)
+            price = stripe.Price.create(api_key=self.api_key, **price_params)
 
             logger.info(
                 f"Created Stripe price {price.id} for product {product_id}: "
@@ -1041,14 +1036,12 @@ class StripeAPI:
             List of product dictionaries.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {"limit": limit}
 
             if active_only:
                 params["active"] = True
 
-            products = stripe.Product.list(**params)
+            products = stripe.Product.list(api_key=self.api_key, **params)
 
             result = [_product_to_dict(product) for product in products.data]
 
@@ -1077,11 +1070,9 @@ class StripeAPI:
             Product data dictionary if found, None otherwise.
         """
         try:
-            stripe.api_key = self.api_key
-
             # Stripe doesn't support direct metadata filtering in list,
             # so we need to fetch all and filter
-            products = stripe.Product.list(limit=100, active=True)
+            products = stripe.Product.list(limit=100, active=True, api_key=self.api_key)
 
             for product in products.data:
                 metadata = _metadata_to_dict(_safe_getattr(product, "metadata"))
@@ -1118,8 +1109,6 @@ class StripeAPI:
             Updated product data dictionary, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             update_params: dict[str, Any] = {}
 
             if name is not None:
@@ -1133,7 +1122,9 @@ class StripeAPI:
                 logger.warning("No update parameters provided for product")
                 return None
 
-            product = stripe.Product.modify(product_id, **update_params)
+            product = stripe.Product.modify(
+                product_id, api_key=self.api_key, **update_params
+            )
 
             logger.info(f"Updated Stripe product {product.id}")
             return _product_to_dict(product)
@@ -1158,8 +1149,7 @@ class StripeAPI:
             True if successfully archived, False otherwise.
         """
         try:
-            stripe.api_key = self.api_key
-            stripe.Product.modify(product_id, active=False)
+            stripe.Product.modify(product_id, active=False, api_key=self.api_key)
             logger.info(f"Archived Stripe product: {product_id}")
             return True
         except stripe.StripeError as e:
@@ -1182,8 +1172,7 @@ class StripeAPI:
             True if successfully archived, False otherwise.
         """
         try:
-            stripe.api_key = self.api_key
-            stripe.Price.modify(price_id, active=False)
+            stripe.Price.modify(price_id, active=False, api_key=self.api_key)
             logger.info(f"Archived Stripe price: {price_id}")
             return True
         except stripe.StripeError as e:
@@ -1208,8 +1197,6 @@ class StripeAPI:
             List of price dictionaries.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {
                 "product": product_id,
                 "limit": 100,
@@ -1217,7 +1204,7 @@ class StripeAPI:
             if active_only:
                 params["active"] = True
 
-            prices = stripe.Price.list(**params)
+            prices = stripe.Price.list(api_key=self.api_key, **params)
 
             result = []
             for price in prices.data:

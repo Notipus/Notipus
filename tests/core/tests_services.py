@@ -247,20 +247,89 @@ class BillingServiceTest(TestCase):
             "No workspace found for customer cus_nonexistent"
         )
 
+    @patch.object(BillingService, "sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
-    def test_handle_payment_success(self, mock_logger):
-        """Test successful payment handling"""
-        invoice_data = {"customer": "cus_test123", "period_end": 1234567890}
+    def test_handle_payment_success(self, mock_logger, mock_sync):
+        """Test successful payment handling for the workspace's subscription"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            stripe_subscription_id="sub_test123"
+        )
+        invoice_data = {
+            "customer": "cus_test123",
+            "subscription": "sub_test123",
+            "amount_paid": 2900,
+            "period_end": 1234567890,
+        }
 
         BillingService.handle_payment_success(invoice_data)
 
         self.workspace.refresh_from_db()
         self.assertEqual(self.workspace.subscription_status, "active")
+        self.assertTrue(self.workspace.payment_method_added)
         self.assertEqual(self.workspace.billing_cycle_anchor, 1234567890)
 
         mock_logger.info.assert_called_once_with(
-            "Updated payment status to active for customer cus_test123"
+            "Applied payment_success for customer cus_test123 (amount_paid=2900)"
         )
+        # Authoritative refinement runs after the direct write
+        mock_sync.assert_called_once_with("cus_test123")
+
+    @patch.object(BillingService, "sync_workspace_from_stripe")
+    def test_handle_payment_success_ignores_one_off_invoice(self, mock_sync):
+        """A paid invoice with no subscription must not touch the workspace"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            subscription_status="cancelled"
+        )
+        invoice_data = {"customer": "cus_test123", "period_end": 1234567890}
+
+        BillingService.handle_payment_success(invoice_data)
+
+        self.workspace.refresh_from_db()
+        # A one-off invoice must not reactivate a cancelled workspace
+        self.assertEqual(self.workspace.subscription_status, "cancelled")
+        mock_sync.assert_not_called()
+
+    @patch.object(BillingService, "sync_workspace_from_stripe")
+    def test_handle_payment_success_ignores_other_subscription(self, mock_sync):
+        """A paid invoice for an add-on subscription must not activate"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            subscription_status="cancelled",
+            stripe_subscription_id="sub_primary",
+        )
+        invoice_data = {
+            "customer": "cus_test123",
+            "subscription": "sub_addon",
+            "amount_paid": 500,
+        }
+
+        BillingService.handle_payment_success(invoice_data)
+
+        self.workspace.refresh_from_db()
+        self.assertEqual(self.workspace.subscription_status, "cancelled")
+        mock_sync.assert_not_called()
+
+    @patch.object(BillingService, "sync_workspace_from_stripe")
+    def test_handle_payment_success_zero_amount_does_not_activate(self, mock_sync):
+        """The $0 trial-start invoice must not flip a trial to active"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            subscription_status="trial",
+            subscription_plan="pro",
+            stripe_subscription_id="sub_test123",
+        )
+        invoice_data = {
+            "customer": "cus_test123",
+            "subscription": "sub_test123",
+            "amount_paid": 0,
+            "period_end": 1234567890,
+        }
+
+        BillingService.handle_payment_success(invoice_data)
+
+        self.workspace.refresh_from_db()
+        self.assertEqual(self.workspace.subscription_status, "trial")
+        self.assertFalse(self.workspace.payment_method_added)
+        # Sync still runs to derive the authoritative state
+        mock_sync.assert_called_once_with("cus_test123")
 
     @patch("webhooks.services.billing.logger")
     def test_handle_payment_success_missing_customer(self, mock_logger):
@@ -269,7 +338,9 @@ class BillingServiceTest(TestCase):
 
         BillingService.handle_payment_success(invoice_data)
 
-        mock_logger.error.assert_called_once_with("Missing customer ID in invoice data")
+        mock_logger.error.assert_called_once_with(
+            "Missing customer ID in payment_success invoice data"
+        )
 
     @patch("webhooks.services.billing.logger")
     def test_handle_payment_failed(self, mock_logger):
@@ -315,7 +386,7 @@ class BillingServiceTest(TestCase):
         """Unexpected DB errors propagate so the webhook view returns 5xx"""
         mock_objects.filter.side_effect = Exception("Database error")
 
-        invoice_data = {"customer": "cus_test123"}
+        invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
         with self.assertRaisesMessage(Exception, "Database error"):
             BillingService.handle_payment_success(invoice_data)
@@ -463,7 +534,7 @@ class StripeAPITest(TestCase):
         }
 
         self.assertEqual(result, expected)
-        mock_create.assert_called_once_with(**customer_data)
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key", **customer_data)
 
     @patch("core.services.stripe.stripe.Customer.create")
     def test_create_stripe_customer_stripe_error(self, mock_create: Mock) -> None:
@@ -490,7 +561,7 @@ class StripeAPITest(TestCase):
         result = api.create_stripe_customer({})
 
         self.assertEqual(result, {"id": "cus_empty"})
-        mock_create.assert_called_once_with()
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key")
 
 
 class DashboardServiceTest(TestCase):

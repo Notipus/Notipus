@@ -21,6 +21,56 @@ def client() -> Client:
 class TestBillingStripeWebhook:
     """Tests for the /webhook/billing/stripe/ endpoint."""
 
+    @pytest.fixture(autouse=True)
+    def _enable_billing(self, settings) -> None:
+        """Enable billing: the endpoint 404s when DISABLE_BILLING is set."""
+        settings.DISABLE_BILLING = False
+
+    def test_disabled_billing_returns_404(self, client: Client, settings) -> None:
+        """The endpoint doesn't exist when DISABLE_BILLING is set.
+
+        Self-hosted deployments disable Notipus billing entirely; tenant
+        notification webhooks must keep working (covered elsewhere), but
+        the global billing endpoint should refuse.
+        """
+        settings.DISABLE_BILLING = True
+
+        response = client.post(
+            "/webhook/billing/stripe/",
+            data=json.dumps({"type": "invoice.paid"}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 404
+        assert response.json()["message"] == "Billing is disabled"
+
+    def test_empty_webhook_secret_returns_500(self, client: Client) -> None:
+        """An empty stored webhook secret is surfaced as misconfiguration.
+
+        Migration 0017 seeds the secret from NOTIPUS_STRIPE_WEBHOOK_SECRET,
+        which may have been unset at migrate time; every event would
+        otherwise fail signature validation with an opaque 400.
+        """
+        from core.models import GlobalBillingIntegration
+
+        GlobalBillingIntegration.objects.filter(
+            integration_type="stripe_billing"
+        ).delete()
+        GlobalBillingIntegration.objects.create(
+            integration_type="stripe_billing",
+            webhook_secret="",
+            is_active=True,
+        )
+
+        response = client.post(
+            "/webhook/billing/stripe/",
+            data=json.dumps({"type": "invoice.paid"}),
+            content_type="application/json",
+        )
+
+        assert response.status_code == 500
+        assert "not configured" in response.json()["message"]
+
     def test_missing_global_billing_integration_returns_500(
         self, client: Client
     ) -> None:
