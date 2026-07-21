@@ -130,119 +130,119 @@
             </div>
 
             <!-- Setup Instructions -->
-            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                    <i class="ti ti-list-numbers text-[#635bff]"></i>
-                    Setup Instructions
-                </h3>
-                <p class="text-sm text-gray-600 mb-6">
-                    Follow these steps to connect your Stripe account. The signing secret is provided by Stripe after you create the webhook endpoint.
-                </p>
+            <form method="post">
+                {% csrf_token %}
+                <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                        <i class="ti ti-list-numbers text-[#635bff]"></i>
+                        Setup Instructions
+                    </h3>
+                    <p class="text-sm text-gray-600 mb-6">
+                        Follow these steps to connect your Stripe account. The signing secret is provided by Stripe after you create the webhook endpoint.
+                    </p>
 
-                <div class="space-y-4">
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                1
+                    <div class="space-y-4">
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
+                                    1
+                                </div>
                             </div>
-                        </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Go to your Stripe Dashboard</h4>
-                            <p class="text-sm text-gray-500">
-                                Navigate to <a href="https://dashboard.stripe.com/webhooks/create"
+                            <div class="ml-3">
+                                <h4 class="text-sm font-medium text-gray-900">Go to your Stripe Dashboard</h4>
+                                <p class="text-sm text-gray-500">
+                                    Navigate to <a href="https://dashboard.stripe.com/webhooks/create"
     target="_blank"
     rel="noopener"
     class="text-[#635bff] hover:underline">Developers → Webhooks</a> and click "Add destination"
-                            </p>
-                        </div>
-                    </div>
-
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                2
+                                </p>
                             </div>
                         </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Select events</h4>
-                            <p class="text-sm text-gray-500 mb-3">
-                                Under "Events from", select <strong>"Your account"</strong>. Then search for and select each of these events. Click "Continue".
-                            </p>
-                            <div class="grid grid-cols-1 gap-2">
-                                {% for event in webhook_events %}
-                                    <div class="flex items-center gap-2">
-                                        <i class="ti ti-check text-gray-300 flex-shrink-0"
-                                           id="check-{{ loop.index }}"></i>
-                                        <div class="flex flex-1 min-w-0">
-                                            <input type="text"
-                                                   value="{{ event }}"
-                                                   readonly
-                                                   class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg block w-full p-2 font-mono">
-                                            <button onclick="copyEvent('{{ event }}', {{ loop.index }})"
-                                                    class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 transition-colors"
-                                                    type="button">
-                                                <i class="ti ti-copy mr-1"></i> Copy
-                                            </button>
+
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
+                                    2
+                                </div>
+                            </div>
+                            <div class="ml-3">
+                                <h4 class="text-sm font-medium text-gray-900">Select events</h4>
+                                <p class="text-sm text-gray-500 mb-3">
+                                    Under "Events from", select <strong>"Your account"</strong>. Then search for and select each of these events. Click "Continue".
+                                </p>
+                                <div class="grid grid-cols-1 gap-2">
+                                    {% for event in webhook_events %}
+                                        <div class="flex items-center gap-2">
+                                            <i class="ti ti-check text-gray-300 flex-shrink-0"
+                                               id="check-{{ loop.index }}"></i>
+                                            <div class="flex flex-1 min-w-0">
+                                                <input type="text"
+                                                       value="{{ event }}"
+                                                       readonly
+                                                       class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg block w-full p-2 font-mono">
+                                                <button onclick="copyEvent('{{ event }}', {{ loop.index }})"
+                                                        class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 transition-colors"
+                                                        type="button">
+                                                    <i class="ti ti-copy mr-1"></i> Copy
+                                                </button>
+                                            </div>
                                         </div>
-                                    </div>
-                                {% endfor %}
+                                    {% endfor %}
+                                </div>
                             </div>
                         </div>
-                    </div>
 
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                3
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
+                                    3
+                                </div>
+                            </div>
+                            <div class="ml-3">
+                                <h4 class="text-sm font-medium text-gray-900">Choose destination type</h4>
+                                <p class="text-sm text-gray-500">
+                                    Select <strong>"Webhook endpoint"</strong> as the destination type. Click "Continue".
+                                </p>
                             </div>
                         </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Choose destination type</h4>
-                            <p class="text-sm text-gray-500">
-                                Select <strong>"Webhook endpoint"</strong> as the destination type. Click "Continue".
-                            </p>
-                        </div>
-                    </div>
 
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                4
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
+                                    4
+                                </div>
+                            </div>
+                            <div class="ml-3">
+                                <h4 class="text-sm font-medium text-gray-900">Configure the endpoint</h4>
+                                <p class="text-sm text-gray-500">
+                                    Copy this URL and paste it into the "Endpoint URL" field. Click "Create destination".
+                                </p>
+                                <div class="mt-3 flex">
+                                    <input type="text"
+                                           id="webhook-url"
+                                           value="{{ webhook_url }}"
+                                           readonly
+                                           class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg focus:ring-[#635bff] focus:border-[#635bff] block w-full p-2.5 font-mono">
+                                    <button onclick="NotipusUI.copyToClipboard('{{ webhook_url }}')"
+                                            class="inline-flex items-center px-3 py-2.5 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 focus:ring-2 focus:ring-[#635bff]"
+                                            type="button">
+                                        <i class="ti ti-copy mr-1"></i> Copy
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Configure the endpoint</h4>
-                            <p class="text-sm text-gray-500">
-                                Copy this URL and paste it into the "Endpoint URL" field. Click "Create destination".
-                            </p>
-                            <div class="mt-3 flex">
-                                <input type="text"
-                                       id="webhook-url"
-                                       value="{{ webhook_url }}"
-                                       readonly
-                                       class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg focus:ring-[#635bff] focus:border-[#635bff] block w-full p-2.5 font-mono">
-                                <button onclick="NotipusUI.copyToClipboard('{{ webhook_url }}')"
-                                        class="inline-flex items-center px-3 py-2.5 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 focus:ring-2 focus:ring-[#635bff]"
-                                        type="button">
-                                    <i class="ti ti-copy mr-1"></i> Copy
-                                </button>
-                            </div>
-                        </div>
-                    </div>
 
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                5
+                        <div class="flex items-start">
+                            <div class="flex-shrink-0">
+                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
+                                    5
+                                </div>
                             </div>
-                        </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Copy the signing secret</h4>
-                            <p class="text-sm text-gray-500">
-                                After creating the endpoint, Stripe will show you the "Signing secret" (starts with <code class="bg-gray-100 px-1 rounded">whsec_</code>). Copy it and paste it below.
-                            </p>
-                            <form method="post">
-                                {% csrf_token %}
+                            <div class="ml-3">
+                                <h4 class="text-sm font-medium text-gray-900">Copy the signing secret</h4>
+                                <p class="text-sm text-gray-500">
+                                    After creating the endpoint, Stripe will show you the "Signing secret" (starts with <code class="bg-gray-100 px-1 rounded">whsec_</code>). Copy it and paste it below.
+                                </p>
                                 <div class="mt-3">
                                     <input type="password"
                                            name="webhook_secret"
