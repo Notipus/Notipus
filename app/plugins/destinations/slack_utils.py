@@ -246,6 +246,39 @@ def _sanitize_slack_injection(text: str) -> str:
     return text
 
 
+def safe_mrkdwn(text: str | None) -> str:
+    """Make an untrusted plain-text string safe for a Slack mrkdwn block.
+
+    Webhook payloads (customer names, order numbers, plan names, line-item
+    names, ...) are attacker-controllable and must never be interpolated
+    raw into a Slack mrkdwn block. Otherwise an attacker could inject a
+    broadcast mention (``<!channel>``) to spam a channel or a fake link
+    (``<https://evil/login|Update billing>``) to phish.
+
+    Slack special syntax is neutralized first so mentions render as
+    readable text (e.g. ``@channel``), then the mrkdwn control characters
+    (``<``, ``>``, ``&``) are escaped so any remaining angle brackets can
+    no longer form links or mentions.
+
+    This is intended for plain, non-HTML strings. Do not apply it to
+    values already produced by :func:`html_to_slack_mrkdwn` (e.g. company
+    descriptions), which are sanitized and escaped there; doing so would
+    double-escape the ``&``/``<``/``>`` characters.
+
+    Args:
+        text: The untrusted text. May be None.
+
+    Returns:
+        Text safe to embed in a Slack mrkdwn block. Empty string for
+        None/empty input.
+    """
+    if not text:
+        return ""
+    text = _clean_control_characters(text)
+    text = _sanitize_slack_injection(text)
+    return _escape_slack_mrkdwn(text)
+
+
 def _escape_slack_link_text(text: str) -> str:
     """Escape text for use inside Slack link display text.
 
