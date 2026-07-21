@@ -273,14 +273,15 @@ class PendingEventQueue:
     def _release_append_lock(self, key: str, token: str) -> None:
         """Release the distributed append lock if still owned.
 
-        Compare-then-delete through the cache API is not atomic (Redis
-        Lua cannot see the backend's prefixed, pickled keys), so a
-        successor acquiring between the get and the delete can still
-        lose its lock - but only within that microsecond window, versus
-        the unconditional delete which clobbered the successor whenever
-        THIS holder ran past the lock TTL. The append lock guards a
-        ~millisecond read-modify-write, so shrinking the exposure to the
-        compare window is the practical fix.
+        Compare-then-delete through the cache API is not atomic (a truly
+        atomic Lua compare-and-delete would mean reimplementing the
+        backend's key prefixing and value serialization against raw
+        Redis), so a successor acquiring between the get and the delete
+        can still lose its lock - but only within that microsecond
+        window, versus the unconditional delete which clobbered the
+        successor whenever THIS holder ran past the lock TTL. The append
+        lock guards a ~millisecond read-modify-write, so shrinking the
+        exposure to the compare window is the practical fix.
 
         Args:
             key: Cache key of the pending list the lock protects.
