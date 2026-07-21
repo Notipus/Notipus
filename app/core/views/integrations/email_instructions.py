@@ -285,7 +285,7 @@ def email_setup_instructions(
         messages.error(request, "Please enter a valid email address.")
         return redirect(instructions.integrate_route)
 
-    requester_name = request.user.get_full_name() or request.user.email  # type: ignore[union-attr]
+    requester_name = request.user.get_full_name() or request.user.email
     sent = send_setup_instructions_email(
         recipient, workspace, requester_name, instructions
     )
