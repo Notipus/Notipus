@@ -5,6 +5,7 @@ Handles Slack OAuth connection for receiving notifications in Slack channels.
 
 import json
 import logging
+import secrets
 from typing import cast
 
 import requests
@@ -18,7 +19,6 @@ from django.shortcuts import redirect
 from ...models import Integration, Workspace
 from .base import (
     DEFAULT_API_TIMEOUT,
-    get_user_workspace,
     require_admin_role,
     require_post_method,
 )
@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 # Integration metadata
 INTEGRATION_TYPE = "slack_notifications"
 DISPLAY_NAME = "Slack"
+
+# Session key for the Slack OAuth state parameter (CSRF protection)
+SLACK_CONNECT_STATE_SESSION_KEY = "slack_connect_oauth_state"
 
 
 @login_required
@@ -52,6 +55,11 @@ def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
     Returns:
         Redirect to Slack OAuth authorization.
     """
+    # Generate a state parameter and store it in the session for CSRF
+    # protection. It is validated on callback before the code is exchanged.
+    state = secrets.token_urlsafe(32)
+    request.session[SLACK_CONNECT_STATE_SESSION_KEY] = state
+
     scopes = "incoming-webhook,chat:write,channels:read"
     auth_url = (
         f"https://slack.com/oauth/v2/authorize"
@@ -59,6 +67,7 @@ def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
         f"&scope={scopes}"
         f"&redirect_uri={settings.SLACK_CONNECT_REDIRECT_URI}"
         f"&response_type=code"
+        f"&state={state}"
     )
     return redirect(auth_url)
 
@@ -77,6 +86,15 @@ def slack_connect_callback(
     code = request.GET.get("code")
     if not code:
         return HttpResponse("Authorization failed: No code provided", status=400)
+
+    # Validate the state parameter (CSRF protection) BEFORE exchanging the
+    # code. Abort on missing or mismatched state.
+    state = request.GET.get("state")
+    stored_state = request.session.pop(SLACK_CONNECT_STATE_SESSION_KEY, None)
+    if not state or not stored_state or not secrets.compare_digest(state, stored_state):
+        logger.error("Slack connect OAuth state mismatch - possible CSRF attack")
+        messages.error(request, "Invalid OAuth state. Please try again.")
+        return redirect("core:integrations")
 
     # Exchange code for token
     try:
@@ -192,9 +210,11 @@ def test_slack(request: HttpRequest) -> HttpResponseRedirect:
     if error_redirect:
         return error_redirect
 
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return redirect("core:create_workspace")
+    # Require admin role: sending test messages uses workspace credentials.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     # Find the active Slack integration
     integration = Integration.objects.filter(
@@ -324,18 +344,23 @@ def _build_test_message(
 
 
 @login_required
-def get_slack_channels(request: HttpRequest) -> JsonResponse:
+def get_slack_channels(
+    request: HttpRequest,
+) -> JsonResponse | HttpResponseRedirect:
     """Fetch available Slack channels for configuration.
 
     Args:
         request: The HTTP request object.
 
     Returns:
-        JSON response with list of channels or error.
+        JSON response with list of channels or error, or a redirect if the
+        user lacks the required admin role.
     """
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return JsonResponse({"error": "User profile not found"}, status=400)
+    # Require admin role: channel listing exposes workspace Slack data.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     # Find the active Slack integration
     integration = Integration.objects.filter(
@@ -398,21 +423,26 @@ def get_slack_channels(request: HttpRequest) -> JsonResponse:
 
 
 @login_required
-def configure_slack(request: HttpRequest) -> JsonResponse:
+def configure_slack(
+    request: HttpRequest,
+) -> JsonResponse | HttpResponseRedirect:
     """Update Slack integration channel configuration.
 
     Args:
         request: The HTTP request object.
 
     Returns:
-        JSON response with success status or error.
+        JSON response with success status or error, or a redirect if the
+        user lacks the required admin role.
     """
     if request.method != "POST":
         return JsonResponse({"error": "Invalid request method"}, status=405)
 
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return JsonResponse({"error": "User profile not found"}, status=400)
+    # Require admin role: this mutates the destination channel.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     # Find the active Slack integration
     integration = Integration.objects.filter(
