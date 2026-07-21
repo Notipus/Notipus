@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       screenshot:
-        description: 'Screenshot to capture (e.g. dashboard.py, or "all")'
+        description: 'Scenario to capture (e.g. dashboard.py, onboarding.py, or "all")'
         required: false
         default: 'all'
 
@@ -42,26 +42,12 @@ jobs:
       - name: Capture screenshots
         run: bin/record_screenshots.sh "${{ github.event.inputs.screenshot }}"
 
-      - name: Upload to Cloudflare R2
-        if: ${{ always() && env.R2_BUCKET != '' }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-        run: |
-          aws s3 sync screenshots/output/ "s3://${R2_BUCKET}/screenshots/" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --content-type image/png \
-            --cache-control "public, max-age=300" \
-            --exclude "*" --include "*.png" \
-            --no-progress
-
       - name: Upload screenshots artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: screenshots
-          path: screenshots/output/*.png
+          path: |
+            screenshots/output/*.png
+            screenshots/output/*.webm
           if-no-files-found: warn

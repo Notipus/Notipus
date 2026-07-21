@@ -11,8 +11,8 @@ build_frontend() {
 }
 
 ensure_browser() {
-    echo "Ensuring Playwright Chromium is installed..."
-    uv run playwright install chromium
+    echo "Ensuring Playwright Chromium and ffmpeg are installed..."
+    uv run playwright install chromium ffmpeg
 }
 
 run_screenshot() {

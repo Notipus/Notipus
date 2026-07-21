@@ -168,6 +168,11 @@
 
                 const options = beginData.options;
 
+                // Keep the original base64url challenge: options aliases
+                // beginData.options, so the ArrayBuffer conversion below
+                // would otherwise clobber the string the server expects back.
+                const challengeB64url = options.challenge;
+
                 // Convert base64url strings to ArrayBuffers for WebAuthn API
                 options.challenge = base64urlToArrayBuffer(options.challenge);
                 options.user.id = base64urlToArrayBuffer(options.user.id);
@@ -190,7 +195,7 @@
                         clientDataJSON: arrayBufferToBase64url(credential.response.clientDataJSON),
                     },
                     type: credential.type,
-                    challenge: beginData.options.challenge
+                    challenge: challengeB64url
                 };
 
                 const completeResponse = await fetch('/webauthn/signup/complete/', {

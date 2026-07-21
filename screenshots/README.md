@@ -1,9 +1,16 @@
-# Marketing Screenshots
+# Marketing Screenshots & Screencasts
 
-Programmatic, reproducible screenshots of the app for the marketing
-site, docs, and app-store listings. Every capture boots the real app
-against a seeded demo workspace, so screenshots stay current with the
-UI instead of rotting in a design folder.
+Programmatic, reproducible screenshots and screencasts of the app for
+the marketing site, docs, and app-store listings. Every capture boots
+the real app against a seeded demo workspace, so assets stay current
+with the UI instead of rotting in a design folder.
+
+`onboarding.py` records a Full HD webm of the entire zero-to-configured
+journey: passkey signup (a real WebAuthn ceremony against a CDP virtual
+authenticator), plan selection, workspace creation, connecting Slack
+(OAuth short-circuited at the network edge, server API mocked
+in-process), choosing a channel, connecting Stripe, and a finale where
+the notification lands in a Slack-style window.
 
 The demo data is Office Space themed: the **Initech** workspace is
 owned by Peter Gibbons, with Samir Nagheenanajar as a member and a
@@ -28,8 +35,8 @@ external services required.
 
 The **Marketing Screenshots** workflow is manual-only: trigger it from
 the Actions tab (workflow_dispatch), optionally naming a single
-scenario file. Captures are uploaded as a build artifact, and synced to
-Cloudflare R2 when the `R2_*` secrets are configured.
+scenario file. Captures are attached to the run as a `screenshots`
+build artifact.
 
 ## Adding a scenario
 
