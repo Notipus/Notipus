@@ -37,7 +37,7 @@ class NotificationSettingsViewsTest(TestCase):
         """Test successful retrieval of notification settings"""
         self.client.force_login(self.user)
 
-        response = self.client.get(reverse("get_notification_settings"))
+        response = self.client.get(reverse("core:get_notification_settings"))
 
         self.assertEqual(response.status_code, 200)
         data = json.loads(response.content)
@@ -64,7 +64,7 @@ class NotificationSettingsViewsTest(TestCase):
 
     def test_get_notification_settings_unauthenticated(self):
         """Test getting settings without authentication"""
-        response = self.client.get(reverse("get_notification_settings"))
+        response = self.client.get(reverse("core:get_notification_settings"))
 
         # Should redirect to login
         self.assertEqual(response.status_code, 302)
@@ -78,24 +78,30 @@ class NotificationSettingsViewsTest(TestCase):
 
         self.client.force_login(noprofile_user)
 
-        response = self.client.get(reverse("get_notification_settings"))
+        response = self.client.get(reverse("core:get_notification_settings"))
 
         self.assertEqual(response.status_code, 404)
         data = json.loads(response.content)
         self.assertEqual(data["error"], "User profile not found")
 
     def test_get_notification_settings_no_notification_settings(self):
-        """Test getting settings when notification settings don't exist"""
-        # Delete notification settings
+        """Test settings are recreated with defaults when missing"""
+        # Delete notification settings (e.g. legacy workspace predating
+        # the post_save signal)
         self.notification_settings.delete()
 
         self.client.force_login(self.user)
 
-        response = self.client.get(reverse("get_notification_settings"))
+        response = self.client.get(reverse("core:get_notification_settings"))
 
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
         data = json.loads(response.content)
-        self.assertEqual(data["error"], "Notification settings not found")
+        self.assertTrue(data["notify_payment_success"])
+        self.assertTrue(
+            self.workspace.__class__.objects.get(
+                pk=self.workspace.pk
+            ).notification_settings
+        )
 
     def test_update_notification_settings_success(self):
         """Test successful update of notification settings"""
@@ -108,7 +114,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -135,7 +141,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -154,7 +160,7 @@ class NotificationSettingsViewsTest(TestCase):
         self.client.force_login(self.user)
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps({}),
             content_type="application/json",
         )
@@ -172,7 +178,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -190,7 +196,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -204,7 +210,7 @@ class NotificationSettingsViewsTest(TestCase):
         self.client.force_login(self.user)
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data="invalid json",
             content_type="application/json",
         )
@@ -213,11 +219,26 @@ class NotificationSettingsViewsTest(TestCase):
         data = json.loads(response.content)
         self.assertEqual(data["error"], "Invalid JSON data")
 
+    def test_update_notification_settings_non_object_json(self):
+        """Valid JSON that isn't an object must be a 400, not a 500"""
+        self.client.force_login(self.user)
+
+        for payload in (json.dumps([1, 2]), json.dumps("text"), json.dumps(42)):
+            response = self.client.post(
+                reverse("core:update_notification_settings"),
+                data=payload,
+                content_type="application/json",
+            )
+
+            self.assertEqual(response.status_code, 400)
+            data = json.loads(response.content)
+            self.assertEqual(data["error"], "Request body must be a JSON object")
+
     def test_update_notification_settings_wrong_method(self):
         """Test update with wrong HTTP method"""
         self.client.force_login(self.user)
 
-        response = self.client.get(reverse("update_notification_settings"))
+        response = self.client.get(reverse("core:update_notification_settings"))
 
         self.assertEqual(response.status_code, 405)
         data = json.loads(response.content)
@@ -230,7 +251,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -252,7 +273,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -262,8 +283,9 @@ class NotificationSettingsViewsTest(TestCase):
         self.assertEqual(data["error"], "User profile not found")
 
     def test_update_notification_settings_no_notification_settings(self):
-        """Test update when notification settings don't exist"""
-        # Delete notification settings
+        """Test update recreates settings with defaults when missing"""
+        # Delete notification settings (e.g. legacy workspace predating
+        # the post_save signal)
         self.notification_settings.delete()
 
         self.client.force_login(self.user)
@@ -273,25 +295,29 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
         data = json.loads(response.content)
-        self.assertEqual(data["error"], "Notification settings not found")
+        self.assertEqual(data["updated_fields"], ["notify_payment_success"])
+        recreated = self.workspace.__class__.objects.get(
+            pk=self.workspace.pk
+        ).notification_settings
+        self.assertFalse(recreated.notify_payment_success)
 
-    @patch("core.views.logger")
+    @patch("core.views.settings.logger")
     def test_get_notification_settings_internal_error(self, mock_logger):
         """Test handling of internal errors in get view"""
         self.client.force_login(self.user)
 
-        # Mock to raise an exception
-        with patch.object(
-            self.user, "userprofile", side_effect=Exception("Database error")
+        with patch(
+            "core.views.settings.NotificationSettings.objects.get_or_create",
+            side_effect=Exception("Database error"),
         ):
-            response = self.client.get(reverse("get_notification_settings"))
+            response = self.client.get(reverse("core:get_notification_settings"))
 
             self.assertEqual(response.status_code, 500)
             data = json.loads(response.content)
@@ -299,7 +325,7 @@ class NotificationSettingsViewsTest(TestCase):
 
             mock_logger.error.assert_called_once()
 
-    @patch("core.views.logger")
+    @patch("core.views.settings.logger")
     def test_update_notification_settings_internal_error(self, mock_logger):
         """Test handling of internal errors in update view"""
         self.client.force_login(self.user)
@@ -308,12 +334,12 @@ class NotificationSettingsViewsTest(TestCase):
             "notify_payment_success": False,
         }
 
-        # Mock to raise an exception
-        with patch.object(
-            self.user, "userprofile", side_effect=Exception("Database error")
+        with patch(
+            "core.views.settings.NotificationSettings.objects.get_or_create",
+            side_effect=Exception("Database error"),
         ):
             response = self.client.post(
-                reverse("update_notification_settings"),
+                reverse("core:update_notification_settings"),
                 data=json.dumps(update_data),
                 content_type="application/json",
             )
@@ -345,7 +371,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -371,7 +397,7 @@ class NotificationSettingsViewsTest(TestCase):
         }
 
         response = self.client.post(
-            reverse("update_notification_settings"),
+            reverse("core:update_notification_settings"),
             data=json.dumps(update_data),
             content_type="application/json",
         )
@@ -522,16 +548,35 @@ class StripeIntegrationViewsTest(TestCase):
             ).exists()
         )
 
-    def test_integrate_stripe_shows_existing_connection_status(self) -> None:
-        """Test that page shows connected status when integration exists."""
+    def test_integrate_stripe_shows_awaiting_verification_status(self) -> None:
+        """An unverified integration shows the awaiting-verification state."""
         self.client.force_login(self.user)
 
-        # Create existing integration
+        # Create existing integration that has not received a webhook yet
         Integration.objects.create(
             workspace=self.workspace,
             integration_type="stripe_customer",
             webhook_secret="whsec_test123",
             is_active=True,
+        )
+
+        response = self.client.get(reverse("core:integrate_stripe"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Awaiting webhook verification")
+
+    def test_integrate_stripe_shows_existing_connection_status(self) -> None:
+        """A verified integration shows the connected state."""
+        from django.utils import timezone
+
+        self.client.force_login(self.user)
+
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="stripe_customer",
+            webhook_secret="whsec_test123",
+            is_active=True,
+            webhook_verified_at=timezone.now(),
         )
 
         response = self.client.get(reverse("core:integrate_stripe"))

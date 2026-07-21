@@ -539,32 +539,99 @@ class BillingService:
             BillingService.sync_workspace_from_stripe(customer_id)
 
     @staticmethod
+    def _apply_paid_subscription_invoice(
+        invoice: dict[str, Any], event_name: str
+    ) -> None:
+        """Apply a paid invoice to the workspace it belongs to.
+
+        Mirrors handle_payment_failed's scoping: only invoices attached to
+        the workspace's own subscription may change its state. Without
+        this, a paid one-off or add-on invoice would reactivate a
+        cancelled workspace, and the $0 invoice at trial start would flip
+        a trialing workspace to "active" with payment_method_added=True.
+
+        After the direct write, state is re-synced from Stripe under the
+        per-customer lock so a late-retried paid-invoice event can't
+        resurrect a workspace whose subscription has since been deleted
+        (sync sees the canceled subscription and restores "cancelled").
+
+        Args:
+            invoice: Invoice data from Stripe webhook.
+            event_name: Originating event name, for logging.
+        """
+        customer_id = invoice.get("customer")
+        if not customer_id:
+            logger.error(f"Missing customer ID in {event_name} invoice data")
+            return
+
+        invoice_sub_id = BillingService._extract_invoice_subscription_id(invoice)
+        if invoice_sub_id is None:
+            logger.info(
+                f"Ignoring paid one-off invoice for customer {customer_id} "
+                f"(no subscription attached)"
+            )
+            return
+
+        with stripe_sync_lock(customer_id):
+            workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
+            if workspace is None:
+                logger.warning(f"No workspace found for customer {customer_id}")
+                return
+
+            if not workspace.stripe_subscription_id:
+                # Can't tell whether this invoice belongs to the workspace's
+                # subscription — derive the true state from Stripe instead
+                # of activating on a guess (sync also records the sub id).
+                logger.info(
+                    f"Workspace for customer {customer_id} has no recorded "
+                    f"subscription id; re-syncing from Stripe for {event_name}"
+                )
+                BillingService.sync_workspace_from_stripe(customer_id)
+                return
+
+            if invoice_sub_id != workspace.stripe_subscription_id:
+                logger.info(
+                    f"Ignoring paid invoice for subscription {invoice_sub_id} "
+                    f"(workspace subscription is "
+                    f"{workspace.stripe_subscription_id}) "
+                    f"for customer {customer_id}"
+                )
+                return
+
+            update_data: dict[str, Any] = {}
+            amount_paid = invoice.get("amount_paid") or 0
+            if amount_paid > 0:
+                # A real payment on the workspace's subscription: activate
+                # and record that a working payment method exists. $0
+                # invoices (trial start) must not activate — the sync
+                # below derives the correct trial state instead.
+                update_data["subscription_status"] = "active"
+                update_data["payment_method_added"] = True
+
+            period_end = invoice.get("period_end")
+            if period_end:
+                update_data["billing_cycle_anchor"] = period_end
+
+            if update_data:
+                Workspace.objects.filter(id=workspace.id).update(**update_data)
+                logger.info(
+                    f"Applied {event_name} for customer {customer_id} "
+                    f"(amount_paid={amount_paid})"
+                )
+
+            # Authoritative refinement: corrects trial state for $0
+            # invoices and undoes activation if the subscription has
+            # since been deleted (late webhook retry).
+            BillingService.sync_workspace_from_stripe(customer_id)
+
+    @staticmethod
     def handle_payment_success(invoice: dict[str, Any]) -> None:
-        """Handle successful payment event.
+        """Handle successful payment event (invoice.payment_succeeded).
 
         Args:
             invoice: Invoice data from Stripe webhook.
         """
-        customer_id = invoice.get("customer")
-        if not customer_id:
-            logger.error("Missing customer ID in invoice data")
-            return
-
-        period_end = invoice.get("period_end")
-
-        # Prepare update data
-        update_data: dict[str, Any] = {"subscription_status": "active"}
-        if period_end:
-            update_data["billing_cycle_anchor"] = period_end
-
-        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
-            **update_data
-        )
-
-        if updated_count > 0:
-            logger.info(f"Updated payment status to active for customer {customer_id}")
-        else:
-            logger.warning(f"No workspace found for customer {customer_id}")
+        BillingService._apply_paid_subscription_invoice(invoice, "payment_success")
 
     @staticmethod
     def _extract_invoice_subscription_id(invoice: dict[str, Any]) -> str | None:
@@ -608,34 +675,39 @@ class BillingService:
             )
             return
 
-        workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
-        if workspace is None:
-            logger.warning(f"No workspace found for customer {customer_id}")
-            return
+        with stripe_sync_lock(customer_id):
+            workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
+            if workspace is None:
+                logger.warning(f"No workspace found for customer {customer_id}")
+                return
 
-        if not workspace.stripe_subscription_id:
-            # We can't tell whether this invoice belongs to the workspace's
-            # subscription — don't punish on a guess. Re-sync instead: it
-            # records the subscription id and derives the true status
-            # (Stripe reports the sub as past_due if this invoice was its).
+            if not workspace.stripe_subscription_id:
+                # We can't tell whether this invoice belongs to the workspace's
+                # subscription — don't punish on a guess. Re-sync instead: it
+                # records the subscription id and derives the true status
+                # (Stripe reports the sub as past_due if this invoice was its).
+                logger.warning(
+                    f"Workspace for customer {customer_id} has no recorded "
+                    f"subscription id; re-syncing from Stripe instead of marking "
+                    f"past_due for invoice subscription {invoice_sub_id}"
+                )
+                BillingService.sync_workspace_from_stripe(customer_id)
+                return
+
+            if invoice_sub_id != workspace.stripe_subscription_id:
+                logger.info(
+                    f"Ignoring failed invoice for subscription {invoice_sub_id} "
+                    f"(workspace subscription is {workspace.stripe_subscription_id}) "
+                    f"for customer {customer_id}"
+                )
+                return
+
+            Workspace.objects.filter(id=workspace.id).update(
+                subscription_status="past_due"
+            )
             logger.warning(
-                f"Workspace for customer {customer_id} has no recorded "
-                f"subscription id; re-syncing from Stripe instead of marking "
-                f"past_due for invoice subscription {invoice_sub_id}"
+                f"Updated payment status to past_due for customer {customer_id}"
             )
-            BillingService.sync_workspace_from_stripe(customer_id)
-            return
-
-        if invoice_sub_id != workspace.stripe_subscription_id:
-            logger.info(
-                f"Ignoring failed invoice for subscription {invoice_sub_id} "
-                f"(workspace subscription is {workspace.stripe_subscription_id}) "
-                f"for customer {customer_id}"
-            )
-            return
-
-        Workspace.objects.filter(id=workspace.id).update(subscription_status="past_due")
-        logger.warning(f"Updated payment status to past_due for customer {customer_id}")
 
     @staticmethod
     def handle_checkout_completed(session: dict[str, Any]) -> None:
@@ -712,11 +784,53 @@ class BillingService:
                 )
                 # Verify/sync full state from Stripe (catches any drift)
                 BillingService.sync_workspace_from_stripe(customer_id)
+                # The checkout view's duplicate-subscription guard runs at
+                # session *creation*; two sessions for different plans can
+                # both complete. Detect it here, at the completion edge.
+                BillingService._warn_on_duplicate_live_subscriptions(customer_id)
             else:
                 logger.warning(
                     f"No workspace found for checkout session. "
                     f"Customer: {customer_id}, Workspace ID: {workspace_id}"
                 )
+
+    @staticmethod
+    def _warn_on_duplicate_live_subscriptions(customer_id: str) -> None:
+        """Log an error when a customer ends up with 2+ live subscriptions.
+
+        The checkout view's has_live_subscription guard runs when the
+        session is created, so two sessions for different plans opened
+        before either completes can both be paid. Detection (not
+        auto-cancel — refunds are a human decision) points operators at
+        the audit_duplicate_subscriptions command. Best-effort: detection
+        failures must not fail the webhook.
+
+        Args:
+            customer_id: Stripe customer ID to check.
+        """
+        try:
+            stripe_api = StripeAPI()
+            live_ids: list[str] = []
+            for status in ("active", "trialing", "past_due"):
+                subs = stripe_api.get_customer_subscriptions(
+                    customer_id, status=status, max_results=2
+                )
+                live_ids.extend(sub["id"] for sub in subs if sub.get("id"))
+                if len(live_ids) >= 2:
+                    break
+
+            if len(live_ids) >= 2:
+                logger.error(
+                    f"Customer {customer_id} has multiple live subscriptions "
+                    f"after checkout: {live_ids}. The customer is likely "
+                    f"double-billed; run manage.py audit_duplicate_subscriptions "
+                    f"and cancel/refund the extra subscription."
+                )
+        except Exception as e:
+            logger.warning(
+                f"Could not check for duplicate subscriptions for customer "
+                f"{customer_id}: {e!s}"
+            )
 
     @staticmethod
     def handle_trial_ending(subscription: dict[str, Any]) -> None:
@@ -752,35 +866,12 @@ class BillingService:
         """Handle invoice.paid event.
 
         This confirms that an invoice was paid successfully.
-        Similar to payment_success but for invoice-specific events.
+        Same scoped application as payment_success.
 
         Args:
             invoice: Invoice data from Stripe webhook.
         """
-        customer_id = invoice.get("customer")
-        if not customer_id:
-            logger.error("Missing customer ID in paid invoice")
-            return
-
-        # Mark organization as active with payment method confirmed
-        update_data: dict[str, Any] = {
-            "subscription_status": "active",
-            "payment_method_added": True,
-        }
-
-        # Update billing cycle anchor if period_end is present
-        period_end = invoice.get("period_end")
-        if period_end:
-            update_data["billing_cycle_anchor"] = period_end
-
-        updated_count = Workspace.objects.filter(stripe_customer_id=customer_id).update(
-            **update_data
-        )
-
-        if updated_count > 0:
-            logger.info(f"Invoice paid for customer {customer_id}")
-        else:
-            logger.warning(f"No workspace found for paid invoice: {customer_id}")
+        BillingService._apply_paid_subscription_invoice(invoice, "invoice_paid")
 
     @staticmethod
     def handle_payment_action_required(invoice: dict[str, Any]) -> None:

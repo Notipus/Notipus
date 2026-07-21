@@ -130,6 +130,43 @@ def create_error_response(error: Exception, status_code: int = 500) -> dict:
     }
 
 
+def _check_workspace_access(workspace: Optional[Workspace]) -> Optional[JsonResponse]:
+    """Reject webhooks for workspaces that are not entitled to service.
+
+    Suspended, past_due (dunning), cancelled, and expired-trial workspaces
+    must not consume service. Returns 403 so providers eventually disable
+    the endpoint instead of retrying forever; access is restored as soon
+    as the billing webhook/sync handlers mark the workspace active again.
+
+    Args:
+        workspace: The workspace the webhook is addressed to, or None for
+            global (billing) endpoints, which are exempt.
+
+    Returns:
+        A 403 JsonResponse when access is denied, None otherwise.
+    """
+    if workspace is None or workspace.has_active_access:
+        return None
+
+    logger.warning(
+        f"Rejecting webhook for workspace {workspace.uuid}: "
+        f"subscription_status={workspace.subscription_status}, "
+        f"trial_end_date={workspace.trial_end_date}"
+    )
+    return JsonResponse(
+        {
+            "status": "error",
+            "error": "SubscriptionInactive",
+            "message": (
+                "Workspace subscription is not active. "
+                "Update billing to resume webhook processing."
+            ),
+            "code": 403,
+        },
+        status=403,
+    )
+
+
 def _handle_rate_limiting(
     workspace: Optional[Workspace],
 ) -> tuple[Optional[JsonResponse], Optional[Dict[str, Any]]]:
@@ -448,6 +485,12 @@ def _process_webhook(
         if not provider.validate_webhook(request):
             raise WebhookSignatureError()
 
+        # Entitlement check on authenticated requests: suspended/past_due/
+        # cancelled/expired-trial workspaces don't consume service or quota.
+        access_denied = _check_workspace_access(workspace)
+        if access_denied is not None:
+            return access_denied
+
         # Enforce workspace rate limits on authenticated requests only.
         # A single enforce_rate_limit call increments usage once and
         # returns the info reused for response headers.
@@ -666,6 +709,15 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
         from core.models import GlobalBillingIntegration
         from plugins.sources.stripe import StripeSourcePlugin
 
+        if settings.DISABLE_BILLING:
+            # Self-hosted deployments without Notipus billing: the endpoint
+            # doesn't exist. Deliberately NOT enforced in the Stripe plugin
+            # itself, which also serves tenant notification webhooks.
+            return JsonResponse(
+                {"status": "error", "message": "Billing is disabled"},
+                status=404,
+            )
+
         billing_integration = GlobalBillingIntegration.objects.filter(
             integration_type="stripe_billing", is_active=True
         ).first()
@@ -682,7 +734,29 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
                 status=500,
             )
 
-        provider = StripeSourcePlugin(webhook_secret=billing_integration.webhook_secret)
+        if not billing_integration.webhook_secret:
+            # An empty secret would make every signature check fail with an
+            # opaque 400; surface the misconfiguration explicitly instead
+            # (migration 0017 seeds the secret from
+            # NOTIPUS_STRIPE_WEBHOOK_SECRET, which may have been unset).
+            logger.error(
+                "GlobalBillingIntegration for stripe_billing has an empty "
+                "webhook_secret. Set it to the whsec_... value from the "
+                "Stripe webhook endpoint configuration."
+            )
+            return JsonResponse(
+                {"status": "error", "message": "Billing integration not configured"},
+                status=500,
+            )
+
+        # This is the ONLY place process_billing_events may be True: events
+        # here are signed by Notipus's own Stripe account. Tenant endpoints
+        # validate against tenant-supplied secrets and must never mutate
+        # workspace billing state.
+        provider = StripeSourcePlugin(
+            webhook_secret=billing_integration.webhook_secret,
+            process_billing_events=True,
+        )
 
         return _process_webhook(
             request, provider, "billing_stripe", log_provider_name="stripe_billing"

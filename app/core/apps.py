@@ -6,5 +6,6 @@ class CoreConfig(AppConfig):
     name = "core"
     label = "core"
 
-    def ready(self):
-        """Import signals when the app is ready"""
+    def ready(self) -> None:
+        """Import signals when the app is ready."""
+        from . import signals  # noqa: F401

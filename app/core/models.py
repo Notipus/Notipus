@@ -49,11 +49,13 @@ class Workspace(models.Model):
         subscription_status: Current subscription state.
     """
 
+    # Labels deliberately contain no prices: pricing lives in Stripe and
+    # the Plan model, and stale prices baked into choice labels drift.
     STRIPE_PLANS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("free", "Free Plan"),
-        ("basic", "Basic Plan - $29/month"),
-        ("pro", "Pro Plan - $99/month"),
-        ("enterprise", "Enterprise Plan - $299/month"),
+        ("basic", "Basic Plan"),
+        ("pro", "Pro Plan"),
+        ("enterprise", "Enterprise Plan"),
     )
 
     STATUS_CHOICES: ClassVar[tuple[tuple[str, str], ...]] = (
@@ -215,6 +217,26 @@ class Workspace(models.Model):
             True if active or on trial, False otherwise.
         """
         return cast(bool, self.subscription_status in ["active", "trial"])
+
+    @property
+    def has_active_access(self) -> bool:
+        """Whether this workspace is currently entitled to service.
+
+        Unlike is_active, an expired trial does not grant access: a
+        workspace created for a paid plan stays in "trial" status if
+        checkout is never completed, and without this check it would
+        retain paid-plan service indefinitely. Suspended, past_due
+        (dunning), and cancelled workspaces are excluded per
+        STATUS_CHOICES semantics.
+
+        Returns:
+            True if the workspace should receive service.
+        """
+        if self.subscription_status == "active":
+            return True
+        if self.subscription_status == "trial":
+            return self.trial_end_date is None or self.trial_end_date > timezone.now()
+        return False
 
 
 class WorkspaceMember(models.Model):

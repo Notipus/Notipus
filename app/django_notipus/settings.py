@@ -494,10 +494,9 @@ STRIPE_PLANS = {
 }
 TRIAL_PERIOD_DAYS = 14
 
-# Notipus billing webhook secret (for processing our own Stripe webhooks)
-NOTIPUS_STRIPE_WEBHOOK_SECRET = os.environ.get(
-    "NOTIPUS_STRIPE_WEBHOOK_SECRET", "whsec_dev_notipus_billing"
-)
+# NOTE: the billing webhook secret is stored on the GlobalBillingIntegration
+# row (seeded by migration 0017 from NOTIPUS_STRIPE_WEBHOOK_SECRET), not in
+# settings — nothing reads it from here at runtime.
 
 DISABLE_BILLING = os.environ.get("DISABLE_BILLING", "False").lower() == "true"
 

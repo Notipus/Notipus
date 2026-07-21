@@ -76,7 +76,9 @@ testpaths = ["tests"]
 # DEBUG=True needed because pytest imports settings.py before test_settings.py
 # can override SECRET_KEY, triggering the production security check
 env = ["DEBUG=True"]
-python_files = ["tests.py", "test_*.py", "*_tests.py"]
+# "tests_*.py" included because tests/core/* and tests/webhooks/* use that
+# prefix; without it those files were silently never collected.
+python_files = ["tests.py", "test_*.py", "tests_*.py", "*_tests.py"]
 python_classes = ["Test*", "*Test", "*TestCase"]
 python_functions = ["test_*"]
 addopts = "--strict-markers --disable-socket --allow-unix-socket"
