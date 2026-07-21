@@ -118,6 +118,59 @@ class TestCacheFailureVisibility:
         assert is_allowed is True
         assert info["cache_healthy"] is True
 
+    def test_unhealthy_cache_reports_zero_remaining(self) -> None:
+        """An unhealthy cache reports ``remaining=0`` (unknown quota sentinel).
+
+        The count is unreliable during an outage, so ``remaining`` must not be
+        computed from it and mislead consumers into thinking quota is left.
+        """
+        limiter = RateLimiter()
+        org = _make_org()
+
+        with patch("webhooks.services.rate_limiter.cache") as mock_cache:
+            mock_cache.get.side_effect = Exception("redis down")
+            _, info = limiter.check_rate_limit(org)
+
+        assert info["cache_healthy"] is False
+        assert info["remaining"] == 0
+
+    def test_check_exception_path_reports_zero_remaining(self) -> None:
+        """The total-failure fallback path also reports ``remaining=0``.
+
+        Even the degraded exception branch must not advertise the full plan
+        limit as remaining when the cache count is unknown.
+        """
+        limiter = RateLimiter()
+        org = _make_org()
+
+        # Force the outer except branch by making the cache key derivation fail
+        # after the org uuid is accessed for the log message.
+        with patch.object(
+            limiter, "_cache_get_with_health", side_effect=RuntimeError("boom")
+        ):
+            _, info = limiter.check_rate_limit(org)
+
+        assert info["cache_healthy"] is False
+        assert info["remaining"] == 0
+
+    def test_enforce_preserves_zero_remaining_on_cache_outage(self) -> None:
+        """enforce_rate_limit keeps ``remaining=0`` when failing open on outage.
+
+        With the default fail-open behaviour a cache outage still allows the
+        webhook, but the returned info must preserve the unknown-quota sentinel
+        rather than recomputing a misleading remaining from the increment.
+        """
+        limiter = RateLimiter()
+        org = _make_org()
+
+        with patch("webhooks.services.rate_limiter.cache") as mock_cache:
+            mock_cache.get.side_effect = Exception("redis down")
+            mock_cache.incr.side_effect = Exception("redis down")
+            info = limiter.enforce_rate_limit(org)
+
+        assert info["cache_healthy"] is False
+        assert info["remaining"] == 0
+
 
 class TestInMemoryFallbackBounded:
     """The in-memory fallback must never grow without limit."""

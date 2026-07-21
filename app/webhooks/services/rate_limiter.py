@@ -270,7 +270,10 @@ class RateLimiter:
             self._set_to_fallback(key, value)
             return True
         except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
-            logger.error(f"Cache SET failed for key {key}, using fallback: {e!s}")
+            logger.error(
+                f"Cache SET failed for key {key}, using fallback: {e!s}",
+                exc_info=True,
+            )
             self._set_to_fallback(key, value)
             return False
 
@@ -306,7 +309,10 @@ class RateLimiter:
             self._set_to_fallback(key, new_count)
             return new_count
         except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
-            logger.error(f"Cache INCR failed for key {key}, using fallback: {e!s}")
+            logger.error(
+                f"Cache INCR failed for key {key}, using fallback: {e!s}",
+                exc_info=True,
+            )
             new_count = self._get_from_fallback(key, 0) + 1
             self._set_to_fallback(key, new_count)
             return new_count
@@ -455,10 +461,16 @@ class RateLimiter:
                     microsecond=0,
                 )
 
+            # When the cache is unhealthy the usage count is unreliable, so the
+            # true remaining quota is unknown. Report 0 (a safe sentinel) rather
+            # than a computed value that would mislead consumers into thinking
+            # quota remains.
+            remaining = max(0, limit - current_usage) if cache_healthy else 0
+
             rate_limit_info: dict[str, Any] = {
                 "limit": limit,
                 "current_usage": current_usage,
-                "remaining": max(0, limit - current_usage),
+                "remaining": remaining,
                 "reset_time": reset_time,
                 "plan": organization.subscription_plan,
                 "fallback_mode": self.circuit_breaker.state != "CLOSED",
@@ -480,7 +492,9 @@ class RateLimiter:
             return not fail_closed, {
                 "limit": self.get_organization_limit(organization),
                 "current_usage": 0,
-                "remaining": self.get_organization_limit(organization),
+                # Cache is unhealthy here too: remaining quota is unknown, so
+                # use the safe sentinel (0) rather than the full plan limit.
+                "remaining": 0,
                 "reset_time": timezone.now(),
                 "plan": organization.subscription_plan,
                 "fallback_mode": True,
@@ -560,7 +574,11 @@ class RateLimiter:
         # Increment usage if allowed
         new_usage = self.increment_usage(organization)
         rate_limit_info["current_usage"] = new_usage
-        rate_limit_info["remaining"] = max(0, rate_limit_info["limit"] - new_usage)
+        # Only recompute remaining when the count is trustworthy; on a cache
+        # outage the sentinel (0) set by check_rate_limit must be preserved so
+        # consumers are not misled about how much quota is left.
+        if rate_limit_info.get("cache_healthy", True):
+            rate_limit_info["remaining"] = max(0, rate_limit_info["limit"] - new_usage)
 
         return rate_limit_info
 
