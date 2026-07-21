@@ -148,6 +148,11 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         signed-content (body-hash) dedup at the router is tracked in
         https://github.com/Notipus/Notipus/issues/118.
 
+        This helper is side-effect-free: it returns a boolean and never
+        logs, so the single caller (``validate_webhook``) logs a failure
+        once. Logging here would let an unauthenticated caller emit two
+        warning lines per request and flood the logs.
+
         Args:
             request: The incoming HTTP request.
 
@@ -159,10 +164,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         if not timestamp_header:
             # Fail closed: a missing timestamp would bypass the replay
             # window, so reject rather than accept.
-            logger.warning(
-                "Missing X-Chargify-Webhook-Timestamp header; rejecting to "
-                "prevent replay of a captured signed body."
-            )
             return False
 
         try:
@@ -176,26 +177,11 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             # only a small clock-skew allowance in the future. A symmetric
             # abs() check would widen the replay window for future-dated
             # webhooks.
-            if age_seconds > self._TIMESTAMP_TOLERANCE_SECONDS or age_seconds < -(
-                self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS
-            ):
-                logger.warning(
-                    "Webhook timestamp outside tolerance window",
-                    extra={
-                        "webhook_timestamp": timestamp_header,
-                        "age_seconds": age_seconds,
-                        "past_tolerance": self._TIMESTAMP_TOLERANCE_SECONDS,
-                        "future_tolerance": (self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS),
-                    },
-                )
-                return False
-
-            return True
-        except (ValueError, TypeError) as e:
-            logger.warning(
-                "Invalid webhook timestamp format",
-                extra={"timestamp": timestamp_header, "error": str(e)},
+            return not (
+                age_seconds > self._TIMESTAMP_TOLERANCE_SECONDS
+                or age_seconds < -self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS
             )
+        except (ValueError, TypeError):
             return False
 
     def validate_webhook(self, request: HttpRequest) -> bool:
