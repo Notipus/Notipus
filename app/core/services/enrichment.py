@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from core.models import Company
 from core.services.logo_storage import get_logo_storage_service
+from core.utils import is_timestamp_fresh
 from django.conf import settings
 from plugins import PluginRegistry, PluginType
 from plugins.enrichment import BaseEnrichmentPlugin
@@ -121,7 +122,9 @@ class DomainEnrichmentService:
         plugins: List of enabled plugin instances.
     """
 
-    # Enrichment data is cached indefinitely - use refresh_enrichment() to force update
+    # Cached enrichment is refreshed once it grows older than this many days.
+    # Use refresh_enrichment() to force an immediate update.
+    CACHE_DURATION_DAYS: int | None = 30
 
     def __init__(self) -> None:
         """Initialize the enrichment service with plugin registry."""
@@ -198,22 +201,23 @@ class DomainEnrichmentService:
             return None
 
     def _has_enrichment(self, company: Company) -> bool:
-        """Check if company has enrichment data.
+        """Check if company has fresh enrichment data.
 
-        Enrichment data is cached indefinitely. Use refresh_enrichment()
-        to force an update when needed.
+        Enrichment is considered valid only when a ``_blended_at`` timestamp
+        exists and is newer than ``CACHE_DURATION_DAYS``. Older (or missing)
+        data is treated as stale so it gets refreshed on next access.
 
         Args:
             company: Company model instance.
 
         Returns:
-            True if company has valid enrichment data.
+            True if company has valid, non-stale enrichment data.
         """
         if not company.brand_info:
             return False
 
-        # Has valid enrichment if we have a blended_at timestamp
-        return bool(company.brand_info.get("_blended_at"))
+        blended_at = company.brand_info.get("_blended_at")
+        return bool(is_timestamp_fresh(blended_at, self.CACHE_DURATION_DAYS))
 
     def _collect_from_plugins(self, domain: str) -> dict[str, dict[str, Any]]:
         """Collect enrichment data from all available plugins.

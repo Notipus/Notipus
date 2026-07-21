@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from core.models import Company, Integration, UserProfile, Workspace
@@ -5,6 +6,9 @@ from core.services.enrichment import DomainEnrichmentService
 from core.services.stripe import StripeAPI
 from django.test import TestCase
 from webhooks.services.billing import BillingService
+
+# Recent timestamp so cached enrichment is treated as fresh (within TTL).
+_FRESH_BLENDED_AT = datetime.now(timezone.utc).isoformat()
 
 
 class DomainEnrichmentServiceTest(TestCase):
@@ -70,11 +74,11 @@ class DomainEnrichmentServiceTest(TestCase):
         """Test enriching existing company that already has enrichment data."""
         domain = "existing.com"
 
-        # Create existing company with enrichment data (_blended_at indicates enriched)
+        # Create existing company with fresh enrichment data (within cache TTL)
         existing_company = Company.objects.create(
             domain=domain,
             name="Existing Company",
-            brand_info={"_blended_at": "2024-01-01T00:00:00Z"},
+            brand_info={"_blended_at": _FRESH_BLENDED_AT},
         )
 
         # Mock plugin
@@ -140,10 +144,10 @@ class DomainEnrichmentServiceTest(TestCase):
         self.assertEqual(company.brand_info["_blended_at"], "2024-01-01T00:00:00Z")
 
     def test_has_enrichment_true(self) -> None:
-        """Test _has_enrichment returns True when company has enrichment data."""
+        """Test _has_enrichment returns True for fresh enrichment data."""
         company = Company.objects.create(
             domain="enriched.com",
-            brand_info={"_blended_at": "2024-01-01T00:00:00Z"},
+            brand_info={"_blended_at": _FRESH_BLENDED_AT},
         )
 
         self.assertTrue(self.service._has_enrichment(company))
@@ -151,6 +155,15 @@ class DomainEnrichmentServiceTest(TestCase):
     def test_has_enrichment_false(self) -> None:
         """Test _has_enrichment returns False when company lacks enrichment data."""
         company = Company.objects.create(domain="notenriched.com", brand_info={})
+
+        self.assertFalse(self.service._has_enrichment(company))
+
+    def test_has_enrichment_false_when_stale(self) -> None:
+        """Test _has_enrichment returns False for enrichment past the TTL."""
+        company = Company.objects.create(
+            domain="stale.com",
+            brand_info={"_blended_at": "2024-01-01T00:00:00Z"},
+        )
 
         self.assertFalse(self.service._has_enrichment(company))
 

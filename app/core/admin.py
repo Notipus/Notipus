@@ -8,6 +8,8 @@ import json
 from typing import TYPE_CHECKING
 
 from django.contrib import admin
+from django.contrib.admin import helpers
+from django.template.response import TemplateResponse
 from django.utils.html import format_html
 
 from .models import Company
@@ -70,7 +72,6 @@ class CompanyAdmin(admin.ModelAdmin):
     actions = [
         "purge_enrichment_data",
         "refresh_enrichment",
-        "delete_selected_companies",
     ]
 
     @admin.display(boolean=True, description="Has Logo")
@@ -134,15 +135,37 @@ class CompanyAdmin(admin.ModelAdmin):
         self,
         request: "HttpRequest",
         queryset: "QuerySet[Company]",
-    ) -> None:
-        """Clear enrichment data but keep the domain record."""
-        count = queryset.update(
-            name="",
-            brand_info={},
-            logo_data=None,
-            logo_content_type="",
+    ) -> "TemplateResponse | None":
+        """Clear enrichment data but keep the domain record.
+
+        Shows an intermediate confirmation page before applying the
+        (irreversible) purge, mirroring Django's built-in ``delete_selected``
+        flow. The purge only runs once the confirmation form is submitted.
+        """
+        if request.POST.get("confirm_purge"):
+            count = queryset.update(
+                name="",
+                brand_info={},
+                logo_data=None,
+                logo_content_type="",
+            )
+            self.message_user(request, f"Purged enrichment data for {count} companies.")
+            return None
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Purge enrichment data",
+            "queryset": queryset,
+            "companies": queryset,
+            "opts": self.model._meta,
+            "action_checkbox_name": helpers.ACTION_CHECKBOX_NAME,
+            "media": self.media,
+        }
+        return TemplateResponse(
+            request,
+            "admin/core/company/purge_enrichment_confirmation.html",
+            context,
         )
-        self.message_user(request, f"Purged enrichment data for {count} companies.")
 
     @admin.action(description="Refresh enrichment (re-fetch from sources)")
     def refresh_enrichment(
@@ -166,14 +189,3 @@ class CompanyAdmin(admin.ModelAdmin):
             request,
             f"Marked {len(companies_to_update)} companies for re-enrichment.",
         )
-
-    @admin.action(description="Delete selected companies")
-    def delete_selected_companies(
-        self,
-        request: "HttpRequest",
-        queryset: "QuerySet[Company]",
-    ) -> None:
-        """Delete company records entirely."""
-        count = queryset.count()
-        queryset.delete()
-        self.message_user(request, f"Deleted {count} companies.")
