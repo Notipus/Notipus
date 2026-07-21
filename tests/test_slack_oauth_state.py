@@ -11,6 +11,7 @@ These tests cover the security hardening of the Slack OAuth flows:
   destination channel.
 """
 
+import json
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -319,7 +320,7 @@ class TestConfigureSlackAdminGate:
         """
         return client.post(
             reverse("core:configure_slack"),
-            data={"channel": channel},
+            data=json.dumps({"channel": channel}),
             content_type="application/json",
         )
 
