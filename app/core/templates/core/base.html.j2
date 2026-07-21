@@ -45,9 +45,13 @@
                             {% if user.is_authenticated %}
                                 <a href="{% url 'core:dashboard' %}" class="btn-ghost touch-target">Dashboard</a>
                                 <a href="{% url 'core:integrations' %}" class="btn-ghost touch-target">Integrations</a>
-                                <a href="{% url 'core:billing_dashboard' %}" class="btn-ghost touch-target">Billing</a>
-                                <a href="{% url 'core:members_list' %}" class="btn-ghost touch-target">Members</a>
-                                <a href="{% url 'core:workspace_settings' %}" class="btn-ghost touch-target">Settings</a>
+                                <a href="{% url 'core:billing_dashboard' %}"
+                                   class="btn-ghost touch-target">Billing</a>
+                                {% if nav_workspace_role == 'owner' or nav_workspace_role == 'admin' %}
+                                    <a href="{% url 'core:members_list' %}" class="btn-ghost touch-target">Members</a>
+                                {% endif %}
+                                <a href="{% url 'core:workspace_settings' %}"
+                                   class="btn-ghost touch-target">Settings</a>
                                 <span class="mx-2 h-6 border-l border-gray-200" aria-hidden="true"></span>
                                 <span class="text-sm text-gray-700 px-2">Welcome, {{ user.get_short_name|default:user.username|title }}</span>
                                 <a href="{% url 'account_logout' %}" class="btn-ghost touch-target">Logout</a>
@@ -108,10 +112,12 @@
                                 <i class="ti ti-credit-card w-5 mr-3 text-gray-400"></i>
                                 Billing
                             </a>
-                            <a href="{% url 'core:members_list' %}" class="mobile-menu-item">
-                                <i class="ti ti-users w-5 mr-3 text-gray-400"></i>
-                                Members
-                            </a>
+                            {% if nav_workspace_role == 'owner' or nav_workspace_role == 'admin' %}
+                                <a href="{% url 'core:members_list' %}" class="mobile-menu-item">
+                                    <i class="ti ti-users w-5 mr-3 text-gray-400"></i>
+                                    Members
+                                </a>
+                            {% endif %}
                             <a href="{% url 'core:workspace_settings' %}" class="mobile-menu-item">
                                 <i class="ti ti-settings w-5 mr-3 text-gray-400"></i>
                                 Settings

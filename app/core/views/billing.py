@@ -5,6 +5,7 @@ and checkout flows.
 """
 
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.contrib import messages
@@ -147,10 +148,10 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     if current_plan_obj:
         for plan in available_plans:
             try:
-                plan["is_downgrade"] = float(plan.get("price", 0)) < float(
-                    current_plan_obj.price_monthly
+                plan["is_downgrade"] = (
+                    Decimal(str(plan.get("price", 0))) < current_plan_obj.price_monthly
                 )
-            except (TypeError, ValueError):
+            except (InvalidOperation, TypeError, ValueError):
                 plan["is_downgrade"] = False
 
     context: dict[str, Any] = {
