@@ -107,14 +107,14 @@ services:
   migration:
     <<: *django-service
     container_name: notipus_migration
-    command: ["uv", "run", "python", "manage.py", "migrate"]
+    command: ["/app/.venv/bin/python", "manage.py", "migrate"]
     depends_on: *app-dependencies
     restart: "no"  # Migration should run once and exit
 
   django:
     <<: *django-service
     container_name: notipus_django
-    command: ["uv", "run", "uvicorn", "--host", "0.0.0.0", "--port", "8080", "--workers", "3", "--lifespan", "off", "django_notipus.asgi:application"]
+    command: ["/app/.venv/bin/uvicorn", "--host", "0.0.0.0", "--port", "8080", "--workers", "3", "--lifespan", "off", "django_notipus.asgi:application"]
     ports:
       - "80:8080"
       - "8080:8080"
@@ -124,7 +124,7 @@ services:
         condition: service_completed_successfully
     healthcheck:
       <<: *healthcheck-defaults
-      test: ["CMD", "uv", "run", "python", "manage.py", "check"]
+      test: ["CMD", "/app/.venv/bin/python", "manage.py", "check"]
 
 volumes:
   postgres_data:
