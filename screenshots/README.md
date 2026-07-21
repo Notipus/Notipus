@@ -14,6 +14,7 @@ Swingline trial.
 ## Running locally
 
 ```bash
+uv sync --all-groups                 # one-time: installs the playwright dependency
 bin/record_screenshots.sh            # capture everything
 bin/record_screenshots.sh dashboard.py   # capture one scenario
 ```
