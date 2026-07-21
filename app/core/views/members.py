@@ -24,7 +24,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
@@ -197,24 +197,36 @@ def invite_member(request: HttpRequest) -> HttpResponse:
         messages.error(request, f"{email} is already a member of this workspace.")
         return redirect("core:members_list")
 
-    # Check for existing pending invitation
+    # Check for existing pending invitation. Any unaccepted invitation
+    # (even an expired one) occupies the (workspace, email) slot enforced
+    # by the uniq_pending_invite_workspace_email constraint, so expired
+    # pending invitations are removed to make room for a fresh one.
     existing_invitation = WorkspaceInvitation.objects.filter(
         workspace=workspace,
         email=email,
         accepted_at__isnull=True,
-        expires_at__gt=timezone.now(),
     ).first()
     if existing_invitation:
+        if not existing_invitation.is_expired:
+            messages.warning(
+                request, f"An invitation has already been sent to {email}."
+            )
+            return redirect("core:members_list")
+        existing_invitation.delete()
+
+    # Create invitation. The DB constraint guards against a concurrent
+    # duplicate slipping past the check above.
+    try:
+        with transaction.atomic():
+            invitation = WorkspaceInvitation.objects.create(
+                workspace=workspace,
+                email=email,
+                role=role,
+                invited_by=request.user,
+            )
+    except IntegrityError:
         messages.warning(request, f"An invitation has already been sent to {email}.")
         return redirect("core:members_list")
-
-    # Create invitation
-    invitation = WorkspaceInvitation.objects.create(
-        workspace=workspace,
-        email=email,
-        role=role,
-        invited_by=request.user,
-    )
 
     # Build the invitation URL and send the email
     invite_url = request.build_absolute_uri(

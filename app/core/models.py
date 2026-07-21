@@ -333,6 +333,16 @@ class WorkspaceInvitation(models.Model):
     class Meta:
         app_label = "core"
         db_table = "core_workspaceinvitation"
+        constraints = [
+            # At most one pending (not yet accepted) invitation per
+            # (workspace, email). Accepted invitations are kept as history
+            # and do not block re-inviting the same address later.
+            models.UniqueConstraint(
+                fields=["workspace", "email"],
+                condition=models.Q(accepted_at__isnull=True),
+                name="uniq_pending_invite_workspace_email",
+            ),
+        ]
 
     def __str__(self) -> str:
         """Return string representation of the invitation.
@@ -566,6 +576,14 @@ class Company(models.Model):
     Used by DomainEnrichmentService to cache brand information
     retrieved from enrichment providers like Brandfetch.
 
+    Note: This cache is intentionally shared across all workspaces (there is
+    no workspace foreign key). Domain enrichment holds only public brand
+    data - company name, logo, brand colors - fetched by domain, not
+    personal data, so no tenant PII can leak between workspaces and GDPR
+    erasure requests do not apply to it. Person-level enrichment
+    (``Person``) is the opposite: it contains PII and is scoped per
+    workspace.
+
     Attributes:
         name: Company display name.
         domain: Unique domain identifier.
@@ -681,11 +699,20 @@ class Person(models.Model):
     2. The workspace has configured their own Hunter.io API key
     3. Hunter.io returns data for the email address
 
+    GDPR: This cache holds personal data (names, social profiles, location)
+    fetched under a specific workspace's Hunter.io contract, so it is scoped
+    per workspace. The same email enriched by two workspaces produces two
+    independent rows, one per workspace. This keeps tenant data isolated and
+    lets an erasure request be honored per tenant (delete that workspace's
+    rows without touching other tenants' caches). Unlike ``Company`` (public
+    brand data), Person data must never be shared across workspaces.
+
     Note: Hunter.io respects GDPR - emails where the person has requested
     data removal return a 451 status and are not enriched.
 
     Attributes:
-        email: Unique email identifier (indexed for lookups).
+        workspace: The workspace whose Hunter.io contract fetched this data.
+        email: Email identifier, unique per workspace (indexed for lookups).
         first_name: Person's first/given name.
         last_name: Person's last/family name.
         position: Job title (e.g., "VP of Engineering").
@@ -700,7 +727,10 @@ class Person(models.Model):
         updated_at: When the record was last updated.
     """
 
-    email: models.EmailField = models.EmailField(unique=True, db_index=True)
+    workspace: Any = models.ForeignKey(
+        Workspace, on_delete=models.CASCADE, related_name="enriched_people"
+    )
+    email: models.EmailField = models.EmailField(db_index=True)
     first_name: models.CharField = models.CharField(
         max_length=100, blank=True, default=""
     )
@@ -738,6 +768,12 @@ class Person(models.Model):
         indexes = [
             models.Index(fields=["created_at"], name="person_created_at_idx"),
             models.Index(fields=["-updated_at"], name="person_updated_at_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "email"],
+                name="uniq_person_workspace_email",
+            ),
         ]
 
     def __str__(self) -> str:
