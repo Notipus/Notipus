@@ -781,6 +781,7 @@ name = "notipus"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "disposable-email-domains" },
     { name = "django" },
     { name = "django-allauth" },
@@ -813,6 +814,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=43.0.0" },
     { name = "disposable-email-domains", specifier = ">=0.0.227" },
     { name = "django", specifier = ">=5.2.16,<6.0.0" },
     { name = "django-allauth", specifier = ">=65.18.0,<66.0.0" },

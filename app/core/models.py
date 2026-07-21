@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, ClassVar, cast
 
+from core.fields import EncryptedJSONField, EncryptedTextField
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -385,8 +386,9 @@ class Integration(models.Model):
     )
 
     # OAuth and authentication data
-    oauth_credentials: models.JSONField = models.JSONField(default=dict, blank=True)
-    webhook_secret: models.CharField = models.CharField(max_length=255, blank=True)
+    # Encrypted at rest (ChaCha20-Poly1305). Same Python API as JSON/CharField.
+    oauth_credentials: EncryptedJSONField = EncryptedJSONField(default=dict, blank=True)
+    webhook_secret: EncryptedTextField = EncryptedTextField(blank=True, default="")
 
     # Integration-specific settings
     integration_settings: models.JSONField = models.JSONField(default=dict, blank=True)
@@ -480,8 +482,9 @@ class GlobalBillingIntegration(models.Model):
     )
 
     # OAuth and authentication data
-    oauth_credentials: models.JSONField = models.JSONField(default=dict, blank=True)
-    webhook_secret: models.CharField = models.CharField(max_length=255, blank=True)
+    # Encrypted at rest (ChaCha20-Poly1305). Same Python API as JSON/CharField.
+    oauth_credentials: EncryptedJSONField = EncryptedJSONField(default=dict, blank=True)
+    webhook_secret: EncryptedTextField = EncryptedTextField(blank=True, default="")
 
     # Integration-specific settings
     integration_settings: models.JSONField = models.JSONField(default=dict, blank=True)
