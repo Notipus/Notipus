@@ -21,6 +21,7 @@ from webhooks.models.rich_notification import (
     RichNotification,
 )
 from webhooks.utils.currency import CURRENCY_SYMBOLS, format_money
+from webhooks.utils.email_classifier import classify_email
 
 from .insight_detector import InsightDetector
 from .utils import get_display_name
@@ -368,6 +369,7 @@ class NotificationBuilder:
             orders_count=customer_data.get("orders_count"),
             total_spent=total_spent if total_spent else None,
             status_flags=[],  # Will be set by insight detector
+            email_tags=[tag.value for tag in classify_email(email)],
         )
 
     def _build_payment_info(self, event_data: dict[str, Any]) -> PaymentInfo | None:

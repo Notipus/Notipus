@@ -12,78 +12,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 from disposable_email_domains import blocklist
+from webhooks.utils.free_email_domains import FREE_EMAIL_DOMAINS
 
 logger = logging.getLogger(__name__)
 
-# Well-known free email providers - domains that should not be enriched
-FREE_EMAIL_PROVIDERS: frozenset[str] = frozenset(
-    {
-        # Major providers
-        "gmail.com",
-        "googlemail.com",
-        "yahoo.com",
-        "yahoo.co.uk",
-        "yahoo.fr",
-        "yahoo.de",
-        "yahoo.co.jp",
-        "hotmail.com",
-        "hotmail.co.uk",
-        "hotmail.fr",
-        "outlook.com",
-        "outlook.co.uk",
-        "live.com",
-        "live.co.uk",
-        "msn.com",
-        "icloud.com",
-        "me.com",
-        "mac.com",
-        # Privacy-focused
-        "protonmail.com",
-        "proton.me",
-        "tutanota.com",
-        "tutamail.com",
-        "privaterelay.appleid.com",  # Apple Hide My Email
-        # Other free providers
-        "aol.com",
-        "mail.com",
-        "email.com",
-        "zoho.com",
-        "zohomail.com",
-        "yandex.com",
-        "yandex.ru",
-        "gmx.com",
-        "gmx.de",
-        "gmx.net",
-        "web.de",
-        "fastmail.com",
-        "fastmail.fm",
-        "inbox.com",
-        "mailbox.org",
-        "hey.com",
-        # Regional
-        "qq.com",
-        "163.com",
-        "126.com",
-        "sina.com",
-        "naver.com",
-        "daum.net",
-        "hanmail.net",
-        "libero.it",
-        "virgilio.it",
-        "laposte.net",
-        "orange.fr",
-        "free.fr",
-        "wanadoo.fr",
-        "t-online.de",
-        "btinternet.com",
-        "sky.com",
-        "rogers.com",
-        "shaw.ca",
-        "telus.net",
-        "bigpond.com",
-        "optusnet.com.au",
-    }
-)
+# Well-known free email providers - domains that should not be enriched.
+# The curated database lives in webhooks.utils.free_email_domains (a
+# dependency-light module) so the email classifier and this filter share
+# one source of truth.
+FREE_EMAIL_PROVIDERS: frozenset[str] = FREE_EMAIL_DOMAINS
 
 # Hosted email domains - cloud providers where the subdomain represents
 # the tenant/company. These domains should not be enriched since the tenant

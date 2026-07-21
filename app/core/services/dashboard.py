@@ -166,6 +166,8 @@ class DashboardService:
                     "customer_ltv": record.get("customer_ltv"),
                     "customer_tenure": record.get("customer_tenure"),
                     "customer_status_flags": record.get("customer_status_flags", []),
+                    # Older stored records predate email tags; default to []
+                    "customer_email_tags": record.get("customer_email_tags", []),
                     "insight_text": record.get("insight_text"),
                     "insight_icon": record.get("insight_icon"),
                     "plan_name": record.get("plan_name"),

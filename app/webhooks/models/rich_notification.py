@@ -294,6 +294,9 @@ class CustomerInfo:
         orders_count: Total number of orders.
         total_spent: Total amount spent.
         status_flags: Status indicators (at_risk, vip, etc.).
+        email_tags: Domain-type tags for the email address, as
+            EmailTag values (e.g. ["education", "free"]). See
+            webhooks.utils.email_classifier.
     """
 
     email: str
@@ -304,6 +307,7 @@ class CustomerInfo:
     orders_count: int | None = None
     total_spent: float | None = None
     status_flags: list[str] = field(default_factory=list)  # ["at_risk", "vip"]
+    email_tags: list[str] = field(default_factory=list)  # ["education", "free"]
 
 
 @dataclass
