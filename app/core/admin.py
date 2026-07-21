@@ -7,7 +7,7 @@ including Company enrichment data with search, filters, and bulk actions.
 import json
 from typing import TYPE_CHECKING
 
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.admin import helpers
 from django.template.response import TemplateResponse
 from django.utils.html import format_html
@@ -68,6 +68,10 @@ class CompanyAdmin(admin.ModelAdmin):
             },
         ),
     ]
+
+    # Cap on how many rows the purge confirmation page will enumerate, to
+    # bound the response size (and avoid timeouts) on huge "select all" sets.
+    PURGE_CONFIRM_LIMIT = 500
 
     actions = [
         "purge_enrichment_data",
@@ -150,6 +154,20 @@ class CompanyAdmin(admin.ModelAdmin):
                 logo_content_type="",
             )
             self.message_user(request, f"Purged enrichment data for {count} companies.")
+            return None
+
+        # Guard against enumerating an unbounded "select all" set on the
+        # confirmation page. Ask the admin to narrow the selection instead.
+        if queryset.count() > self.PURGE_CONFIRM_LIMIT:
+            self.message_user(
+                request,
+                (
+                    f"Too many companies selected to purge at once "
+                    f"(limit is {self.PURGE_CONFIRM_LIMIT}). "
+                    "Please narrow your selection and try again."
+                ),
+                level=messages.WARNING,
+            )
             return None
 
         context = {

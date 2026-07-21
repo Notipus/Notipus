@@ -1,8 +1,9 @@
 """Cache freshness helpers for enrichment services.
 
 Provides a shared, timezone-aware staleness check used by both the domain
-and email enrichment services so cached data is refreshed once it grows
-older than the configured cache duration.
+and email enrichment services. Cached data is considered fresh while its age
+is strictly less than the configured cache duration, and stale once the age
+reaches that threshold, at which point it is refreshed.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -17,8 +18,9 @@ def is_timestamp_fresh(
     Args:
         timestamp: ISO 8601 timestamp string (e.g. from ``datetime.isoformat``),
             or None when no enrichment has happened yet.
-        max_age_days: Maximum age in days before the cached data is considered
-            stale. ``None`` means the cache never expires (indefinite).
+        max_age_days: Age threshold in days. Data is fresh while its age is
+            strictly less than this value and stale once the age reaches it.
+            ``None`` means the cache never expires (indefinite).
 
     Returns:
         True if the cached data should be treated as fresh. A missing or

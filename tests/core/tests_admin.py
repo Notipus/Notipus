@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from core.admin import CompanyAdmin
 from core.models import Company
+from django.contrib import messages
 from django.contrib.admin.sites import AdminSite
 from django.test import RequestFactory
 
@@ -226,6 +227,36 @@ class TestCompanyAdminActions:
             "admin/core/company/purge_enrichment_confirmation.html"
         )
 
+        sample_company.refresh_from_db()
+        assert sample_company.name == "Acme Corporation"
+        assert sample_company.brand_info != {}
+
+    def test_purge_enrichment_data_refuses_oversized_selection(
+        self,
+        company_admin: CompanyAdmin,
+        sample_company: Company,
+        request_factory: RequestFactory,
+    ) -> None:
+        """Test a selection above the cap is refused with a warning, no purge."""
+        # Lower the cap so a single-row queryset exceeds it.
+        company_admin.PURGE_CONFIRM_LIMIT = 0
+
+        request = request_factory.post("/admin/core/company/")
+        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+
+        queryset = Company.objects.filter(pk=sample_company.pk)
+
+        with patch.object(company_admin, "message_user") as mock_message:
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        # No confirmation page rendered; returns to the changelist.
+        assert response is None
+
+        # A warning was shown telling the admin to narrow the selection.
+        mock_message.assert_called_once()
+        assert mock_message.call_args.kwargs["level"] == messages.WARNING
+
+        # Data must be untouched.
         sample_company.refresh_from_db()
         assert sample_company.name == "Acme Corporation"
         assert sample_company.brand_info != {}
