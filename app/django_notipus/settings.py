@@ -637,22 +637,29 @@ LOGGING = {
             "class": "logging.StreamHandler",
         },
     },
+    # propagate=False everywhere: the root logger also has the console
+    # handler, so propagation would emit every record twice (seen in prod
+    # as duplicated, interleaved tracebacks in the Fly logs).
     "loggers": {
         "webhooks": {
             "handlers": ["console"],
             "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": False,
         },
         "core": {
             "handlers": ["console"],
             "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": False,
         },
         "django": {
             "handlers": ["console"],
             "level": "DEBUG" if DEBUG else "WARNING",
+            "propagate": False,
         },
         "django.contrib.staticfiles": {
             "handlers": ["console"],
             "level": "ERROR",  # Always silence static file duplicate warnings
+            "propagate": False,
         },
     },
     # Set root logger level based on DEBUG
