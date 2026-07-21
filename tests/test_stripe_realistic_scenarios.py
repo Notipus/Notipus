@@ -11,6 +11,7 @@ The tests verify:
 - Final Slack message content and structure using RichNotification
 """
 
+from decimal import Decimal
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -21,6 +22,7 @@ from webhooks.services.event_consolidation import EventConsolidationService
 from webhooks.services.event_processor import EventProcessor
 
 
+@pytest.mark.django_db
 class TestTrialSignupIntegration:
     """Integration test: Trial signup webhook flow.
 
@@ -141,7 +143,7 @@ class TestTrialSignupIntegration:
 
         # Handle billing - should detect trial and return 0 amount
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 0.0  # No payment for trials
+        assert amount == Decimal("0.00")  # No payment for trials
         assert data.get("_is_trial") is True  # Trial flag should be set
 
         # Transform event type for trials (as done in parse_webhook)
@@ -228,7 +230,7 @@ class TestTrialSignupIntegration:
 
         # Handle billing - should NOT detect trial, return actual amount
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 26.60  # Actual payment amount
+        assert amount == Decimal("26.60")  # Actual payment amount
         assert data.get("_is_trial") is None  # Not a trial
 
         # Build event data
@@ -326,8 +328,11 @@ class TestTrialSignupIntegration:
         # Payment info should be None for trials
         assert notification.payment is None, "Trials should not have payment info"
 
-        # Amount in event data should be 0
+        # Amount in the event dict is a float at the JSON boundary
+        # (the Redis pending-event queue serializes it), so assert the
+        # type alongside the value.
         assert event_data["amount"] == 0.0
+        assert isinstance(event_data["amount"], float)
 
     def test_zero_amount_invoice_filtered_before_notification(
         self,
@@ -417,12 +422,18 @@ class TestTrialSignupIntegration:
         assert len(notifications_sent) == 1
 
 
+@pytest.mark.django_db
 class TestTrialConversionIntegration:
     """Integration test: Trial conversion to paid subscription.
 
     When a trial converts, we receive invoice.payment_succeeded with:
     - billing_reason="subscription_cycle"
     - Positive amount (first real payment)
+    - The invoice's period_start equal to the subscription's trial_end
+
+    billing_reason="subscription_cycle" alone is NOT sufficient - it fires
+    on every recurring renewal. Only the trial_end/period_start match
+    identifies the first paid invoice after a trial.
 
     The Slack notification should show trial conversion in headline.
     """
@@ -439,7 +450,11 @@ class TestTrialConversionIntegration:
 
     @pytest.fixture
     def trial_conversion_payload(self) -> dict[str, Any]:
-        """Invoice payload for first real payment after trial."""
+        """Invoice payload for first real payment after a multi-item trial.
+
+        The expanded subscription has a null top-level plan (modern
+        multi-item shape) and trial_end equal to the invoice period_start.
+        """
         return {
             "id": "evt_conversion123",
             "object": "event",
@@ -455,7 +470,66 @@ class TestTrialConversionIntegration:
                     "currency": "usd",
                     "status": "paid",
                     "billing_reason": "subscription_cycle",
-                    "subscription": "sub_1ABC123DEF456GHI",
+                    "period_start": 1770537317,
+                    "period_end": 1773215717,
+                    "subscription": {
+                        "id": "sub_1ABC123DEF456GHI",
+                        "object": "subscription",
+                        "status": "active",
+                        "plan": None,  # Null on multi-item subscriptions
+                        "trial_start": 1769327717,
+                        "trial_end": 1770537317,  # == invoice period_start
+                        "items": {
+                            "data": [
+                                {
+                                    "id": "si_base",
+                                    "price": {"unit_amount": 1660},
+                                    "quantity": 1,
+                                },
+                                {
+                                    "id": "si_addon",
+                                    "price": {"unit_amount": 500},
+                                    "quantity": 2,
+                                },
+                            ]
+                        },
+                    },
+                    "created": 1770537317,
+                },
+            },
+        }
+
+    @pytest.fixture
+    def regular_renewal_payload(self) -> dict[str, Any]:
+        """Invoice payload for an ordinary recurring renewal (no trial).
+
+        billing_reason is still "subscription_cycle", but the customer
+        never had a trial - this must NOT be flagged as a conversion.
+        """
+        return {
+            "id": "evt_renewal456",
+            "object": "event",
+            "type": "invoice.payment_succeeded",
+            "data": {
+                "object": {
+                    "id": "in_renewal456",
+                    "object": "invoice",
+                    "customer": "cus_TestCustomer123",
+                    "amount_due": 2660,
+                    "amount_paid": 2660,
+                    "amount_remaining": 0,
+                    "currency": "usd",
+                    "status": "paid",
+                    "billing_reason": "subscription_cycle",
+                    "period_start": 1770537317,
+                    "period_end": 1773215717,
+                    "subscription": {
+                        "id": "sub_1ABC123DEF456GHI",
+                        "object": "subscription",
+                        "status": "active",
+                        "trial_start": None,
+                        "trial_end": None,
+                    },
                     "created": 1770537317,
                 },
             },
@@ -488,7 +562,7 @@ class TestTrialConversionIntegration:
 
         # Handle billing - should detect trial conversion
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 26.60
+        assert amount == Decimal("26.60")
         assert data.get("_is_trial_conversion") is True
 
         # Build event data
@@ -496,6 +570,36 @@ class TestTrialConversionIntegration:
             event_type, data["customer"], data, amount
         )
         assert event_data["metadata"]["is_trial_conversion"] is True
+        # The expanded subscription object must not leak into subscription_id
+        assert event_data["metadata"]["subscription_id"] == "sub_1ABC123DEF456GHI"
+
+    def test_regular_renewal_not_flagged_as_trial_conversion(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        regular_renewal_payload: dict[str, Any],
+    ) -> None:
+        """Test that an ordinary renewal cycle is NOT a trial conversion.
+
+        Regression test: billing_reason="subscription_cycle" fires on every
+        recurring payment; previously each one was mislabeled as a trial
+        conversion even for customers who never had a trial.
+        """
+        mock_event = Mock()
+        mock_event.type = regular_renewal_payload["type"]
+        mock_event.data.object = regular_renewal_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        assert event_type == "payment_success"
+
+        amount = stripe_plugin._handle_stripe_billing(event_type, data)
+        assert amount == Decimal("26.60")
+        assert data.get("_is_trial_conversion") is None
+
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type, data["customer"], data, amount
+        )
+        assert "is_trial_conversion" not in event_data["metadata"]
 
     def test_trial_conversion_generates_rich_notification(
         self,
@@ -526,6 +630,7 @@ class TestTrialConversionIntegration:
         assert "Trial converted" in notification.headline
 
 
+@pytest.mark.django_db
 class TestSubscriptionUpgradeIntegration:
     """Integration test: Subscription plan upgrade.
 
@@ -604,7 +709,7 @@ class TestSubscriptionUpgradeIntegration:
 
         # Handle billing - should detect upgrade
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 49.00
+        assert amount == Decimal("49.00")
         assert data.get("_change_direction") == "upgrade"
 
         # Build event data
@@ -1146,7 +1251,11 @@ class TestInvoiceMetadataExtraction:
     def test_extracts_subscription_id_from_new_api_path(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:
-        """Test subscription_id extraction from new Stripe API path."""
+        """Test subscription_id extraction from new Stripe API path.
+
+        With no line items the billing interval is undeterminable, so the
+        billing_period falls back to "monthly" as a last resort.
+        """
         metadata: dict[str, Any] = {}
         data: dict[str, Any] = {
             "subscription": None,
@@ -1204,10 +1313,48 @@ class TestInvoiceMetadataExtraction:
         assert metadata["plan_name"] == "Enterprise Plan"
         assert metadata["billing_period"] == "annual"
 
+    def test_annual_billing_period_from_price_recurring_interval(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test annual invoice with price.recurring.interval is not "monthly".
+
+        Regression test: subscription_cycle invoices used to be pre-labeled
+        "monthly" before line-item inspection, so a $1200/year renewal whose
+        line item only carried price.recurring.interval="year" was silently
+        mislabeled. The interval must be computed from the line item first
+        ("annual" is this codebase's label for yearly billing).
+        """
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_annual_123",
+            "billing_reason": "subscription_cycle",
+            "lines": {
+                "data": [
+                    {
+                        "description": "Enterprise Plan",
+                        "quantity": 1,
+                        "price": {
+                            "unit_amount": 120000,
+                            "recurring": {"interval": "year"},
+                        },
+                    }
+                ]
+            },
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["billing_period"] == "annual"
+        assert metadata["billing_period"] != "monthly"
+
     def test_no_line_items_still_extracts_other_metadata(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:
-        """Test metadata extraction works even without line items."""
+        """Test metadata extraction works even without line items.
+
+        billing_period falls back to "monthly" only because the interval
+        is truly undeterminable without line items.
+        """
         metadata: dict[str, Any] = {}
         data: dict[str, Any] = {
             "subscription": "sub_789",

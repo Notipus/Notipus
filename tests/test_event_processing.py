@@ -181,6 +181,8 @@ def test_payment_failure_retry_headline() -> None:
     """Test payment failure with attempt_count > 1 shows retry in headline.
 
     Verifies the headline includes '(retry #N)' when attempt_count > 1.
+    Stripe's attempt_count includes the initial attempt, so
+    attempt_count=2 is the first retry.
     """
     processor = EventProcessor()
 
@@ -206,7 +208,7 @@ def test_payment_failure_retry_headline() -> None:
     notification = processor.build_rich_notification(event_data, customer_data)
     assert isinstance(notification, RichNotification)
     assert "$53.20" in notification.headline
-    assert "retry #2" in notification.headline
+    assert "retry #1" in notification.headline
     assert notification.severity == NotificationSeverity.ERROR
 
 

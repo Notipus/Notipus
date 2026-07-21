@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import logging
+from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar
 
 from django.http import HttpRequest
@@ -37,13 +38,17 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         # Order events
         "orders/create": "order_created",
         "orders/paid": "payment_success",
-        "orders/cancelled": "payment_cancelled",
+        "orders/cancelled": "order_cancelled",
+        "orders/refunded": "refund_issued",
         "orders/fulfilled": "order_fulfilled",
         # Fulfillment events
         "fulfillments/create": "fulfillment_created",
         "fulfillments/update": "fulfillment_updated",
         # Customer events
+        "customers/create": "customer_created",
         "customers/update": "customer_updated",
+        # Checkout events
+        "checkouts/create": "checkout_started",
         # Test
         "test": "test",
     }
@@ -53,6 +58,14 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         "fulfillments/create",
         "fulfillments/update",
     }
+
+    # Topic prefixes where the payload's top-level ``id`` is an order or
+    # checkout id, never a customer id. These must not fall back to it
+    # when extracting a customer identifier.
+    ORDER_SCOPED_TOPIC_PREFIXES: ClassVar[tuple[str, ...]] = (
+        "orders/",
+        "checkouts/",
+    )
 
     @classmethod
     def get_metadata(cls) -> PluginMetadata:
@@ -119,8 +132,9 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         try:
             # Support both request.data (DRF/pre-parsed) and request.body (Django raw).
             # DRF views may pre-parse JSON into request.data as a dict, while Django
-            # views provide raw bytes in request.body. This handles both cases.
-            body = getattr(request, "data", None) or request.body
+            # views provide raw bytes in request.body. Use an explicit hasattr check
+            # so a falsy (empty) request.data does not silently switch sources.
+            body = request.data if hasattr(request, "data") else request.body
             data = json.loads(body) if isinstance(body, (str, bytes)) else body
         except (json.JSONDecodeError, AttributeError) as e:
             raise InvalidDataError("Invalid JSON data") from e
@@ -147,35 +161,48 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             or request.headers.get("X-Shopify-Test", "").lower() == "true"
         )
 
-    def _extract_shopify_customer_id(self, data: dict[str, Any]) -> str:
+    def _extract_shopify_customer_id(
+        self, data: dict[str, Any], topic: str
+    ) -> str | None:
         """Extract customer ID from Shopify webhook data.
+
+        Handles guest checkouts (``"customer": null``) by falling back to
+        the order email. For order-scoped topics the top-level ``id`` is
+        the order id, so it is never used as a customer identifier - doing
+        so would corrupt per-customer consolidation buckets downstream.
 
         Args:
             data: Parsed webhook data.
+            topic: The Shopify webhook topic.
 
         Returns:
-            Customer ID string.
+            Customer ID string, or None for order-scoped payloads without
+            any customer identifier (guest checkout without email).
 
         Raises:
-            InvalidDataError: If customer ID cannot be extracted.
+            InvalidDataError: If customer ID cannot be extracted for
+                non-order-scoped topics.
         """
-        try:
-            if "customer" in data:
-                customer_id = str(data["customer"]["id"])
-            elif "order" in data and "customer" in data["order"]:
-                customer_id = str(data["order"]["customer"]["id"])
-            else:
-                raw_id = data.get("id")
-                if not raw_id:
-                    raise InvalidDataError("Missing required fields")
-                customer_id = str(raw_id)
+        customer = data.get("customer")
+        if isinstance(customer, dict) and customer.get("id"):
+            return str(customer["id"])
 
-            if not customer_id:
-                raise InvalidDataError("Missing required fields")
+        order = data.get("order")
+        if isinstance(order, dict):
+            order_customer = order.get("customer")
+            if isinstance(order_customer, dict) and order_customer.get("id"):
+                return str(order_customer["id"])
 
-            return customer_id
-        except (KeyError, ValueError) as e:
-            raise InvalidDataError("Missing required fields") from e
+        if topic.startswith(self.ORDER_SCOPED_TOPIC_PREFIXES):
+            # Guest checkout: identify the customer by email if possible,
+            # otherwise return None (caller skips per-customer consolidation).
+            email = data.get("email") or data.get("contact_email")
+            return str(email) if email else None
+
+        raw_id = data.get("id")
+        if not raw_id:
+            raise InvalidDataError("Missing required fields")
+        return str(raw_id)
 
     def _extract_line_items(self, data: dict[str, Any]) -> list[dict[str, Any]]:
         """Extract line items from Shopify order data.
@@ -188,12 +215,20 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         """
         line_items = []
         for item in data.get("line_items", []):
+            # Price may be missing or explicitly null (gift cards,
+            # discount-only items). Use Decimal to avoid float drift.
+            raw_price = item.get("price")
+            try:
+                price = Decimal(str(raw_price)) if raw_price is not None else Decimal(0)
+            except InvalidOperation:
+                logger.warning("Invalid line item price %r, defaulting to 0", raw_price)
+                price = Decimal(0)
             line_items.append(
                 {
                     "name": item.get("name", item.get("title", "Unknown Product")),
                     "sku": item.get("sku", ""),
                     "quantity": item.get("quantity", 1),
-                    "price": float(item.get("price", 0)),
+                    "price": price,
                     "variant_title": item.get("variant_title", ""),
                 }
             )
@@ -231,7 +266,7 @@ class ShopifySourcePlugin(BaseSourcePlugin):
     def _build_shopify_event_data(
         self,
         event_type: str,
-        customer_id: str,
+        customer_id: str | None,
         data: dict[str, Any],
         topic: str,
     ) -> dict[str, Any]:
@@ -239,7 +274,7 @@ class ShopifySourcePlugin(BaseSourcePlugin):
 
         Args:
             event_type: The internal event type.
-            customer_id: Customer identifier.
+            customer_id: Customer identifier (None for guest checkouts).
             data: Raw webhook data.
             topic: The Shopify webhook topic.
 
@@ -276,11 +311,11 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             },
         }
 
-        # Add amount if present
+        # Add amount if present (Decimal to preserve monetary precision)
         if "total_price" in data:
             try:
-                event_data["amount"] = float(data["total_price"])
-            except (ValueError, TypeError) as e:
+                event_data["amount"] = Decimal(str(data["total_price"]))
+            except (InvalidOperation, ValueError, TypeError) as e:
                 raise InvalidDataError("Missing required fields") from e
 
         # Add currency if present
@@ -424,23 +459,34 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         if self._is_test_webhook(topic, request):
             return None
 
-        # Map webhook topic to event type
+        # Map webhook topic to event type. Unknown topics are acknowledged
+        # (parse returns None -> HTTP 200) instead of rejected with a 4xx,
+        # so Shopify does not disable the webhook subscription.
         event_type = self.EVENT_TYPE_MAPPING.get(topic)
         if not event_type:
-            raise InvalidDataError(f"Unsupported webhook topic: {topic}")
+            logger.warning("Ignoring unsupported Shopify webhook topic: %s", topic)
+            return None
 
         # Handle fulfillment-specific topics differently
         if topic in self.FULFILLMENT_TOPICS:
-            customer_id = self._extract_customer_id_from_fulfillment(data)
-            return self._build_fulfillment_event_data(
-                event_type, customer_id, data, topic
+            fulfillment_customer_id = self._extract_customer_id_from_fulfillment(data)
+            event = self._build_fulfillment_event_data(
+                event_type, fulfillment_customer_id, data, topic
             )
+        else:
+            # Extract customer ID for order/customer events (may be None
+            # for guest checkouts without an email)
+            customer_id = self._extract_shopify_customer_id(data, topic)
+            event = self._build_shopify_event_data(event_type, customer_id, data, topic)
 
-        # Extract customer ID for order/customer events
-        customer_id = self._extract_shopify_customer_id(data)
+        # Surface Shopify's delivery id so the router can deduplicate
+        # retries. The header is stable across redeliveries of the same
+        # webhook; when absent the router falls back to (type, external_id).
+        webhook_id = request.headers.get("X-Shopify-Webhook-Id")
+        if webhook_id:
+            event["event_id"] = webhook_id
 
-        # Build and return event data
-        return self._build_shopify_event_data(event_type, customer_id, data, topic)
+        return event
 
     def get_customer_data(self, customer_id: str) -> dict[str, Any]:
         """Get customer data from stored webhook data.
@@ -458,9 +504,10 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             raise CustomerNotFoundError("No webhook data available")
 
         data = self._current_webhook_data
-        customer = data.get("customer", {})
-        if not customer and "order" in data:
-            customer = data["order"].get("customer", {})
+        # ``customer`` may be explicitly null for guest checkouts
+        customer = data.get("customer") or {}
+        if not customer and isinstance(data.get("order"), dict):
+            customer = data["order"].get("customer") or {}
 
         return {
             "company": customer.get("company", "Individual"),
@@ -488,17 +535,19 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             request: The incoming HTTP request.
 
         Returns:
-            True if signature is valid, False otherwise.
-
-        Raises:
-            TypeError: If request body is not bytes.
+            True if signature is valid, False otherwise (including when
+            the request body is not bytes and cannot be verified).
         """
         hmac_header = request.headers.get("X-Shopify-Hmac-SHA256")
         if not hmac_header:
             return False
 
         if not isinstance(request.body, (bytes, bytearray)):
-            raise TypeError("Expected bytes or bytearray for request body")
+            logger.warning(
+                "Cannot validate Shopify webhook: expected bytes request body, got %s",
+                type(request.body).__name__,
+            )
+            return False
 
         # Use manual validation as the primary method
         return self._manual_validate_webhook(request)

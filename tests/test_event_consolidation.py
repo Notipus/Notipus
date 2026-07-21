@@ -57,12 +57,13 @@ class TestEventConsolidationService:
     def test_secondary_event_suppressed_after_primary(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that secondary events are suppressed after a primary event."""
+        """Test that secondary events of the same transaction are suppressed."""
         # First, process the primary event
         service.should_send_notification(
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # Now the secondary event should be suppressed
@@ -70,6 +71,7 @@ class TestEventConsolidationService:
             event_type="payment_success",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         assert result is False
@@ -83,6 +85,7 @@ class TestEventConsolidationService:
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # invoice_paid should be suppressed
@@ -90,15 +93,20 @@ class TestEventConsolidationService:
             event_type="invoice_paid",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         assert result is False
 
-    def test_payment_failure_never_suppressed(
+    def test_events_without_correlator_never_suppressed(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that payment_failure is never suppressed."""
-        # Even after a primary event, payment_failure should go through
+        """Test that events lacking a transaction correlator are delivered.
+
+        Without a correlator we cannot tell which transaction a suppression
+        marker belongs to, so a coarse customer-level fallback could swallow
+        an unrelated transaction's notification. Deliver instead.
+        """
         service.should_send_notification(
             event_type="subscription_created",
             customer_id="cus_123",
@@ -106,28 +114,233 @@ class TestEventConsolidationService:
         )
 
         result = service.should_send_notification(
-            event_type="payment_failure",
+            event_type="payment_success",
             customer_id="cus_123",
             workspace_id="ws_456",
+            amount=100.00,
         )
 
         assert result is True
 
-    def test_trial_ending_always_suppressed_and_tracked(
+    def test_correlated_primary_does_not_suppress_uncorrelated_secondary(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that trial_ending is suppressed and tracked for merging with payment."""
-        # Trial ending should be suppressed (it merges with payment notification)
+        """Test that a correlated primary never suppresses a correlator-less event."""
+        service.should_send_notification(
+            event_type="subscription_created",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            correlation_id="sub_1",
+        )
+
+        result = service.should_send_notification(
+            event_type="payment_success",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=100.00,
+        )
+
+        assert result is True
+
+    def test_payment_failure_never_suppressed(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test that payment_failure is never suppressed."""
+        # Even after a primary event for the SAME transaction,
+        # payment_failure should go through
+        service.should_send_notification(
+            event_type="subscription_created",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            correlation_id="sub_1",
+        )
+
+        result = service.should_send_notification(
+            event_type="payment_failure",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            correlation_id="sub_1",
+        )
+
+        assert result is True
+
+    def test_trial_ending_never_suppressed(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test that trial_ending is delivered as its own notification.
+
+        Stripe fires trial_will_end ~3 days before the trial converts, so a
+        cache-based merge with the later payment can never work. The product
+        decision is to deliver BOTH: "trial ending in 3 days" now and
+        "trial converted" later (detected statelessly from the invoice).
+        """
         result = service.should_send_notification(
             event_type="trial_ending",
             customer_id="cus_123",
             workspace_id="ws_456",
         )
 
-        assert result is False
+        assert result is True
 
-        # Check that it's tracked as pending for insight enrichment
-        assert service.has_pending_trial("ws_456", "cus_123") is True
+    def test_trial_ending_not_suppressed_even_after_payment(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test that a recent payment does not suppress a trial_ending warning."""
+        service.should_send_notification(
+            event_type="payment_success",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=100.00,
+        )
+
+        result = service.should_send_notification(
+            event_type="trial_ending",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+        )
+
+        assert result is True
+
+    def test_trial_lifecycle_produces_both_notifications(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test the full trial lifecycle: warning AND conversion notifications.
+
+        Sequence: trial_will_end fires ~3 days before the trial ends, then
+        the first paid invoice arrives when it actually converts. The user
+        must receive both notifications - the conversion is detected
+        statelessly from the invoice payload (is_trial_conversion metadata
+        set by the Stripe parser), not from a cache marker that would have
+        expired days earlier.
+        """
+        from webhooks.services.insight_detector import InsightDetector
+
+        # T=0: trial_will_end arrives -> "trial ending in 3 days" delivered
+        trial_ending_allowed = service.should_send_notification(
+            event_type="trial_ending",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+        )
+        assert trial_ending_allowed is True
+
+        # T=+3 days: first paid invoice after the trial arrives. The parser
+        # flagged it as a trial conversion from the payload alone.
+        payment_event = {
+            "type": "payment_success",
+            "customer_id": "cus_123",
+            "workspace_id": "ws_456",
+            "amount": 29.00,
+            "metadata": {"is_trial_conversion": True},
+        }
+        payment_allowed = service.should_send_notification(
+            event_type="payment_success",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=29.00,
+        )
+        assert payment_allowed is True
+
+        # And the payment notification carries the "Trial converted" insight
+        insight = InsightDetector().detect(payment_event, {"payment_history": []})
+        assert insight is not None
+        assert "Trial converted" in insight.text
+
+    def test_unrelated_transaction_not_suppressed(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test that suppression is scoped to the transaction correlator.
+
+        A checkout for product A must not suppress the payment_success of an
+        unrelated second purchase (different charge) by the same customer
+        within the 5-minute window.
+        """
+        # T=0: checkout for product A suppresses ITS payment notifications
+        service.should_send_notification(
+            event_type="checkout_completed",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            correlation_id="ch_A",
+        )
+
+        # The same transaction's payment IS suppressed
+        same_txn = service.should_send_notification(
+            event_type="payment_success",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=50.00,
+            correlation_id="ch_A",
+        )
+        assert same_txn is False
+
+        # T=+90s: unrelated purchase (different charge) is NOT suppressed
+        other_txn = service.should_send_notification(
+            event_type="payment_success",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=500.00,
+            correlation_id="ch_B",
+        )
+        assert other_txn is True
+
+    def test_cancelling_one_sub_does_not_suppress_other_subs(
+        self, service: EventConsolidationService, mock_cache
+    ) -> None:
+        """Test that cancelling one subscription only suppresses ITS invoice.
+
+        A customer cancels their add-on subscription; the Basic
+        subscription's monthly renewal invoice arriving within 5 minutes
+        must still notify.
+        """
+        # Cancel the add-on subscription
+        service.should_send_notification(
+            event_type="subscription_deleted",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            correlation_id="sub_addon",
+        )
+
+        # The add-on's final invoice IS suppressed (consolidated)
+        addon_invoice = service.should_send_notification(
+            event_type="invoice_paid",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=10.00,
+            correlation_id="sub_addon",
+        )
+        assert addon_invoice is False
+
+        # The Basic subscription's renewal invoice is NOT suppressed
+        basic_invoice = service.should_send_notification(
+            event_type="invoice_paid",
+            customer_id="cus_123",
+            workspace_id="ws_456",
+            amount=29.00,
+            correlation_id="sub_basic",
+        )
+        assert basic_invoice is True
+
+    def test_extract_correlation_id_prefers_metadata(
+        self, service: EventConsolidationService
+    ) -> None:
+        """Test correlator extraction prefers transaction metadata ids."""
+        event = {
+            "external_id": "in_123",
+            "metadata": {"subscription_id": "sub_abc"},
+        }
+        assert service.extract_correlation_id(event) == "sub_abc"
+
+    def test_extract_correlation_id_falls_back_to_external_id(
+        self, service: EventConsolidationService
+    ) -> None:
+        """Test correlator extraction falls back to the external object id."""
+        event = {"external_id": "in_123", "metadata": {}}
+        assert service.extract_correlation_id(event) == "in_123"
+
+    def test_extract_correlation_id_returns_none_without_identifiers(
+        self, service: EventConsolidationService
+    ) -> None:
+        """Test correlator extraction returns None when nothing identifies it."""
+        assert service.extract_correlation_id({"metadata": {}}) is None
 
     def test_different_customer_not_affected(
         self, service: EventConsolidationService, mock_cache
@@ -138,6 +351,7 @@ class TestEventConsolidationService:
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # Different customer should not be suppressed
@@ -147,6 +361,7 @@ class TestEventConsolidationService:
             customer_id="cus_789",
             workspace_id="ws_456",
             amount=100.00,
+            correlation_id="sub_1",
         )
 
         assert result is True
@@ -160,6 +375,7 @@ class TestEventConsolidationService:
             event_type="subscription_created",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         # Different workspace should not be suppressed
@@ -169,6 +385,7 @@ class TestEventConsolidationService:
             customer_id="cus_123",
             workspace_id="ws_other",
             amount=100.00,
+            correlation_id="sub_1",
         )
 
         assert result is True
@@ -176,11 +393,12 @@ class TestEventConsolidationService:
     def test_checkout_completed_suppresses_payment_events(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that checkout_completed suppresses payment events."""
+        """Test that checkout_completed suppresses its own payment events."""
         service.should_send_notification(
             event_type="checkout_completed",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="cs_1",
         )
 
         # Both payment_success and invoice_paid should be suppressed
@@ -188,11 +406,15 @@ class TestEventConsolidationService:
             event_type="payment_success",
             customer_id="cus_123",
             workspace_id="ws_456",
+            amount=50.00,
+            correlation_id="cs_1",
         )
         result2 = service.should_send_notification(
             event_type="invoice_paid",
             customer_id="cus_123",
             workspace_id="ws_456",
+            amount=50.00,
+            correlation_id="cs_1",
         )
 
         assert result1 is False
@@ -293,6 +515,7 @@ class TestEventConsolidationService:
             customer_id="cus_123",
             workspace_id="ws_456",
             amount=100.00,
+            correlation_id="in_1",
         )
 
         # Another payment_success should still go through
@@ -301,6 +524,7 @@ class TestEventConsolidationService:
             customer_id="cus_123",
             workspace_id="ws_456",
             amount=100.00,
+            correlation_id="in_1",
         )
 
         assert result is True
@@ -308,17 +532,20 @@ class TestEventConsolidationService:
     def test_subscription_deleted_suppresses_invoice_paid(
         self, service: EventConsolidationService, mock_cache
     ) -> None:
-        """Test that subscription_deleted suppresses invoice_paid."""
+        """Test that subscription_deleted suppresses its own invoice_paid."""
         service.should_send_notification(
             event_type="subscription_deleted",
             customer_id="cus_123",
             workspace_id="ws_456",
+            correlation_id="sub_1",
         )
 
         result = service.should_send_notification(
             event_type="invoice_paid",
             customer_id="cus_123",
             workspace_id="ws_456",
+            amount=10.00,
+            correlation_id="sub_1",
         )
 
         assert result is False
@@ -332,11 +559,14 @@ class TestEventConsolidationService:
         fire. The order_created event should suppress the subsequent payment_success
         to prevent duplicate notifications.
         """
-        # First, process order_created (from orders/create webhook)
+        # First, process order_created (from orders/create webhook).
+        # Both webhooks carry the same order id as external_id, which
+        # extract_correlation_id uses as the transaction correlator.
         service.should_send_notification(
             event_type="order_created",
             customer_id="shopify_cus_123",
             workspace_id="ws_456",
+            correlation_id="450789469",
         )
 
         # Now payment_success (from orders/paid webhook) should be suppressed
@@ -344,6 +574,8 @@ class TestEventConsolidationService:
             event_type="payment_success",
             customer_id="shopify_cus_123",
             workspace_id="ws_456",
+            amount=100.00,
+            correlation_id="450789469",
         )
 
         assert result is False
@@ -470,8 +702,14 @@ class TestEventConsolidationConstants:
 
         assert "payment_failure" in never_suppress
         assert "payment_action_required" in never_suppress
-        # Note: trial_ending is NOT in NEVER_SUPPRESS anymore
-        # It's suppressed and merged with payment notifications as "Trial converted"
+        # trial_ending is delivered as its own warning; the later "Trial
+        # converted" insight is derived statelessly from the invoice payload
+        assert "trial_ending" in never_suppress
+
+    def test_trial_ending_not_a_suppression_target(self) -> None:
+        """Test that no primary event suppresses trial_ending anymore."""
+        for suppressed in EventConsolidationService.PRIMARY_EVENTS.values():
+            assert "trial_ending" not in suppressed
 
     def test_primary_events_defined(self) -> None:
         """Test that primary events are properly defined."""

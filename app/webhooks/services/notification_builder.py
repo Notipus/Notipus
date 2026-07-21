@@ -4,6 +4,8 @@ This module provides the NotificationBuilder class that transforms raw event
 and customer data into RichNotification objects ready for formatting.
 """
 
+import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -18,9 +20,42 @@ from webhooks.models.rich_notification import (
     PersonInfo,
     RichNotification,
 )
+from webhooks.utils.currency import CURRENCY_SYMBOLS, format_money
 
 from .insight_detector import InsightDetector
 from .utils import get_display_name
+
+logger = logging.getLogger(__name__)
+
+# A Chargify site subdomain must be a single DNS label: no dots, no
+# slashes, no whitespace. Anything else could point the dashboard
+# button at an unintended host.
+_CHARGIFY_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _normalize_chargify_subdomain(value: Any) -> str | None:
+    """Normalize and validate a Chargify site subdomain.
+
+    The subdomain originates from webhook payload data and is
+    interpolated into a URL host, so it is normalized (surrounding
+    whitespace stripped, lowercased) and then required to be a single
+    valid DNS label. Values that still do not match (dots, slashes,
+    interior whitespace, ...) are rejected.
+
+    Args:
+        value: Raw subdomain value from event metadata.
+
+    Returns:
+        The normalized subdomain, or None when the value is missing or
+        not a safe single DNS label.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not _CHARGIFY_SUBDOMAIN_RE.fullmatch(normalized):
+        return None
+    return normalized
+
 
 # Provider display configurations
 PROVIDER_DISPLAY: dict[str, str] = {
@@ -62,8 +97,11 @@ EVENT_TYPE_MAP: dict[str, NotificationType] = {
     "integration_connected": NotificationType.INTEGRATION_CONNECTED,
     "integration_error": NotificationType.INTEGRATION_ERROR,
     "webhook_received": NotificationType.WEBHOOK_RECEIVED,
+    # Checkout events
+    "checkout_started": NotificationType.CHECKOUT_STARTED,
     # Logistics events
     "order_created": NotificationType.ORDER_CREATED,
+    "order_cancelled": NotificationType.ORDER_CANCELLED,
     "order_fulfilled": NotificationType.ORDER_FULFILLED,
     "fulfillment_created": NotificationType.FULFILLMENT_CREATED,
     "fulfillment_updated": NotificationType.FULFILLMENT_UPDATED,
@@ -102,13 +140,47 @@ EVENT_SEVERITY_MAP: dict[str, NotificationSeverity] = {
     "integration_connected": NotificationSeverity.SUCCESS,
     "integration_error": NotificationSeverity.ERROR,
     "webhook_received": NotificationSeverity.INFO,
+    # Checkout events
+    "checkout_started": NotificationSeverity.INFO,
     # Logistics events
     "order_created": NotificationSeverity.SUCCESS,
+    "order_cancelled": NotificationSeverity.WARNING,
     "order_fulfilled": NotificationSeverity.SUCCESS,
     "fulfillment_created": NotificationSeverity.INFO,
     "fulfillment_updated": NotificationSeverity.INFO,
     "shipment_delivered": NotificationSeverity.SUCCESS,
 }
+
+# Billing period to headline interval suffix mapping. Unknown or missing
+# periods fall back to "/mo" explicitly (most subscriptions are monthly).
+INTERVAL_SUFFIX_MAP: dict[str, str] = {
+    "monthly": "/mo",
+    "month": "/mo",
+    "annual": "/yr",
+    "annually": "/yr",
+    "yearly": "/yr",
+    "year": "/yr",
+    "quarterly": "/qtr",
+    "quarter": "/qtr",
+    "weekly": "/wk",
+    "week": "/wk",
+    "daily": "/day",
+    "day": "/day",
+}
+
+
+def _interval_suffix(billing_period: Any) -> str:
+    """Map a billing period to a headline interval suffix.
+
+    Args:
+        billing_period: Billing period value from event metadata
+            (e.g. "monthly", "annual"), or None.
+
+    Returns:
+        Interval suffix such as "/mo" or "/yr", defaulting to "/mo".
+    """
+    return INTERVAL_SUFFIX_MAP.get(str(billing_period or "").lower(), "/mo")
+
 
 # Event type to headline icon mapping (semantic names)
 EVENT_ICON_MAP: dict[str, str] = {
@@ -142,8 +214,11 @@ EVENT_ICON_MAP: dict[str, str] = {
     "integration_connected": "check",
     "integration_error": "error",
     "webhook_received": "integration",
+    # Checkout events
+    "checkout_started": "cart",
     # Logistics events
     "order_created": "cart",
+    "order_cancelled": "warning",
     "order_fulfilled": "package",
     "fulfillment_created": "truck",
     "fulfillment_updated": "truck",
@@ -197,7 +272,9 @@ class NotificationBuilder:
         provider_display = PROVIDER_DISPLAY.get(provider, provider.title())
 
         # Build sub-models
-        customer_info = self._build_customer_info(customer_data)
+        customer_info = self._build_customer_info(
+            customer_data, event_data.get("currency") or "USD"
+        )
         payment_info = self._build_payment_info(event_data)
         company_info = self._build_company_info(company) if company else None
         person_info = self._build_person_info(person) if person else None
@@ -210,10 +287,9 @@ class NotificationBuilder:
         # Build headline
         headline = self._build_headline(event_data, customer_data, company)
 
-        # Determine notification type and severity
-        notification_type = EVENT_TYPE_MAP.get(
-            event_type, NotificationType.PAYMENT_SUCCESS
-        )
+        # Determine notification type and severity. Unknown event types
+        # fall back to CUSTOM so they never render as successful payments.
+        notification_type = EVENT_TYPE_MAP.get(event_type, NotificationType.CUSTOM)
         severity = EVENT_SEVERITY_MAP.get(event_type, NotificationSeverity.INFO)
         headline_icon = EVENT_ICON_MAP.get(event_type, "info")
 
@@ -240,11 +316,15 @@ class NotificationBuilder:
             billing_interval=billing_interval,
         )
 
-    def _build_customer_info(self, customer_data: dict[str, Any]) -> CustomerInfo:
+    def _build_customer_info(
+        self, customer_data: dict[str, Any], currency: str = "USD"
+    ) -> CustomerInfo:
         """Build CustomerInfo from customer data.
 
         Args:
             customer_data: Customer data dictionary.
+            currency: Currency code of the triggering event, used for
+                the LTV display.
 
         Returns:
             CustomerInfo dataclass.
@@ -260,15 +340,24 @@ class NotificationBuilder:
         # Calculate tenure display
         tenure_display = self._format_tenure(customer_data)
 
-        # Calculate LTV display
-        total_spent_raw = customer_data.get("total_spent") or customer_data.get(
-            "lifetime_value", 0
-        )
-        try:
-            total_spent = float(total_spent_raw) if total_spent_raw else 0.0
-        except (ValueError, TypeError):
+        # Calculate LTV display. Explicit None checks so a legitimate
+        # zero lifetime value (0, 0.0, Decimal("0")) is not treated as
+        # missing and does not fall back to the other key or warn.
+        total_spent_raw = customer_data.get("total_spent")
+        if total_spent_raw is None:
+            total_spent_raw = customer_data.get("lifetime_value")
+        if total_spent_raw is None:
             total_spent = 0.0
-        ltv_display = self._format_ltv(total_spent) if total_spent else None
+        else:
+            try:
+                total_spent = float(total_spent_raw)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Could not parse customer lifetime value; defaulting to 0.0",
+                    extra={"total_spent_raw": repr(total_spent_raw)},
+                )
+                total_spent = 0.0
+        ltv_display = self._format_ltv(total_spent, currency) if total_spent else None
 
         return CustomerInfo(
             email=email,
@@ -300,7 +389,6 @@ class NotificationBuilder:
             return None
 
         currency = event_data.get("currency", "USD")
-        metadata = event_data.get("metadata", {})
 
         # Detect billing interval
         _, interval = self._detect_recurring(event_data)
@@ -403,22 +491,28 @@ class NotificationBuilder:
         event_type = event_data.get("type", "")
         amount = event_data.get("amount")
         metadata = event_data.get("metadata", {})
+        currency = event_data.get("currency") or "USD"
 
         # Event-focused headlines (company/customer info shown in body)
         if event_type == "payment_success":
             # Check for trial conversion (first real payment after trial)
             if metadata.get("is_trial_conversion"):
                 return "Trial converted!"
-            if amount:
-                return f"${amount:,.2f} received"
+            # "is not None" so $0 payments (trial confirmations, promo
+            # comps) still render as "$0.00 received".
+            if amount is not None:
+                return f"{format_money(amount, currency)} received"
             return "Payment received"
 
         elif event_type == "payment_failure":
             attempt_count = metadata.get("attempt_count")
-            if amount and attempt_count and attempt_count > 1:
-                return f"${amount:,.2f} payment failed (retry #{attempt_count})"
-            elif amount:
-                return f"${amount:,.2f} payment failed"
+            if amount is not None and attempt_count and attempt_count > 1:
+                money = format_money(amount, currency)
+                # Stripe's attempt_count includes the initial attempt, so
+                # attempt_count=2 is the first retry.
+                return f"{money} payment failed (retry #{attempt_count - 1})"
+            elif amount is not None:
+                return f"{format_money(amount, currency)} payment failed"
             return "Payment failed"
 
         elif event_type == "subscription_created":
@@ -429,29 +523,59 @@ class NotificationBuilder:
             direction = metadata.get("change_direction", "")
             plan_name = metadata.get("plan_name")
             previous_amount = metadata.get("previous_amount")
+            suffix = _interval_suffix(metadata.get("billing_period"))
+            # The "old" side of an upgrade/downgrade may be denominated in
+            # a different currency or interval than the current plan.
+            prev_currency = metadata.get("previous_currency") or currency
+            prev_suffix = _interval_suffix(
+                metadata.get("previous_billing_period")
+                or metadata.get("billing_period")
+            )
 
+            # "is not None" throughout so $0 amounts (e.g. a $299 -> $0
+            # cancel-in-place downgrade or a $0 -> $99 upgrade from a
+            # free tier) keep the "from X to Y" framing.
             if direction == "upgrade":
                 # Show plan name if available (Chargify), otherwise amount change
-                if plan_name and amount:
-                    return f"Upgraded to {plan_name} (${amount:,.2f}/mo)"
-                elif previous_amount and amount:
-                    old = f"${previous_amount:,.2f}"
-                    new = f"${amount:,.2f}"
-                    return f"Upgraded: {old}/mo to {new}/mo"
-                elif amount:
-                    return f"Subscription upgraded to ${amount:,.2f}/mo"
+                if plan_name and amount is not None:
+                    money = format_money(amount, currency)
+                    return f"Upgraded to {plan_name} ({money}{suffix})"
+                elif previous_amount is not None and amount is not None:
+                    old = format_money(previous_amount, prev_currency)
+                    new = format_money(amount, currency)
+                    return f"Upgraded: {old}{prev_suffix} to {new}{suffix}"
+                elif amount is not None:
+                    money = format_money(amount, currency)
+                    return f"Subscription upgraded to {money}{suffix}"
                 return "Subscription upgraded"
             elif direction == "downgrade":
-                if plan_name and amount:
-                    return f"Downgraded to {plan_name} (${amount:,.2f}/mo)"
-                elif previous_amount and amount:
-                    old = f"${previous_amount:,.2f}"
-                    new = f"${amount:,.2f}"
-                    return f"Downgraded: {old}/mo to {new}/mo"
-                elif amount:
-                    return f"Subscription downgraded to ${amount:,.2f}/mo"
+                if plan_name and amount is not None:
+                    money = format_money(amount, currency)
+                    return f"Downgraded to {plan_name} ({money}{suffix})"
+                elif previous_amount is not None and amount is not None:
+                    old = format_money(previous_amount, prev_currency)
+                    new = format_money(amount, currency)
+                    return f"Downgraded: {old}{prev_suffix} to {new}{suffix}"
+                elif amount is not None:
+                    money = format_money(amount, currency)
+                    return f"Subscription downgraded to {money}{suffix}"
                 return "Subscription downgraded"
             return "Subscription updated"
+
+        elif event_type == "subscription_renewed":
+            # No parser currently emits this type (Chargify acknowledges
+            # and skips subscription_renewed webhooks), but it remains a
+            # valid event type so a renewal must not collapse to a bare
+            # title without amount/plan context.
+            plan_name = metadata.get("plan_name")
+            suffix = _interval_suffix(metadata.get("billing_period"))
+            if plan_name and amount is not None:
+                money = format_money(amount, currency)
+                return f"Subscription renewed: {plan_name} ({money}{suffix})"
+            elif amount is not None:
+                money = format_money(amount, currency)
+                return f"Subscription renewed at {money}{suffix}"
+            return "Subscription renewed"
 
         elif event_type in ("subscription_canceled", "subscription_deleted"):
             return "Subscription canceled"
@@ -464,25 +588,33 @@ class NotificationBuilder:
 
         # Logistics event headlines (e-commerce/Shopify)
         elif event_type == "order_created":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
-            if order_number and amount:
-                return f"New order #{order_number} (${amount:,.2f})"
+            # "is not None" so comped orders (Shopify sends total_price
+            # "0.00") still show the formatted amount.
+            if order_number and amount is not None:
+                return f"New order #{order_number} ({format_money(amount, currency)})"
             elif order_number:
                 return f"New order #{order_number}"
-            elif amount:
-                return f"New order (${amount:,.2f})"
+            elif amount is not None:
+                return f"New order ({format_money(amount, currency)})"
             return "New order"
 
+        elif event_type == "order_cancelled":
+            order_number = metadata.get("order_number") or metadata.get("order_ref")
+            if order_number and amount is not None:
+                money = format_money(amount, currency)
+                return f"Order #{order_number} canceled ({money})"
+            elif order_number:
+                return f"Order #{order_number} canceled"
+            return "Order canceled"
+
         elif event_type == "order_fulfilled":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             if order_number:
                 return f"Order #{order_number} fulfilled"
             return "Order fulfilled"
 
         elif event_type == "fulfillment_created":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             tracking_number = metadata.get("tracking_number")
             if order_number and tracking_number:
@@ -492,7 +624,6 @@ class NotificationBuilder:
             return "Fulfillment created"
 
         elif event_type == "fulfillment_updated":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             status = metadata.get("shipment_status") or metadata.get(
                 "fulfillment_status"
@@ -504,7 +635,6 @@ class NotificationBuilder:
             return "Shipment updated"
 
         elif event_type == "shipment_delivered":
-            metadata = event_data.get("metadata", {})
             order_number = metadata.get("order_number") or metadata.get("order_ref")
             if order_number:
                 return f"Order #{order_number} delivered"
@@ -531,45 +661,13 @@ class NotificationBuilder:
             List of ActionButton objects.
         """
         event_type = event_data.get("type", "")
-        provider = event_data.get("provider", "")
-        metadata = event_data.get("metadata", {})
 
         actions: list[ActionButton] = []
 
         # Provider-specific dashboard link
-        if provider == "stripe":
-            customer_id = metadata.get("stripe_customer_id")
-            if customer_id:
-                actions.append(
-                    ActionButton(
-                        text="View in Stripe",
-                        url=f"https://dashboard.stripe.com/customers/{customer_id}",
-                        style="primary",
-                    )
-                )
-
-        elif provider == "chargify":
-            subscription_id = metadata.get("subscription_id")
-            if subscription_id:
-                actions.append(
-                    ActionButton(
-                        text="View in Chargify",
-                        url=f"https://app.chargify.com/subscriptions/{subscription_id}",
-                        style="primary",
-                    )
-                )
-
-        elif provider == "shopify":
-            order_id = metadata.get("order_id")
-            shop_domain = metadata.get("shop_domain")
-            if order_id and shop_domain:
-                actions.append(
-                    ActionButton(
-                        text="View Order",
-                        url=f"https://{shop_domain}/admin/orders/{order_id}",
-                        style="primary",
-                    )
-                )
+        dashboard_action = self._build_provider_dashboard_action(event_data)
+        if dashboard_action:
+            actions.append(dashboard_action)
 
         # Add company website link if enriched
         if company and company.domain:
@@ -594,6 +692,62 @@ class NotificationBuilder:
 
         return actions
 
+    def _build_provider_dashboard_action(
+        self, event_data: dict[str, Any]
+    ) -> ActionButton | None:
+        """Build the provider-specific dashboard link button.
+
+        Args:
+            event_data: Event data dictionary.
+
+        Returns:
+            ActionButton linking to the provider dashboard, or None when
+            the data needed to build a working link is missing.
+        """
+        provider = event_data.get("provider", "")
+        metadata = event_data.get("metadata", {})
+
+        if provider in ("stripe", "stripe_customer"):
+            # Parsers write the customer id at the top level of the
+            # event, not in metadata.
+            customer_id = event_data.get("customer_id")
+            if customer_id:
+                return ActionButton(
+                    text="View in Stripe",
+                    url=f"https://dashboard.stripe.com/customers/{customer_id}",
+                    style="primary",
+                )
+
+        elif provider == "chargify":
+            subscription_id = metadata.get("subscription_id")
+            # Chargify (Maxio) dashboards live on per-site subdomains;
+            # a hardcoded app.chargify.com URL does not resolve. Omit
+            # the button when the site subdomain is unknown or is not a
+            # safe single DNS label (it comes from webhook payload data
+            # and is interpolated into the URL host).
+            subdomain = _normalize_chargify_subdomain(metadata.get("site_subdomain"))
+            if subscription_id and subdomain:
+                return ActionButton(
+                    text="View in Chargify",
+                    url=(
+                        f"https://{subdomain}.chargify.com"
+                        f"/subscriptions/{subscription_id}"
+                    ),
+                    style="primary",
+                )
+
+        elif provider == "shopify":
+            order_id = metadata.get("order_id")
+            shop_domain = metadata.get("shop_domain")
+            if order_id and shop_domain:
+                return ActionButton(
+                    text="View Order",
+                    url=f"https://{shop_domain}/admin/orders/{order_id}",
+                    style="primary",
+                )
+
+        return None
+
     def _detect_recurring(self, event_data: dict[str, Any]) -> tuple[bool, str | None]:
         """Detect if payment is recurring and extract billing interval.
 
@@ -603,13 +757,12 @@ class NotificationBuilder:
         Returns:
             Tuple of (is_recurring, billing_interval).
         """
-        event_type = event_data.get("type", "")
         metadata = event_data.get("metadata", {})
 
-        # Renewal events are always recurring
-        if event_type in ("renewal_success", "renewal_failure"):
-            interval = metadata.get("billing_period", "monthly")
-            return True, interval
+        # Note: Chargify renewal_success/renewal_failure are normalized
+        # to payment_success/payment_failure by the parser (with
+        # billing_period defaulted to "monthly" in metadata), so no
+        # renewal-specific branch is needed here.
 
         # Check for subscription_id presence
         if metadata.get("subscription_id"):
@@ -688,17 +841,32 @@ class NotificationBuilder:
             return f"Since {created_date.strftime('%b %Y')}"
 
         except (ValueError, TypeError):
+            logger.warning(
+                "Could not parse customer created_at for tenure display",
+                extra={"created_at": repr(created_at)},
+            )
             return None
 
-    def _format_ltv(self, total_spent: float) -> str:
+    def _format_ltv(self, total_spent: float, currency: str = "USD") -> str:
         """Format lifetime value for display.
+
+        Note: LTV is aggregated in the workspace provider's currency;
+        mixed-currency payment history is not converted (out of scope),
+        so the triggering event's currency is used for display.
 
         Args:
             total_spent: Total amount spent.
+            currency: Currency code the total is denominated in.
 
         Returns:
-            Formatted LTV string like "$7.1k" or "$150".
+            Formatted LTV string like "$7.1k", "€150", or "CHF 150".
         """
         if total_spent >= 1000:
-            return f"${total_spent / 1000:.1f}k"
-        return f"${total_spent:,.0f}"
+            code = (currency or "USD").upper()
+            symbol = CURRENCY_SYMBOLS.get(code)
+            abbreviated = f"{total_spent / 1000:.1f}k"
+            if symbol:
+                return f"{symbol}{abbreviated}"
+            return f"{code} {abbreviated}"
+        formatted: str = format_money(total_spent, currency, 0)
+        return formatted

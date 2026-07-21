@@ -60,6 +60,12 @@ class Workspace(models.Model):
         ("active", "Active"),
         ("trial", "Trial"),
         ("suspended", "Suspended"),
+        # Dunning state, written by billing webhook handlers when a
+        # subscription invoice fails (Stripe past_due/unpaid).
+        # Deliberately NOT in is_active's allowed list: access is
+        # suspended while dunning and restored by the payment-success /
+        # sync handlers once Stripe reports the subscription active.
+        ("past_due", "Past Due"),
         ("cancelled", "Cancelled"),
     )
 
@@ -90,6 +96,13 @@ class Workspace(models.Model):
         null=True, blank=True
     )
     stripe_customer_id: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
+    # The Stripe subscription this workspace's billing state is derived from.
+    # Lets webhook handlers ignore events for other subscriptions on the same
+    # customer (e.g. add-ons, one-off invoices) instead of cancelling or
+    # flagging the workspace on any subscription-shaped event.
+    stripe_subscription_id: models.CharField = models.CharField(
         max_length=255, blank=True, default=""
     )
     payment_method_added: models.BooleanField = models.BooleanField(default=False)

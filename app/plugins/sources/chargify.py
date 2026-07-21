@@ -8,9 +8,8 @@ import hashlib
 import hmac
 import logging
 import re
-import time
-from collections import OrderedDict
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, ClassVar, cast
 
 from django.http import HttpRequest
@@ -19,7 +18,9 @@ from plugins.sources.base import (
     BaseSourcePlugin,
     CustomerNotFoundError,
     InvalidDataError,
+    mask_sensitive_headers,
 )
+from webhooks.utils.currency import from_minor_units
 
 logger = logging.getLogger(__name__)
 
@@ -28,49 +29,77 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     """Chargify (Maxio Advanced Billing) source plugin implementation.
 
     Handles webhook validation using HMAC signatures (SHA-256 preferred,
-    with MD5 fallback), deduplication, and parsing of various subscription
-    and payment events.
+    with MD5 fallback) and parsing of various subscription and payment
+    events. Deduplication is handled at the router level via the
+    event consolidation service, keyed on the ``X-Chargify-Webhook-Id``
+    header surfaced as ``event_id`` in the parsed event data.
 
     Attributes:
-        EVENT_TYPE_MAPPING: Maps Chargify event names to internal types.
+        EVENT_TYPE_MAPPING: Maps routable Chargify event names to the
+            internal event types they are parsed into.
+        ACKNOWLEDGED_EVENT_TYPES: Known Chargify event names that are
+            deliberately not processed. They are acknowledged (200) and
+            skipped so Chargify does not retry them forever.
     """
 
+    # Every event listed here has a dispatch branch in
+    # _handle_chargify_event. Do not add an event type without also
+    # routing it there: advertised-but-unroutable events would be
+    # rejected with a 400 and retried by Chargify indefinitely.
+    #
+    # Every value must be a member of EventProcessor.VALID_EVENT_TYPES:
+    # emitting an unknown type raises ValueError downstream, which the
+    # router turns into a 5xx and Chargify retries forever.
     EVENT_TYPE_MAPPING: ClassVar[dict[str, str]] = {
         # Payment events
         "payment_success": "payment_success",
         "payment_failure": "payment_failure",
-        "payment_refunded": "payment_refunded",
         "renewal_success": "payment_success",
         "renewal_failure": "payment_failure",
-        # Subscription events
-        "subscription_state_change": "subscription_state_change",
-        "subscription_product_change": "subscription_product_change",
-        "subscription_billing_date_change": "subscription_billing_date_change",
+        # Subscription change events. These emit subscription_updated by
+        # default; a change into a cancellation-like state (see
+        # _CANCELED_STATES) emits subscription_canceled instead.
+        "subscription_state_change": "subscription_updated",
+        "subscription_product_change": "subscription_updated",
+        "subscription_billing_date_change": "subscription_updated",
+        # Subscription lifecycle events
         "subscription_created": "subscription_created",
         "subscription_updated": "subscription_updated",
-        "subscription_cancelled": "subscription_cancelled",
-        "subscription_reactivated": "subscription_reactivated",
-        "subscription_expired": "subscription_expired",
-        "subscription_renewed": "subscription_renewed",
-        # Customer events
-        "customer_created": "customer_created",
-        "customer_updated": "customer_updated",
-        "customer_deleted": "customer_deleted",
-        # Invoice events
-        "invoice_created": "invoice_created",
-        "invoice_updated": "invoice_updated",
-        "invoice_paid": "invoice_paid",
-        # Signup events
-        "signup_success": "signup_success",
-        "signup_failure": "signup_failure",
-        # Component events
-        "component_allocation_change": "component_allocation_change",
+        "subscription_cancelled": "subscription_canceled",
+        "subscription_expired": "subscription_canceled",
     }
 
+    # Subscription states that represent the end of a subscription. A
+    # state change into one of these is emitted as subscription_canceled.
+    _CANCELED_STATES: ClassVar[frozenset[str]] = frozenset(
+        {"canceled", "cancelled", "expired"}
+    )
+
+    # Known Chargify events we receive but do not act on. These must be
+    # acknowledged with a 200 (logged and skipped), never rejected with
+    # a 400: a 4xx/5xx makes Chargify retry the webhook forever.
+    ACKNOWLEDGED_EVENT_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "payment_refunded",
+            "subscription_reactivated",
+            "subscription_renewed",
+            "customer_created",
+            "customer_updated",
+            "customer_deleted",
+            "invoice_created",
+            "invoice_updated",
+            "invoice_paid",
+            "signup_success",
+            "signup_failure",
+            "component_allocation_change",
+        }
+    )
+
     # Class-level constants
-    _CACHE_MAX_SIZE: ClassVar[int] = 1000
-    _DEDUP_WINDOW_SECONDS: ClassVar[int] = 300  # 5 minutes
-    _TIMESTAMP_TOLERANCE_SECONDS: ClassVar[int] = 300  # 5 minutes tolerance
+    _TIMESTAMP_TOLERANCE_SECONDS: ClassVar[int] = 300  # 5 minutes past tolerance
+    # Small allowance for clock skew only - future-dated webhooks beyond
+    # this are rejected to keep the replay window one-sided.
+    _FUTURE_TIMESTAMP_TOLERANCE_SECONDS: ClassVar[int] = 60
 
     @classmethod
     def get_metadata(cls) -> PluginMetadata:
@@ -100,48 +129,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         """
         super().__init__(webhook_secret)
         self._current_webhook_data: dict[str, Any] | None = None
-        # Instance-level cache for recently processed webhook IDs.
-        # Note: This cache is per-instance, meaning deduplication only works
-        # within a single request lifecycle. For cross-request deduplication
-        # in production, consider using Redis or another persistent store.
-        # The instance-level cache is intentional to ensure test isolation.
-        self._webhook_cache: OrderedDict[str, float] = OrderedDict()
-
-    def _check_webhook_duplicate(self, webhook_id: str) -> bool:
-        """Check if a webhook ID has been processed recently.
-
-        Implements proper idempotency by tracking recently processed
-        webhook IDs with a time-based cleanup.
-
-        Args:
-            webhook_id: The webhook identifier to check.
-
-        Returns:
-            True if this is a duplicate webhook, False otherwise.
-        """
-        if not webhook_id:
-            logger.warning("No webhook ID provided for deduplication check")
-            return False
-
-        now = time.time()
-
-        # Clean up old entries
-        cutoff = now - self._DEDUP_WINDOW_SECONDS
-        expired_keys = [k for k, v in self._webhook_cache.items() if v <= cutoff]
-        for key in expired_keys:
-            del self._webhook_cache[key]
-
-        # Check if webhook ID has been processed
-        if webhook_id in self._webhook_cache:
-            logger.info(f"Duplicate webhook detected: {webhook_id}")
-            return True
-
-        # Add to cache
-        self._webhook_cache[webhook_id] = now
-        if len(self._webhook_cache) > self._CACHE_MAX_SIZE:
-            self._webhook_cache.popitem(last=False)  # Remove oldest
-
-        return False
 
     def _validate_webhook_timestamp(self, request: HttpRequest) -> bool:
         """Validate webhook timestamp to prevent replay attacks.
@@ -162,15 +149,22 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                 timestamp_header.replace("Z", "+00:00")
             )
             current_time = datetime.now(timezone.utc)
-            age_seconds = abs((current_time - webhook_time).total_seconds())
+            age_seconds = (current_time - webhook_time).total_seconds()
 
-            if age_seconds > self._TIMESTAMP_TOLERANCE_SECONDS:
+            # One-sided check: allow up to the tolerance in the past, but
+            # only a small clock-skew allowance in the future. A symmetric
+            # abs() check would widen the replay window for future-dated
+            # webhooks.
+            if age_seconds > self._TIMESTAMP_TOLERANCE_SECONDS or age_seconds < -(
+                self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS
+            ):
                 logger.warning(
                     "Webhook timestamp outside tolerance window",
                     extra={
                         "webhook_timestamp": timestamp_header,
                         "age_seconds": age_seconds,
-                        "tolerance": self._TIMESTAMP_TOLERANCE_SECONDS,
+                        "past_tolerance": self._TIMESTAMP_TOLERANCE_SECONDS,
+                        "future_tolerance": (self._FUTURE_TIMESTAMP_TOLERANCE_SECONDS),
                     },
                 )
                 return False
@@ -195,23 +189,15 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         Returns:
             True if webhook is valid, False otherwise.
         """
-        from django.conf import settings as django_settings
-
         try:
-            # For development/testing ONLY: allow bypassing validation when
-            # webhook secret is empty. This MUST NOT work in production.
+            # Never bypass validation: an empty webhook secret means we
+            # cannot verify the signature, so reject (even with DEBUG=True).
             if not self.webhook_secret:
-                if not django_settings.DEBUG:
-                    logger.error(
-                        "SECURITY: Webhook secret not configured in production! "
-                        "Rejecting webhook to prevent unauthorized access."
-                    )
-                    return False
-                logger.warning(
-                    "Webhook secret not configured - bypassing validation for "
-                    "development. This would be rejected in production."
+                logger.error(
+                    "SECURITY: Webhook secret not configured! "
+                    "Rejecting webhook to prevent unauthorized access."
                 )
-                return True
+                return False
 
             # Validate timestamp first
             if not self._validate_webhook_timestamp(request):
@@ -234,7 +220,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     "has_signature": bool(signature),
                     "signature_type": "sha256" if use_sha256 else "md5",
                     "content_type": request.content_type,
-                    "headers": dict(request.headers),
+                    "headers": mask_sensitive_headers(request.headers),
                 },
             )
 
@@ -268,7 +254,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     hashlib.md5,
                 ).hexdigest()
 
-            # Log raw data for debugging
+            # Log validation context for debugging (never signature values)
             logger.debug(
                 "Webhook signature details",
                 extra={
@@ -276,8 +262,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     "body_length": len(body),
                     "secret_length": len(self.webhook_secret),
                     "signature_type": "sha256" if use_sha256 else "md5",
-                    "expected_signature": expected_signature,
-                    "received_signature": signature,
                 },
             )
 
@@ -290,8 +274,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                     extra={
                         "webhook_id": webhook_id,
                         "signature_type": "sha256" if use_sha256 else "md5",
-                        "expected_signature": expected_signature,
-                        "received_signature": signature,
                     },
                 )
 
@@ -358,198 +340,6 @@ class ChargifySourcePlugin(BaseSourcePlugin):
                 f"Failed to extract customer data: {e!s}"
             ) from e
 
-    def _extract_chargify_fields(
-        self, data: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-        """Extract subscription, customer, and transaction data from webhook.
-
-        Args:
-            data: Raw webhook form data.
-
-        Returns:
-            Tuple of (subscription, customer, transaction) dictionaries.
-        """
-        subscription: dict[str, Any] = {}
-        customer: dict[str, Any] = {}
-        transaction: dict[str, Any] = {}
-
-        for key, value in data.items():
-            if key.startswith("payload[subscription][customer]["):
-                field = key.replace("payload[subscription][customer][", "").replace(
-                    "]", ""
-                )
-                customer[field] = value
-            elif key.startswith("payload[subscription]["):
-                if "customer" not in key:  # Skip customer fields handled above
-                    field = key.replace("payload[subscription][", "").replace("]", "")
-                    subscription[field] = value
-            elif key.startswith("payload[transaction]["):
-                field = key.replace("payload[transaction][", "").replace("]", "")
-                transaction[field] = value
-
-        return subscription, customer, transaction
-
-    def _determine_chargify_status(
-        self, event_type: str, subscription: dict[str, Any]
-    ) -> str:
-        """Determine status based on event type and subscription state.
-
-        Args:
-            event_type: The webhook event type.
-            subscription: Subscription data dictionary.
-
-        Returns:
-            Status string.
-        """
-        if event_type == "payment_failure":
-            return "failed"
-        elif event_type == "payment_success":
-            return "success"
-        elif event_type == "subscription_state_change":
-            return cast(str, subscription.get("state", "unknown"))
-        else:
-            return cast(str, subscription.get("state", "unknown"))
-
-    def _extract_chargify_amount(
-        self, transaction: dict[str, Any], subscription: dict[str, Any]
-    ) -> float:
-        """Extract amount from transaction or subscription data.
-
-        Args:
-            transaction: Transaction data dictionary.
-            subscription: Subscription data dictionary.
-
-        Returns:
-            Amount in dollars (converted from cents).
-        """
-        if transaction.get("amount_in_cents"):
-            return float(transaction["amount_in_cents"]) / 100
-        elif subscription.get("total_revenue_in_cents"):
-            return float(subscription["total_revenue_in_cents"]) / 100
-        else:
-            return 0
-
-    def _build_chargify_customer_data(
-        self, customer: dict[str, Any], subscription: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Build customer data structure.
-
-        Args:
-            customer: Customer data dictionary.
-            subscription: Subscription data dictionary.
-
-        Returns:
-            Standardized customer data dictionary.
-        """
-        return {
-            "id": customer.get("id"),
-            "email": customer.get("email"),
-            "first_name": customer.get("first_name"),
-            "last_name": customer.get("last_name"),
-            "company_name": customer.get("organization"),
-            "subscription_status": subscription.get("state"),
-            "plan_name": subscription.get("product", {}).get("name"),
-        }
-
-    def _build_chargify_response(
-        self,
-        event_type: str,
-        customer_id: str,
-        amount: float,
-        status: str,
-        data: dict[str, Any],
-        subscription: dict[str, Any],
-        customer_data: dict[str, Any],
-        failure_reason: str | None,
-    ) -> dict[str, Any]:
-        """Build final response structure.
-
-        Args:
-            event_type: The webhook event type.
-            customer_id: Customer identifier.
-            amount: Payment amount.
-            status: Event status.
-            data: Raw webhook data.
-            subscription: Subscription data.
-            customer_data: Customer data dictionary.
-            failure_reason: Reason for failure if applicable.
-
-        Returns:
-            Standardized event data dictionary.
-        """
-        return {
-            "type": self.EVENT_TYPE_MAPPING.get(event_type, event_type),
-            "customer_id": str(customer_id),
-            "amount": amount,
-            "currency": "USD",  # Chargify amounts are always in USD
-            "status": status,
-            "timestamp": datetime.fromisoformat(
-                data["created_at"].replace("Z", "+00:00")
-            ),
-            "metadata": {
-                "subscription_id": subscription.get("id"),
-                "plan": subscription.get("product", {}).get("name"),
-                "cancel_at_period_end": (
-                    subscription.get("cancel_at_end_of_period") == "true"
-                ),
-                "failure_reason": failure_reason,
-            },
-            "customer_data": customer_data,
-        }
-
-    def _parse_webhook_data(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Parse webhook data into standardized format.
-
-        Args:
-            data: Raw webhook form data.
-
-        Returns:
-            Standardized event data dictionary.
-
-        Raises:
-            InvalidDataError: If required fields are missing.
-        """
-        event_type = data.get("event")
-        if not event_type:
-            raise InvalidDataError("Missing event type")
-
-        # Extract fields from nested form data
-        subscription, customer, transaction = self._extract_chargify_fields(data)
-
-        # Determine status
-        status = self._determine_chargify_status(event_type, subscription)
-
-        # Extract amount
-        amount = self._extract_chargify_amount(transaction, subscription)
-
-        # Extract failure reason if present
-        failure_reason = None
-        if event_type == "payment_failure":
-            failure_reason = transaction.get("failure_message")
-
-        # Build customer data
-        customer_data = self._build_chargify_customer_data(customer, subscription)
-
-        # Extract customer ID
-        customer_id = customer.get("id")
-        if not customer_id:
-            raise InvalidDataError("Missing customer ID")
-
-        # Store webhook data for customer lookup
-        self._current_webhook_data = data
-
-        # Build and return response
-        return self._build_chargify_response(
-            event_type,
-            customer_id,
-            amount,
-            status,
-            data,
-            subscription,
-            customer_data,
-            failure_reason,
-        )
-
     def _validate_chargify_request(self, request: HttpRequest) -> dict[str, Any]:
         """Validate Chargify webhook request and return form data.
 
@@ -571,71 +361,48 @@ class ChargifySourcePlugin(BaseSourcePlugin):
 
         return data
 
-    def _get_chargify_event_info(self, data: dict[str, Any]) -> tuple[str, str]:
-        """Extract event type and customer ID from webhook data.
-
-        Args:
-            data: Form data dictionary.
-
-        Returns:
-            Tuple of (event_type, customer_id).
-
-        Raises:
-            InvalidDataError: If required fields are missing.
-        """
-        event_type = data.get("event")
-        if not event_type:
-            raise InvalidDataError("Missing event type")
-
-        customer_id = data.get("payload[subscription][customer][id]")
-        if not customer_id:
-            raise InvalidDataError("Missing customer ID")
-
-        return event_type, customer_id
-
     def _handle_chargify_event(
         self, event_type: str, customer_id: str, data: dict[str, Any], webhook_id: str
     ) -> dict[str, Any]:
-        """Route webhook event to appropriate handler with deduplication.
+        """Route webhook event to appropriate handler.
+
+        Deduplication happens at the router level (event consolidation
+        service), keyed on the webhook id surfaced via ``event_id``.
 
         Args:
-            event_type: The webhook event type.
+            event_type: The webhook event type (must be a key of
+                ``EVENT_TYPE_MAPPING``).
             customer_id: Customer identifier.
             data: Form data dictionary.
-            webhook_id: Webhook identifier for deduplication.
+            webhook_id: Webhook identifier (used for logging).
 
         Returns:
             Parsed event data dictionary.
 
         Raises:
-            InvalidDataError: If webhook is duplicate or event type unsupported.
+            InvalidDataError: If event type is not routable.
         """
-        # Check for duplicates using webhook ID (proper idempotency)
-        if self._check_webhook_duplicate(webhook_id):
-            raise InvalidDataError(f"Duplicate webhook: {webhook_id}")
-
-        if event_type == "payment_success":
-            return self._parse_payment_success(data)
-        elif event_type == "payment_failure":
-            return self._parse_payment_failure(data)
-        elif event_type == "subscription_state_change":
-            return self._parse_subscription_state_change(data)
-        elif event_type == "renewal_success":
+        if event_type in ("payment_success", "renewal_success"):
             # Renewal success is treated as payment success
             return self._parse_payment_success(data)
-        elif event_type == "renewal_failure":
+        elif event_type in ("payment_failure", "renewal_failure"):
             # Renewal failure is treated as payment failure
             return self._parse_payment_failure(data)
-        elif event_type in [
+        elif event_type in (
+            "subscription_state_change",
             "subscription_product_change",
             "subscription_billing_date_change",
-        ]:
-            # These are handled similarly to subscription state changes
-            return self._parse_subscription_state_change(data)
+        ):
+            # Product and billing date changes are handled like state changes
+            return self._parse_subscription_state_change(event_type, data)
+        elif event_type in self.EVENT_TYPE_MAPPING:
+            # Remaining routable events are subscription lifecycle events
+            return self._parse_subscription_lifecycle(event_type, data)
         else:
-            # For now, unsupported events are logged but don't cause failures
+            # Defensive: parse_webhook only dispatches routable events, so
+            # this is unreachable through the webhook endpoint.
             logger.warning(
-                f"Unsupported Chargify event type received: {event_type}",
+                f"Unroutable Chargify event type received: {event_type}",
                 extra={"event_type": event_type, "webhook_id": webhook_id},
             )
             raise InvalidDataError(f"Unsupported event type: {event_type}")
@@ -645,22 +412,29 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     ) -> dict[str, Any] | None:
         """Parse Chargify webhook data.
 
+        Known-but-unprocessed and unknown Chargify event types are logged
+        and skipped (``None`` is returned, which the router acknowledges
+        with a 200). Rejecting a legitimate Chargify event with a 400
+        would make Chargify retry it forever.
+
         Args:
             request: The incoming HTTP request.
             **kwargs: Additional arguments (unused).
 
         Returns:
-            Parsed event data dictionary.
+            Parsed event data dictionary, or None for events that are
+            acknowledged but not processed.
 
         Raises:
-            InvalidDataError: If webhook data is invalid.
+            InvalidDataError: If webhook data is invalid or the
+                ``X-Chargify-Webhook-Id`` header is missing.
         """
         logger.info(
             "Parsing Chargify webhook data",
             extra={
                 "content_type": request.content_type,
                 "form_data": (request.POST.dict() if request.POST else None),
-                "headers": dict(request.headers),
+                "headers": mask_sensitive_headers(request.headers),
             },
         )
 
@@ -670,12 +444,40 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         # Store webhook data for customer lookup
         self._current_webhook_data = data
 
-        # Get event info
-        event_type, customer_id = self._get_chargify_event_info(data)
+        event_type = data.get("event")
+        if not event_type:
+            raise InvalidDataError("Missing event type")
 
-        # Handle the event
+        # The webhook id is required: it is the deduplication key, so a
+        # missing id must be a validation failure (400) rather than a
+        # webhook that bypasses dedup on every retry.
         webhook_id = request.headers.get("X-Chargify-Webhook-Id", "")
-        return self._handle_chargify_event(event_type, customer_id, data, webhook_id)
+        if not webhook_id:
+            raise InvalidDataError("Missing X-Chargify-Webhook-Id header")
+
+        if event_type not in self.EVENT_TYPE_MAPPING:
+            # Legitimate Chargify events we do not process are logged and
+            # skipped so the router acknowledges them with a 200.
+            log = (
+                logger.info
+                if event_type in self.ACKNOWLEDGED_EVENT_TYPES
+                else logger.warning
+            )
+            log(
+                f"Skipping unprocessed Chargify event type: {event_type}",
+                extra={"event_type": event_type, "webhook_id": webhook_id},
+            )
+            return None
+
+        customer_id = data.get("payload[subscription][customer][id]")
+        if not customer_id:
+            raise InvalidDataError("Missing customer ID")
+
+        event = self._handle_chargify_event(event_type, customer_id, data, webhook_id)
+
+        # Surface the webhook id so the router can deduplicate retries
+        event["event_id"] = webhook_id
+        return event
 
     def _parse_shopify_order_ref(self, memo: str) -> str | None:
         """Extract Shopify order reference from transaction memo.
@@ -699,12 +501,91 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         if match:
             return match.group(1)
 
-        # Finally look for any order number in the memo
-        match = re.search(r"order[^\d]*(\d+)", memo, re.IGNORECASE)
+        # Finally look for a standalone order number in the memo. The word
+        # boundary prevents matches inside "reorder"/"preorder", and the
+        # 4-digit minimum rejects short numbers (and thus most incidental
+        # digits) that cannot be legitimate Shopify order references.
+        match = re.search(r"\border\s*[#:]?\s*(\d{4,})\b", memo, re.IGNORECASE)
         if match:
             return match.group(1)
 
         return None
+
+    def _extract_currency(self, data: dict[str, Any]) -> str:
+        """Extract the currency code from a Chargify payload.
+
+        Reads the subscription currency first, then the transaction
+        currency. Falls back to USD with a warning when the payload
+        carries neither, so a missing field cannot crash the parser.
+
+        Args:
+            data: Form data dictionary.
+
+        Returns:
+            Upper-cased ISO 4217 currency code.
+        """
+        currency = data.get("payload[subscription][currency]") or data.get(
+            "payload[transaction][currency]"
+        )
+        if currency:
+            return str(currency).upper()
+
+        logger.warning(
+            "Chargify payload missing currency; falling back to USD",
+            extra={
+                "subscription_id": data.get("payload[subscription][id]", ""),
+                "transaction_id": data.get("payload[transaction][id]", ""),
+            },
+        )
+        return "USD"
+
+    def _parse_amount_cents(self, amount_cents: Any, currency: str) -> Decimal:
+        """Convert an amount in minor units to a major-unit Decimal.
+
+        Shared by all payment handlers so amount validation cannot drift
+        between them. The currency determines the conversion factor
+        (100 for USD/EUR, 1 for zero-decimal currencies like JPY).
+
+        Args:
+            amount_cents: Amount in minor units (typically a string form
+                field).
+            currency: ISO 4217 currency code for the amount.
+
+        Returns:
+            Amount in major units as a Decimal.
+
+        Raises:
+            InvalidDataError: If the amount is missing or not a number.
+        """
+        if amount_cents in (None, ""):
+            raise InvalidDataError("Missing amount")
+
+        try:
+            amount: Decimal = from_minor_units(str(amount_cents), currency)
+            return amount
+        except (InvalidOperation, ValueError, TypeError) as e:
+            raise InvalidDataError(f"Invalid amount format: {amount_cents}") from e
+
+    @staticmethod
+    def _extract_site_subdomain(data: dict[str, Any]) -> str:
+        """Extract the Chargify site subdomain from a webhook payload.
+
+        The subdomain identifies the per-site dashboard host
+        (``<subdomain>.chargify.com``) and is threaded through event
+        metadata so notification action buttons can link to the right
+        site. Empty when the payload does not carry site information.
+
+        The value is normalized (stripped, lowercased) here; the
+        notification builder additionally validates it as a single DNS
+        label before interpolating it into a URL host.
+
+        Args:
+            data: Form data dictionary.
+
+        Returns:
+            Normalized site subdomain string, or "" when unknown.
+        """
+        return str(data.get("payload[site][subdomain]", "") or "").strip().lower()
 
     def _parse_payment_success(self, data: dict[str, Any]) -> dict[str, Any]:
         """Parse payment_success webhook data.
@@ -718,15 +599,10 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         Raises:
             InvalidDataError: If required fields are missing.
         """
-        amount = data.get("payload[transaction][amount_in_cents]")
-        if not amount:
-            raise InvalidDataError("Missing amount")
-
-        # Validate amount is a valid number
-        try:
-            amount_float = float(amount) / 100
-        except (ValueError, TypeError) as e:
-            raise InvalidDataError(f"Invalid amount format: {amount}") from e
+        currency = self._extract_currency(data)
+        amount = self._parse_amount_cents(
+            data.get("payload[transaction][amount_in_cents]"), currency
+        )
 
         customer_data = self.get_customer_data(
             data["payload[subscription][customer][id]"]
@@ -751,12 +627,13 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         return {
             "type": "payment_success",
             "customer_id": data["payload[subscription][customer][id]"],
-            "amount": amount_float,
-            "currency": "USD",  # Chargify amounts are in USD
+            "amount": float(amount),
+            "currency": currency,
             "status": "success",
             "provider": "chargify",
             "metadata": {
                 "subscription_id": subscription_id,
+                "site_subdomain": self._extract_site_subdomain(data),
                 "transaction_id": data.get("payload[transaction][id]", ""),
                 "plan_name": plan_name,
                 "shopify_order_ref": shopify_order_ref,
@@ -781,9 +658,10 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         Raises:
             InvalidDataError: If required fields are missing.
         """
-        amount = data.get("payload[transaction][amount_in_cents]")
-        if not amount:
-            raise InvalidDataError("Missing amount")
+        currency = self._extract_currency(data)
+        amount = self._parse_amount_cents(
+            data.get("payload[transaction][amount_in_cents]"), currency
+        )
 
         customer_data = self.get_customer_data(
             data["payload[subscription][customer][id]"]
@@ -797,17 +675,21 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         # Determine billing period
         billing_period = data.get("payload[subscription][product][interval]", "monthly")
 
+        # Subscription fields are optional: a payment failure for a
+        # one-off charge has no subscription id or product name, and
+        # that must not crash the parser (Chargify would retry forever).
         return {
             "type": "payment_failure",
             "customer_id": data["payload[subscription][customer][id]"],
-            "amount": float(amount) / 100,  # Convert cents to dollars
-            "currency": "USD",  # Chargify amounts are in USD
+            "amount": float(amount),
+            "currency": currency,
             "status": "failed",
             "provider": "chargify",
             "metadata": {
-                "subscription_id": data["payload[subscription][id]"],
+                "subscription_id": data.get("payload[subscription][id]", ""),
+                "site_subdomain": self._extract_site_subdomain(data),
                 "transaction_id": data.get("payload[transaction][id]", ""),
-                "plan_name": data["payload[subscription][product][name]"],
+                "plan_name": data.get("payload[subscription][product][name]", ""),
                 "failure_reason": data.get(
                     "payload[transaction][failure_message]", "Unknown error"
                 ),
@@ -819,30 +701,88 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             "customer_data": customer_data,
         }
 
-    def _parse_subscription_state_change(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Parse subscription_state_change webhook data.
+    def _parse_subscription_state_change(
+        self, chargify_event: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Parse subscription state/product/billing date change webhooks.
+
+        The emitted type is normalized to one the event processor
+        understands: subscription_canceled when the new state is a
+        cancellation-like state, subscription_updated otherwise. The
+        actual Chargify state is preserved in ``status`` and
+        ``metadata.new_state``.
+
+        Payloads may omit fields like the product name - all lookups use
+        defaults so a sparse payload cannot crash the parser.
 
         Args:
+            chargify_event: The originating Chargify event type.
             data: Form data dictionary.
 
         Returns:
             Parsed event data dictionary.
         """
-        customer_data = self.get_customer_data(
-            data["payload[subscription][customer][id]"]
+        customer_id = data.get("payload[subscription][customer][id]", "")
+        customer_data = self.get_customer_data(customer_id)
+        state = data.get("payload[subscription][state]", "unknown")
+        internal_type = (
+            "subscription_canceled"
+            if state.lower() in self._CANCELED_STATES
+            else "subscription_updated"
         )
         return {
-            "type": "subscription_state_change",
-            "customer_id": data["payload[subscription][customer][id]"],
-            "status": data["payload[subscription][state]"],
+            "type": internal_type,
+            "customer_id": customer_id,
+            "status": state,
+            "provider": "chargify",
             "metadata": {
-                "subscription_id": data["payload[subscription][id]"],
-                "plan_name": data["payload[subscription][product][name]"],
+                "subscription_id": data.get("payload[subscription][id]", ""),
+                "site_subdomain": self._extract_site_subdomain(data),
+                "plan_name": data.get("payload[subscription][product][name]", ""),
+                "new_state": state,
                 "previous_state": data.get("payload[subscription][previous_state]"),
                 "cancel_at_period_end": data.get(
                     "payload[subscription][cancel_at_end_of_period]"
                 )
                 == "true",
+                "chargify_event": chargify_event,
+            },
+            "customer_data": customer_data,
+        }
+
+    def _parse_subscription_lifecycle(
+        self, event_type: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Parse subscription lifecycle webhook data.
+
+        Handles ``subscription_created``, ``subscription_updated``,
+        ``subscription_cancelled``, and ``subscription_expired``, mapping
+        them to the internal types declared in ``EVENT_TYPE_MAPPING``.
+
+        Args:
+            event_type: The Chargify event type.
+            data: Form data dictionary.
+
+        Returns:
+            Parsed event data dictionary.
+        """
+        customer_id = data.get("payload[subscription][customer][id]", "")
+        customer_data = self.get_customer_data(customer_id)
+        return {
+            "type": self.EVENT_TYPE_MAPPING[event_type],
+            "customer_id": customer_id,
+            "status": data.get("payload[subscription][state]", "unknown"),
+            "provider": "chargify",
+            "metadata": {
+                "subscription_id": data.get("payload[subscription][id]", ""),
+                "site_subdomain": self._extract_site_subdomain(data),
+                "plan_name": data.get("payload[subscription][product][name]", ""),
+                "previous_state": data.get("payload[subscription][previous_state]"),
+                "cancel_at_period_end": data.get(
+                    "payload[subscription][cancel_at_end_of_period]"
+                )
+                == "true",
+                "chargify_event": event_type,
             },
             "customer_data": customer_data,
         }

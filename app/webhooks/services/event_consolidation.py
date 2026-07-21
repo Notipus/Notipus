@@ -12,7 +12,7 @@ This service tracks recent events and suppresses redundant ones.
 """
 
 import logging
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from django.core.cache import cache
 
@@ -61,24 +61,28 @@ class EventConsolidationService:
         "checkout_completed": {"payment_success", "invoice_paid"},
         # Shopify: Order creation suppresses the payment notification that follows
         "order_created": {"payment_success"},
-        # Trial conversion: payment suppresses trial_ending warning
-        # (trial_ending will be shown as "Trial converted" insight on payment)
-        "payment_success": {"trial_ending"},
-        "invoice_paid": {"trial_ending"},
     }
 
     # Events that should never be suppressed (always important)
+    # trial_ending is delivered as its own "trial ending in N days" warning;
+    # the later "Trial converted" insight is derived statelessly from the
+    # first post-trial invoice payload (see StripePlugin), so both
+    # notifications fire for a full trial lifecycle.
     NEVER_SUPPRESS: ClassVar[set[str]] = {
         "payment_failure",
         "payment_action_required",
-    }
-
-    # Events that are suppressed but tracked for insight enrichment
-    # When these events are suppressed, we record them so that the
-    # suppressing event can show a richer insight (e.g., "Trial converted")
-    TRACK_WHEN_SUPPRESSED: ClassVar[set[str]] = {
         "trial_ending",
     }
+
+    # Metadata fields that identify the transaction an event belongs to,
+    # in preference order. Used to scope suppression so a primary event
+    # only suppresses secondaries for the SAME transaction.
+    CORRELATION_METADATA_FIELDS: ClassVar[tuple[str, ...]] = (
+        "subscription_id",
+        "invoice_id",
+        "charge_id",
+        "order_id",
+    )
 
     # Payment events that should be suppressed when amount is $0 (trial invoices)
     ZERO_AMOUNT_FILTER_EVENTS: ClassVar[set[str]] = {
@@ -105,17 +109,56 @@ class EventConsolidationService:
         """
         return f"event_consolidation:{workspace_id}:{customer_id}:{event_type}"
 
-    def _get_suppression_key(self, workspace_id: str, customer_id: str) -> str:
+    def _get_suppression_key(
+        self,
+        workspace_id: str,
+        customer_id: str,
+        correlation_id: str,
+    ) -> str:
         """Generate cache key for tracking which events to suppress.
+
+        Suppression is always scoped to the transaction-level correlator
+        (e.g. subscription_id or invoice_id), so a primary event for one
+        transaction never suppresses events belonging to an unrelated
+        transaction for the same customer. Events without a correlator
+        never participate in suppression (see should_send_notification).
 
         Args:
             workspace_id: The workspace UUID.
             customer_id: The customer identifier.
+            correlation_id: Transaction-level correlator.
 
         Returns:
             Cache key string for suppression tracking.
         """
-        return f"event_suppress:{workspace_id}:{customer_id}"
+        return f"event_suppress:{workspace_id}:{customer_id}:{correlation_id}"
+
+    def extract_correlation_id(self, event_data: dict[str, Any]) -> str | None:
+        """Extract the transaction-level correlator from a parsed event.
+
+        Prefers explicit metadata identifiers (subscription_id, invoice_id,
+        charge_id, order_id) and falls back to the event's external object
+        id. Related events for the same transaction (e.g. a subscription and
+        its invoices) share the metadata identifier, while unrelated
+        transactions for the same customer do not.
+
+        Args:
+            event_data: Parsed event data dictionary.
+
+        Returns:
+            Correlator string, or None if the event carries none.
+        """
+        metadata = event_data.get("metadata") or {}
+        for field in self.CORRELATION_METADATA_FIELDS:
+            value = metadata.get(field)
+            if value:
+                return str(value)
+
+        external_id = event_data.get("external_id")
+        if external_id:
+            return str(external_id)
+
+        return None
 
     def should_send_notification(
         self,
@@ -123,6 +166,7 @@ class EventConsolidationService:
         customer_id: str,
         workspace_id: str,
         amount: float | None = None,
+        correlation_id: str | None = None,
     ) -> bool:
         """Check if notification should be sent or suppressed.
 
@@ -137,6 +181,12 @@ class EventConsolidationService:
             customer_id: The customer identifier.
             workspace_id: The workspace UUID.
             amount: Optional payment amount for filtering zero-amount events.
+            correlation_id: Transaction-level correlator (subscription_id,
+                invoice_id, charge_id, ...). Suppression only applies
+                between events sharing the same correlator; without one the
+                event is always delivered (never suppressed and never
+                suppressing), since a coarse customer-level fallback could
+                swallow an unrelated transaction's notification.
 
         Returns:
             True if notification should be sent, False if it should be suppressed.
@@ -161,27 +211,27 @@ class EventConsolidationService:
             )
             return True
 
-        # Check if this event should be suppressed
-        suppression_key = self._get_suppression_key(workspace_id, customer_id)
+        # Without a transaction-level correlator we cannot tell which
+        # transaction a suppression marker belongs to. Deliver rather than
+        # risk suppressing (or being suppressed by) an unrelated transaction.
+        if not correlation_id:
+            logger.debug(
+                f"Event {event_type} has no transaction correlator, "
+                f"skipping consolidation suppression"
+            )
+            return True
+
+        # Check if this event should be suppressed. Only a primary event
+        # for the SAME transaction (same correlator) can suppress this one.
+        suppression_key = self._get_suppression_key(
+            workspace_id, customer_id, correlation_id
+        )
         suppressed_events = cache.get(suppression_key) or set()
 
         if event_type in suppressed_events:
-            # Track suppressed events that should enrich other notifications
-            if event_type in self.TRACK_WHEN_SUPPRESSED:
-                self._mark_event_pending(workspace_id, customer_id, event_type)
             logger.info(
                 f"Suppressing {event_type} notification for customer {customer_id} "
                 f"in workspace {workspace_id} (consolidation with primary event)"
-            )
-            return False
-
-        # Special handling for trial_ending: always suppress and track
-        # The payment notification will show "Trial converted" instead
-        if event_type == "trial_ending":
-            self._mark_event_pending(workspace_id, customer_id, event_type)
-            logger.info(
-                f"Suppressing {event_type} notification for customer {customer_id} "
-                f"in workspace {workspace_id} (will merge with payment notification)"
             )
             return False
 
@@ -189,7 +239,7 @@ class EventConsolidationService:
         if event_type in self.PRIMARY_EVENTS:
             events_to_suppress = self.PRIMARY_EVENTS[event_type]
             self._mark_events_for_suppression(
-                workspace_id, customer_id, events_to_suppress
+                workspace_id, customer_id, events_to_suppress, correlation_id
             )
             logger.debug(
                 f"Primary event {event_type} processed, marking {events_to_suppress} "
@@ -203,6 +253,7 @@ class EventConsolidationService:
         workspace_id: str,
         customer_id: str,
         events_to_suppress: set[str],
+        correlation_id: str,
     ) -> None:
         """Mark events for suppression within the consolidation window.
 
@@ -210,8 +261,12 @@ class EventConsolidationService:
             workspace_id: The workspace UUID.
             customer_id: The customer identifier.
             events_to_suppress: Set of event types to suppress.
+            correlation_id: Transaction-level correlator scoping the
+                suppression to a single transaction.
         """
-        suppression_key = self._get_suppression_key(workspace_id, customer_id)
+        suppression_key = self._get_suppression_key(
+            workspace_id, customer_id, correlation_id
+        )
 
         # Get existing suppressed events and merge
         existing = cache.get(suppression_key) or set()
@@ -223,71 +278,6 @@ class EventConsolidationService:
             updated,
             timeout=self.CONSOLIDATION_WINDOW_SECONDS,
         )
-
-    def _get_pending_key(self, workspace_id: str, customer_id: str) -> str:
-        """Generate cache key for pending events.
-
-        Args:
-            workspace_id: The workspace UUID.
-            customer_id: The customer identifier.
-
-        Returns:
-            Cache key string for pending events.
-        """
-        return f"event_pending:{workspace_id}:{customer_id}"
-
-    def _mark_event_pending(
-        self,
-        workspace_id: str,
-        customer_id: str,
-        event_type: str,
-    ) -> None:
-        """Mark an event as pending for insight enrichment.
-
-        When certain events are suppressed (e.g., trial_ending), we track them
-        so that the primary event can show a richer insight (e.g., "Trial converted").
-
-        Args:
-            workspace_id: The workspace UUID.
-            customer_id: The customer identifier.
-            event_type: The event type being tracked.
-        """
-        pending_key = self._get_pending_key(workspace_id, customer_id)
-
-        # Get existing pending events and add this one
-        existing = cache.get(pending_key) or set()
-        updated = existing | {event_type}
-
-        # Store with TTL
-        cache.set(
-            pending_key,
-            updated,
-            timeout=self.CONSOLIDATION_WINDOW_SECONDS,
-        )
-        logger.debug(
-            f"Marked {event_type} as pending for customer {customer_id} "
-            f"in workspace {workspace_id}"
-        )
-
-    def has_pending_trial(self, workspace_id: str, customer_id: str) -> bool:
-        """Check if there's a pending trial_ending event for this customer.
-
-        Used by insight detection to show "Trial converted" when a payment
-        arrives after a trial_ending event.
-
-        Args:
-            workspace_id: The workspace UUID.
-            customer_id: The customer identifier.
-
-        Returns:
-            True if a trial_ending event is pending.
-        """
-        if not workspace_id or not customer_id:
-            return False
-
-        pending_key = self._get_pending_key(workspace_id, customer_id)
-        pending_events = cache.get(pending_key) or set()
-        return "trial_ending" in pending_events
 
     def record_event(
         self,

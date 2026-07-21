@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from unittest.mock import Mock, patch
 
 from core.models import Integration, Workspace
@@ -171,6 +172,7 @@ class StripeProviderTest(TestCase):
             "customer_id": "cus_123",
             "provider": "stripe",
             "external_id": "in_123",
+            "event_id": None,
             "status": "succeeded",
             "created_at": 1234567890,
             "currency": "USD",
@@ -181,13 +183,29 @@ class StripeProviderTest(TestCase):
 
         self.assertEqual(result, expected)
 
+    def test_build_stripe_event_data_includes_event_id(self):
+        """Test that the Stripe event id is surfaced separately."""
+        data = {"id": "sub_123", "status": "active"}
+
+        result = self.provider._build_stripe_event_data(
+            "subscription_created",
+            "cus_123",
+            data,
+            20.00,
+            idempotency_key=None,
+            event_id="evt_abc123",
+        )
+
+        self.assertEqual(result["event_id"], "evt_abc123")
+        self.assertEqual(result["external_id"], "sub_123")
+
     def test_handle_stripe_billing_unknown_event(self):
         """Test handling unknown billing event."""
         data = {"amount_due": 1500}
 
         amount = self.provider._handle_stripe_billing("unknown_event", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_handle_stripe_billing_missing_amount_paid(self):
         """Test handling payment events with missing amount_paid."""
@@ -195,7 +213,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("payment_success", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_handle_stripe_billing_missing_plan_amount(self):
         """Test handling subscription created with missing plan amount."""
@@ -203,7 +221,7 @@ class StripeProviderTest(TestCase):
 
         amount = self.provider._handle_stripe_billing("subscription_created", data)
 
-        self.assertEqual(amount, 0.0)
+        self.assertEqual(amount, Decimal("0.00"))
 
     def test_extract_stripe_event_info_unsupported_event(self):
         """Test extracting info for unsupported event type returns None.

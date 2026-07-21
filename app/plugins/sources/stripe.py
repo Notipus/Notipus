@@ -6,6 +6,7 @@ using the official Stripe SDK.
 """
 
 import logging
+from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 import stripe
@@ -13,13 +14,24 @@ from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpRequest
 from plugins.base import PluginCapability, PluginMetadata, PluginType
-from plugins.sources.base import BaseSourcePlugin, InvalidDataError
+from plugins.sources.base import (
+    BaseSourcePlugin,
+    InvalidDataError,
+    mask_sensitive_headers,
+)
+from webhooks.utils.currency import from_minor_units
 
 logger = logging.getLogger(__name__)
 
 # Cache key prefix and TTL for customer email lookup
 CUSTOMER_EMAIL_CACHE_PREFIX = "stripe_customer_email:"
 CUSTOMER_EMAIL_CACHE_TTL = 3600  # 1 hour
+
+# Maximum allowed gap between a subscription's trial_end and the invoice's
+# period_start for the invoice to count as the first post-trial invoice.
+# Stripe sets period_start equal to trial_end on the first paid invoice;
+# a small tolerance absorbs clock drift and invoice-finalization lag.
+TRIAL_CONVERSION_TOLERANCE_SECONDS = 3600
 
 
 class StripeSourcePlugin(BaseSourcePlugin):
@@ -94,12 +106,13 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if settings.DISABLE_BILLING:
             return False
 
-        logger.info(
+        # Pre-validation: log only minimal, non-attacker-controlled fields
+        # so unauthenticated callers cannot flood logs with payload content.
+        logger.debug(
             "Validate Stripe webhook data",
             extra={
                 "content_type": request.content_type,
-                "form_data": (request.POST.dict() if request.POST else None),
-                "headers": dict(request.headers),
+                "content_length": request.headers.get("Content-Length"),
             },
         )
 
@@ -189,10 +202,88 @@ class StripeSourcePlugin(BaseSourcePlugin):
             # Don't fail webhook processing if we can't get idempotency key
             return None
 
+    def _extract_item_amount(self, item: dict[str, Any]) -> int | None:
+        """Extract the per-unit amount in cents from a subscription item.
+
+        Supports both the old API shape (``item.plan.amount``) and the
+        newer prices API shape (``item.price.unit_amount``).
+
+        Args:
+            item: A single subscription item dict from items.data[].
+
+        Returns:
+            Per-unit amount in cents, or None if not determinable.
+        """
+        plan = item.get("plan")
+        if isinstance(plan, dict) and plan.get("amount") is not None:
+            return int(plan["amount"])
+
+        price = item.get("price")
+        if isinstance(price, dict) and price.get("unit_amount") is not None:
+            return int(price["unit_amount"])
+
+        return None
+
+    def _sum_item_amounts(self, items_data: Any) -> int | None:
+        """Sum ``amount * quantity`` across subscription items.
+
+        Args:
+            items_data: The items.data[] list from a subscription payload
+                (or from _previous_attributes.items).
+
+        Returns:
+            Total amount in cents, or None if no item amount is determinable.
+        """
+        if not isinstance(items_data, list):
+            return None
+
+        total = 0
+        found = False
+        for item in items_data:
+            if not isinstance(item, dict):
+                continue
+            unit_amount = self._extract_item_amount(item)
+            if unit_amount is None:
+                continue
+            quantity = item.get("quantity")
+            if not isinstance(quantity, int) or quantity < 1:
+                quantity = 1
+            total += unit_amount * quantity
+            found = True
+
+        return total if found else None
+
+    def _extract_subscription_amount(self, sub_data: dict[str, Any]) -> int:
+        """Extract the total recurring amount in cents for a subscription.
+
+        Modern multi-item subscriptions have a null top-level ``plan``, so
+        the item amounts (``items[].plan.amount * quantity`` or
+        ``items[].price.unit_amount * quantity``) are summed first, with
+        the top-level plan as a legacy single-item fallback.
+
+        Args:
+            sub_data: Subscription payload dictionary.
+
+        Returns:
+            Total amount in cents, or 0 if not determinable.
+        """
+        items = sub_data.get("items")
+        if isinstance(items, dict):
+            items_total = self._sum_item_amounts(items.get("data"))
+            if items_total is not None:
+                return items_total
+
+        plan = sub_data.get("plan")
+        if isinstance(plan, dict) and plan.get("amount") is not None:
+            return int(plan["amount"])
+
+        return 0
+
     def _get_previous_plan_amount(self, data: dict[str, Any]) -> int | None:
         """Extract previous plan amount from subscription update data.
 
-        Checks both direct plan changes and multi-item subscription changes.
+        Checks both direct plan changes and multi-item subscription changes,
+        summing all previous item amounts (with quantities) for the latter.
 
         Args:
             data: Event data dictionary with _previous_attributes.
@@ -211,13 +302,8 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
         # Check items for multi-item subscriptions
         prev_items = prev_attrs.get("items", {})
-        if isinstance(prev_items, dict) and "data" in prev_items:
-            items_data = prev_items.get("data", [])
-            if items_data:
-                return cast(
-                    "int | None",
-                    items_data[0].get("plan", {}).get("amount"),
-                )
+        if isinstance(prev_items, dict):
+            return self._sum_item_amounts(prev_items.get("data"))
 
         return None
 
@@ -242,20 +328,75 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return "downgrade"
         return "other"
 
-    def _handle_stripe_billing(self, event_type: str, data: dict[str, Any]) -> float:
-        """Handle billing service calls and return amount in dollars.
+    def _handle_stripe_billing(self, event_type: str, data: dict[str, Any]) -> Decimal:
+        """Handle billing service calls and return amount in major units.
 
-        Stripe amounts are in cents, so we divide by 100 to get dollars.
+        Stripe sends amounts in each currency's minor unit, so the
+        payload's currency drives the conversion: 100 minor units per
+        dollar/euro, but 1 per yen (zero-decimal currencies) and 1000
+        per dinar (three-decimal currencies).
 
         Args:
             event_type: The normalized event type.
             data: Event data dictionary.
 
         Returns:
-            Amount in dollars as a float.
+            Amount in major units as a Decimal.
         """
-        amount_cents = self._get_amount_and_dispatch_billing(event_type, data)
-        return float(amount_cents) / 100.0
+        amount_minor = self._get_amount_and_dispatch_billing(event_type, data)
+        amount: Decimal = from_minor_units(amount_minor, self._event_currency(data))
+        return amount
+
+    def _event_currency(self, data: dict[str, Any]) -> str:
+        """Extract the currency code from a Stripe payload.
+
+        Invoices and checkout sessions carry a top-level ``currency``,
+        but some subscription payloads only carry it on the nested plan
+        or item prices, so those are checked before defaulting to USD.
+
+        Args:
+            data: Raw event data (invoice, subscription, or session).
+
+        Returns:
+            Upper-cased ISO 4217 currency code, defaulting to USD.
+        """
+        currency = data.get("currency") or self._nested_plan_currency(data)
+        return str(currency or "USD").upper()
+
+    def _nested_plan_currency(self, data: dict[str, Any]) -> str | None:
+        """Find a currency on a subscription's plan or item prices.
+
+        Checks the top-level plan (legacy single-item subscriptions),
+        then each item's plan and price objects.
+
+        Args:
+            data: Raw subscription event data.
+
+        Returns:
+            Currency code string, or None if not present anywhere.
+        """
+        plan = data.get("plan")
+        if isinstance(plan, dict) and plan.get("currency"):
+            return str(plan["currency"])
+
+        items = data.get("items")
+        if not isinstance(items, dict):
+            return None
+        items_data = items.get("data")
+        if not isinstance(items_data, list):
+            return None
+
+        for item in items_data:
+            if not isinstance(item, dict):
+                continue
+            item_plan = item.get("plan")
+            if isinstance(item_plan, dict) and item_plan.get("currency"):
+                return str(item_plan["currency"])
+            price = item.get("price")
+            if isinstance(price, dict) and price.get("currency"):
+                return str(price["currency"])
+
+        return None
 
     def _get_amount_and_dispatch_billing(
         self, event_type: str, data: dict[str, Any]
@@ -323,7 +464,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if data.get("status") == "trialing":
             return self._flag_as_trial(data)
 
-        return int(data.get("plan", {}).get("amount", 0))
+        return self._extract_subscription_amount(data)
 
     def _flag_as_trial(self, data: dict[str, Any]) -> int:
         """Flag subscription data as trial and extract trial metadata.
@@ -336,7 +477,8 @@ class StripeSourcePlugin(BaseSourcePlugin):
         """
         data["_is_trial"] = True
         data["_trial_end"] = data.get("trial_end")
-        data["_plan_amount_cents"] = data.get("plan", {}).get("amount", 0)
+        # Sum item amounts: top-level plan is null on multi-item subscriptions
+        data["_plan_amount_cents"] = self._extract_subscription_amount(data)
 
         # Calculate trial days from trial_start and trial_end (Unix timestamps)
         trial_start = data.get("trial_start")
@@ -357,7 +499,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         """
         from webhooks.services.billing import BillingService
 
-        current_amount: int = int(data.get("plan", {}).get("amount", 0))
+        current_amount: int = self._extract_subscription_amount(data)
         prev_amount = self._get_previous_plan_amount(data)
         change_direction = self._detect_change_direction(current_amount, prev_amount)
 
@@ -382,21 +524,85 @@ class StripeSourcePlugin(BaseSourcePlugin):
         amount_cents: int = int(data.get("amount_paid", 0))
 
         # Detect trial conversion: first real payment after trial.
-        # billing_reason "subscription_cycle" indicates recurring payment.
+        # billing_reason "subscription_cycle" alone is NOT sufficient - it
+        # fires on every recurring cycle, not just the first one after a
+        # trial. Require the invoice period to start at the trial's end.
         billing_reason = data.get("billing_reason", "")
-        if billing_reason == "subscription_cycle" and amount_cents > 0:
+        if (
+            billing_reason == "subscription_cycle"
+            and amount_cents > 0
+            and self._is_first_invoice_after_trial(data)
+        ):
             data["_is_trial_conversion"] = True
 
         BillingService.handle_payment_success(data)
         return amount_cents
+
+    def _extract_invoice_trial_end(self, data: dict[str, Any]) -> int | None:
+        """Extract the subscription's trial_end timestamp from an invoice.
+
+        The invoice's ``subscription`` field (old API) or
+        ``parent.subscription_details.subscription`` (new API) may be an
+        expanded subscription object carrying ``trial_end``. When it is only
+        an id string, the trial end is not derivable from the payload.
+
+        Args:
+            data: Raw invoice event data.
+
+        Returns:
+            Unix timestamp of the trial end, or None if not available.
+        """
+        subscription = data.get("subscription")
+        if isinstance(subscription, dict):
+            trial_end = subscription.get("trial_end")
+            if isinstance(trial_end, int):
+                return trial_end
+
+        parent = data.get("parent")
+        if isinstance(parent, dict):
+            sub_details = parent.get("subscription_details")
+            if isinstance(sub_details, dict):
+                nested_sub = sub_details.get("subscription")
+                if isinstance(nested_sub, dict):
+                    trial_end = nested_sub.get("trial_end")
+                    if isinstance(trial_end, int):
+                        return trial_end
+
+        return None
+
+    def _is_first_invoice_after_trial(self, data: dict[str, Any]) -> bool:
+        """Check whether an invoice is the first paid one after a trial.
+
+        Stateless check derived from the invoice payload alone: on the
+        first post-trial invoice, Stripe sets the invoice's period_start
+        equal to the subscription's trial_end. A small tolerance absorbs
+        clock drift and invoice-finalization lag.
+
+        Args:
+            data: Raw invoice event data.
+
+        Returns:
+            True if the invoice period starts at (or immediately after)
+            the subscription's trial end.
+        """
+        trial_end = self._extract_invoice_trial_end(data)
+        if trial_end is None:
+            return False
+
+        period_start = data.get("period_start")
+        if not isinstance(period_start, int):
+            return False
+
+        return 0 <= period_start - trial_end <= TRIAL_CONVERSION_TOLERANCE_SECONDS
 
     def _build_stripe_event_data(
         self,
         event_type: str,
         customer_id: str,
         data: dict[str, Any],
-        amount: float,
+        amount: Decimal,
         idempotency_key: str | None = None,
+        event_id: str | None = None,
     ) -> dict[str, Any]:
         """Build Stripe event data structure.
 
@@ -404,8 +610,12 @@ class StripeSourcePlugin(BaseSourcePlugin):
             event_type: The normalized event type.
             customer_id: Customer identifier.
             data: Raw event data.
-            amount: Payment amount in dollars.
+            amount: Payment amount in major currency units.
             idempotency_key: Stripe request idempotency key for deduplication.
+            event_id: Stripe event id (``evt_...``) from the outer event
+                envelope, used for exact deduplication. Distinct from
+                ``external_id``, which is the underlying object id
+                (e.g. ``sub_...`` or ``in_...``).
 
         Returns:
             Standardized event data dictionary.
@@ -415,10 +625,13 @@ class StripeSourcePlugin(BaseSourcePlugin):
             "customer_id": customer_id,
             "provider": self.PROVIDER_NAME,
             "external_id": data.get("id", ""),
+            "event_id": event_id,
             "status": data.get("status"),
             "created_at": data.get("created"),
-            "currency": str(data.get("currency", "USD")).upper(),
-            "amount": amount,
+            "currency": self._event_currency(data),
+            # float() at the boundary: event dicts are JSON-serialized
+            # (Redis pending-event queue), which rejects Decimal.
+            "amount": float(amount),
             "metadata": {},
             "idempotency_key": idempotency_key,
         }
@@ -480,8 +693,14 @@ class StripeSourcePlugin(BaseSourcePlugin):
             metadata["trial_end"] = data["_trial_end"]
         if data.get("_trial_days"):
             metadata["trial_days"] = data["_trial_days"]
-        if data.get("_plan_amount_cents"):
-            metadata["plan_amount"] = data["_plan_amount_cents"] / 100
+        # "is not None" so a $0 trial plan amount (e.g. a free tier) is
+        # still surfaced in metadata rather than silently dropped.
+        plan_amount_cents = data.get("_plan_amount_cents")
+        if plan_amount_cents is not None:
+            # float() keeps event metadata JSON-serializable (Redis queue)
+            metadata["plan_amount"] = float(
+                from_minor_units(plan_amount_cents, self._event_currency(data))
+            )
 
     def _add_subscription_metadata(
         self, metadata: dict[str, Any], event_type: str, data: dict[str, Any]
@@ -495,8 +714,9 @@ class StripeSourcePlugin(BaseSourcePlugin):
         """
         metadata["subscription_id"] = data.get("id", "")
 
-        # Map Stripe interval to billing period
-        plan = data.get("plan", {})
+        # Map Stripe interval to billing period.
+        # Top-level plan is null on multi-item subscriptions, so guard it.
+        plan = data.get("plan") or {}
         interval = plan.get("interval")
         if interval:
             interval_map = {
@@ -517,7 +737,24 @@ class StripeSourcePlugin(BaseSourcePlugin):
             prev_attrs = data.get("_previous_attributes", {})
             prev_plan = prev_attrs.get("plan", {})
             if prev_plan and prev_plan.get("amount") is not None:
-                metadata["previous_amount"] = prev_plan["amount"] / 100
+                # Prefer the previous plan's own currency if it changed
+                currency = str(
+                    prev_plan.get("currency") or self._event_currency(data)
+                ).upper()
+                # float() keeps event metadata JSON-serializable (Redis queue)
+                metadata["previous_amount"] = float(
+                    from_minor_units(prev_plan["amount"], currency)
+                )
+                # Store the currency (and billing period, when derivable)
+                # the previous amount is denominated in, so formatters can
+                # render the "old" side of upgrade/downgrade headlines
+                # correctly when the currency or interval changed.
+                metadata["previous_currency"] = currency
+                prev_interval = prev_plan.get("interval")
+                if prev_interval:
+                    metadata["previous_billing_period"] = self.INTERVAL_MAP.get(
+                        prev_interval, prev_interval
+                    )
 
     def _get_name_from_structured_fields(self, item: dict[str, Any]) -> str | None:
         """Try to get plan name from structured Stripe line item fields.
@@ -659,6 +896,36 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return "weekly"
         return None
 
+    def _billing_period_from_structured_fields(
+        self, item: dict[str, Any]
+    ) -> str | None:
+        """Extract billing period from structured line item fields.
+
+        Checks the old API shape (``plan.interval``) and the prices API
+        shape (``price.recurring.interval``).
+
+        Args:
+            item: A single line item dict from lines.data[].
+
+        Returns:
+            Billing period string, or None if not found.
+        """
+        plan = item.get("plan")
+        if isinstance(plan, dict):
+            interval = plan.get("interval")
+            if interval and interval in self.INTERVAL_MAP:
+                return self.INTERVAL_MAP[interval]
+
+        price = item.get("price")
+        if isinstance(price, dict):
+            recurring = price.get("recurring")
+            if isinstance(recurring, dict):
+                interval = recurring.get("interval")
+                if interval and interval in self.INTERVAL_MAP:
+                    return self.INTERVAL_MAP[interval]
+
+        return None
+
     def _extract_billing_period_from_line_item(
         self, item: dict[str, Any]
     ) -> str | None:
@@ -674,12 +941,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             Billing period string (monthly, annual, weekly, daily), or None.
         """
-        # 1. Old API: plan.interval
-        plan = item.get("plan")
-        if isinstance(plan, dict):
-            interval = plan.get("interval")
-            if interval and interval in self.INTERVAL_MAP:
-                return self.INTERVAL_MAP[interval]
+        # 1. Structured fields: plan.interval or price.recurring.interval
+        structured = self._billing_period_from_structured_fields(item)
+        if structured:
+            return structured
 
         # 2. Calculate from period start/end timestamps
         period = item.get("period")
@@ -720,6 +985,9 @@ class StripeSourcePlugin(BaseSourcePlugin):
                 sub_details = parent.get("subscription_details", {})
                 if isinstance(sub_details, dict):
                     subscription_id = sub_details.get("subscription")
+        # The subscription may be an expanded object rather than an id string
+        if isinstance(subscription_id, dict):
+            subscription_id = subscription_id.get("id")
         return subscription_id or None
 
     def _add_line_item_metadata(
@@ -743,8 +1011,8 @@ class StripeSourcePlugin(BaseSourcePlugin):
             if plan_name:
                 metadata["plan_name"] = plan_name
 
-        # Refine billing_period if it was set to the "monthly" default
-        if metadata.get("billing_period") == "monthly":
+        # Compute billing_period from the line item unless already known
+        if not metadata.get("billing_period"):
             parsed_period = self._extract_billing_period_from_line_item(first_item)
             if parsed_period:
                 metadata["billing_period"] = parsed_period
@@ -773,9 +1041,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
         billing_reason = data.get("billing_reason")
         if billing_reason:
             metadata["billing_reason"] = billing_reason
-            if billing_reason.startswith("subscription_"):
-                if "billing_period" not in metadata:
-                    metadata["billing_period"] = "monthly"
 
         attempt_count = data.get("attempt_count")
         if attempt_count is not None:
@@ -790,6 +1055,17 @@ class StripeSourcePlugin(BaseSourcePlugin):
             metadata["invoice_number"] = invoice_number
 
         self._add_line_item_metadata(metadata, data)
+
+        # Last-resort fallback only: assume monthly for subscription invoices
+        # whose interval could not be determined from the line items. This
+        # must run AFTER line-item inspection so annual invoices are not
+        # mislabeled as monthly.
+        if (
+            billing_reason
+            and billing_reason.startswith("subscription_")
+            and not metadata.get("billing_period")
+        ):
+            metadata["billing_period"] = "monthly"
 
     def parse_webhook(
         self, request: HttpRequest, **kwargs: Any
@@ -811,7 +1087,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             extra={
                 "content_type": request.content_type,
                 "form_data": (request.POST.dict() if request.POST else None),
-                "headers": dict(request.headers),
+                "headers": mask_sensitive_headers(request.headers),
             },
         )
 
@@ -834,6 +1110,11 @@ class StripeSourcePlugin(BaseSourcePlugin):
         # Extract idempotency_key from the event for cross-event deduplication
         # All events triggered by the same Stripe API request share this key
         idempotency_key = self._extract_idempotency_key(event)
+
+        # Extract the Stripe event id (evt_...) from the outer envelope for
+        # exact deduplication. The object id alone would make distinct events
+        # for the same object (e.g. created + updated) collide.
+        event_id = cast("str | None", getattr(event, "id", None))
 
         # Extract event info using Stripe event object
         event_type, data = self._extract_stripe_event_info(event)
@@ -881,7 +1162,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
             # Build and return event data
             return self._build_stripe_event_data(
-                event_type, customer_id, data_dict, amount, idempotency_key
+                event_type, customer_id, data_dict, amount, idempotency_key, event_id
             )
 
         except (KeyError, ValueError, AttributeError) as e:

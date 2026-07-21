@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from webhooks.utils.currency import format_money
+
 
 class EventCategory(Enum):
     """High-level categories of events.
@@ -67,8 +69,12 @@ class NotificationType(Enum):
     INTEGRATION_ERROR = "integration_error"
     WEBHOOK_RECEIVED = "webhook_received"
 
+    # Checkout events
+    CHECKOUT_STARTED = "checkout_started"
+
     # Logistics events
     ORDER_CREATED = "order_created"
+    ORDER_CANCELLED = "order_cancelled"
     ORDER_FULFILLED = "order_fulfilled"
     FULFILLMENT_CREATED = "fulfillment_created"
     FULFILLMENT_UPDATED = "fulfillment_updated"
@@ -103,7 +109,9 @@ EVENT_CATEGORY_MAP: dict[NotificationType, EventCategory] = {
     NotificationType.INTEGRATION_CONNECTED: EventCategory.SYSTEM,
     NotificationType.INTEGRATION_ERROR: EventCategory.SYSTEM,
     NotificationType.WEBHOOK_RECEIVED: EventCategory.SYSTEM,
+    NotificationType.CHECKOUT_STARTED: EventCategory.PAYMENT,
     NotificationType.ORDER_CREATED: EventCategory.LOGISTICS,
+    NotificationType.ORDER_CANCELLED: EventCategory.LOGISTICS,
     NotificationType.ORDER_FULFILLED: EventCategory.LOGISTICS,
     NotificationType.FULFILLMENT_CREATED: EventCategory.LOGISTICS,
     NotificationType.FULFILLMENT_UPDATED: EventCategory.LOGISTICS,
@@ -253,17 +261,24 @@ class PaymentInfo:
     def format_amount_with_arr(self) -> str:
         """Format amount with ARR if applicable.
 
+        Both the base amount and the ARR are rendered in the payment's
+        own currency (e.g. "€299.00/mo = €3,588 ARR").
+
         Returns:
             Formatted string like "$299.00/mo = $3,588 ARR".
         """
         arr = self.get_arr()
-        if self.interval == "monthly" and arr:
-            return f"{self.currency} {self.amount:,.2f}/mo = ${arr:,.0f} ARR"
-        elif self.interval == "annual" and arr:
-            return f"{self.currency} {self.amount:,.2f}/yr ARR"
-        elif self.interval == "quarterly" and arr:
-            return f"{self.currency} {self.amount:,.2f}/qtr = ${arr:,.0f} ARR"
-        return f"{self.currency} {self.amount:,.2f}"
+        amount_str: str = format_money(self.amount, self.currency)
+        # get_arr() returns None only when the interval is not recurring;
+        # an ARR of 0 is still applicable (e.g. a $0 monthly plan), so
+        # check for None rather than truthiness.
+        if self.interval == "monthly" and arr is not None:
+            return f"{amount_str}/mo = {format_money(arr, self.currency, 0)} ARR"
+        elif self.interval == "annual" and arr is not None:
+            return f"{amount_str}/yr ARR"
+        elif self.interval == "quarterly" and arr is not None:
+            return f"{amount_str}/qtr = {format_money(arr, self.currency, 0)} ARR"
+        return amount_str
 
 
 @dataclass

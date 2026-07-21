@@ -207,12 +207,16 @@ class Command(BaseCommand):
             body, topic, order_id, workspace_id
         )
 
-        # Check consolidation filter
+        # Check consolidation filter (suppression is scoped to the
+        # transaction-level correlator, e.g. the Shopify order id)
         if not event_consolidation_service.should_send_notification(
             event_type=event_data["type"],
             customer_id=event_data["customer_id"],
             workspace_id=workspace_id,
             amount=event_data.get("amount"),
+            correlation_id=event_consolidation_service.extract_correlation_id(
+                event_data
+            ),
         ):
             self.stdout.write(
                 f"  Skipping order {order_id} - filtered by consolidation"
