@@ -157,11 +157,12 @@ class TestSendSetupInstructionsEmail:
         assert result is True
         message = mail.outbox[0]
         expected_url = f"/webhook/customer/{workspace.uuid}/stripe/"
+        html_body = message.alternatives[0][0]
         assert expected_url in message.body
+        assert expected_url in html_body
         for event in PROVIDER_INSTRUCTIONS["stripe"].webhook_events:
             assert event in message.body
-        html_body = message.alternatives[0][0]
-        assert expected_url in html_body
+            assert event in html_body
 
     def test_email_names_the_requester(self, workspace: Workspace) -> None:
         """Test the colleague can see who asked for the setup."""
@@ -191,8 +192,11 @@ class TestSendSetupInstructionsEmail:
         )
 
         message = mail.outbox[0]
+        html_body = message.alternatives[0][0]
         assert "secure channel" in message.body
         assert "not by replying to this email" in message.body
+        assert "secure channel" in html_body
+        assert "not by replying to this email" in html_body
 
     def test_subject_names_provider_and_workspace(self, workspace: Workspace) -> None:
         """Test the subject line is self-explanatory in an inbox."""
