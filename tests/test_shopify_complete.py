@@ -637,6 +637,62 @@ class TestFulfillmentWebhookParsing:
         assert result["customer_id"] == "12345"
         assert result["metadata"]["tracking_number"] == "1Z999AA10123456784"
 
+    def test_parse_webhook_shipment_delivered(self, provider: ShopifySourcePlugin):
+        """Test that a delivered shipment_status maps to shipment_delivered."""
+        mock_request = Mock()
+        mock_request.content_type = "application/json"
+        mock_request.headers = {
+            "X-Shopify-Topic": "fulfillments/update",
+            "X-Shopify-Test": "false",
+        }
+        mock_request.body = json.dumps(
+            {
+                "id": 123456,
+                "order_id": 789,
+                "order_number": "1001",
+                "status": "success",
+                "shipment_status": "delivered",
+                "tracking_number": "1Z999AA10123456784",
+                "customer": {"id": 12345},
+            }
+        ).encode()
+        mock_request.data = mock_request.body
+
+        result = provider.parse_webhook(mock_request)
+
+        assert result is not None
+        assert result["type"] == "shipment_delivered"
+        assert result["metadata"]["shipment_status"] == "delivered"
+        assert result["metadata"]["fulfillment_status"] == "success"
+
+    def test_parse_webhook_fulfillment_update_in_transit(
+        self, provider: ShopifySourcePlugin
+    ):
+        """Test that a non-delivered shipment_status stays fulfillment_updated."""
+        mock_request = Mock()
+        mock_request.content_type = "application/json"
+        mock_request.headers = {
+            "X-Shopify-Topic": "fulfillments/update",
+            "X-Shopify-Test": "false",
+        }
+        mock_request.body = json.dumps(
+            {
+                "id": 123456,
+                "order_id": 789,
+                "order_number": "1001",
+                "status": "success",
+                "shipment_status": "in_transit",
+                "customer": {"id": 12345},
+            }
+        ).encode()
+        mock_request.data = mock_request.body
+
+        result = provider.parse_webhook(mock_request)
+
+        assert result is not None
+        assert result["type"] == "fulfillment_updated"
+        assert result["metadata"]["shipment_status"] == "in_transit"
+
     def test_parse_webhook_order_fulfilled(self, provider: ShopifySourcePlugin):
         """Test parsing an orders/fulfilled webhook."""
         mock_request = Mock()
