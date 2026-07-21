@@ -15,6 +15,7 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
+from .. import analytics
 from ..models import WebAuthnCredential
 from ..services.webauthn import WebAuthnService
 
@@ -145,6 +146,7 @@ def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
 
         if user:
             # Log the user in
+            analytics.set_login_method(request, "passkey")
             login(request, user, backend=PASSKEY_LOGIN_BACKEND)
             return JsonResponse(
                 {
@@ -272,7 +274,9 @@ def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:
 
         if user:
             # Log the user in
+            analytics.set_login_method(request, "passkey")
             login(request, user, backend=PASSKEY_LOGIN_BACKEND)
+            analytics.track_event(request, "sign_up", {"method": "passkey"})
 
             # Passkey signups are the one flow that needs outgoing email:
             # unlike Slack SSO (whose emails are provider-verified), a

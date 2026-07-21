@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 import stripe
+from core import analytics
 from core.models import Workspace
 from core.services.stripe import StripeAPI
 from django.db.models import Q
@@ -344,6 +345,18 @@ class BillingService:
 
         Workspace.objects.filter(id=workspace.id).update(**update_data)
 
+        # This sync is the single choke point where the plan actually
+        # changes state, whatever the trigger (checkout, billing portal,
+        # Stripe dashboard, API) — so it's where plan changes get
+        # reported to analytics.
+        previous_plan = workspace.subscription_plan
+        if plan_name and plan_name != previous_plan:
+            analytics.track_workspace_event(
+                workspace,
+                "plan_change",
+                {"previous_plan": previous_plan, "new_plan": plan_name},
+            )
+
         logger.info(
             f"Synced workspace {workspace.name} from Stripe: "
             f"status={internal_status}, plan={plan_name}"
@@ -532,6 +545,11 @@ class BillingService:
 
             Workspace.objects.filter(id=workspace.id).update(
                 subscription_status="cancelled"
+            )
+            analytics.track_workspace_event(
+                workspace,
+                "subscription_cancelled",
+                {"plan": workspace.subscription_plan},
             )
             logger.info(f"Marked subscription as cancelled for customer {customer_id}")
             # Reconcile: if another live subscription exists on Stripe

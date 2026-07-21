@@ -325,6 +325,8 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "allauth.account.middleware.AccountMiddleware",
+    # After session/auth middleware: GA4 events read request.session/user
+    "core.analytics.GA4Middleware",
 ]
 
 ROOT_URLCONF = "django_notipus.urls"
@@ -683,6 +685,18 @@ SLACK_CONNECT_REDIRECT_URI = os.environ.get("SLACK_CONNECT_REDIRECT_URI", "")
 SLACK_CLIENT_BOT_ID = os.environ.get("SLACK_CLIENT_BOT_ID", "")
 SLACK_CLIENT_BOT_SECRET = os.environ.get("SLACK_CLIENT_BOT_SECRET", "")
 SLACK_REDIRECT_BOT_URI = os.environ.get("SLACK_REDIRECT_BOT_URI", "")
+
+# Google Analytics 4, server-side via the Measurement Protocol (see
+# core.analytics). Tracking is disabled unless BOTH are set: the
+# Measurement Protocol rejects events without an API secret, which is
+# created in GA4 under Admin -> Data Streams -> stream -> Measurement
+# Protocol API secrets.
+GA4_MEASUREMENT_ID = os.environ.get("GA4_ID", "")
+GA4_API_SECRET = os.environ.get("GA4_API_SECRET", "")
+# Salt for the pseudonymous GA4 user_id (HMAC of the user pk). Falls
+# back to SECRET_KEY when unset; set it explicitly in production so a
+# SECRET_KEY rotation doesn't reset user continuity in GA4.
+GA4_USER_ID_SALT = os.environ.get("GA4_USER_ID_SALT", "")
 
 # Stripe configuration for Notipus billing (our revenue)
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "sk_test_dev_key")
