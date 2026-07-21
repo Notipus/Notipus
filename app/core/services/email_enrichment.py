@@ -59,6 +59,23 @@ class EmailEnrichmentService:
     # Cached person data is refreshed once it grows older than this many days.
     CACHE_DURATION_DAYS: int | None = 30
 
+    # Display-text fields: an overlong value is clipped to the column width.
+    TRUNCATABLE_FIELDS = (
+        "first_name",
+        "last_name",
+        "position",
+        "seniority",
+        "location",
+    )
+    # Link/identifier fields: a clipped value would point at the wrong
+    # profile or domain, so overlong values are dropped entirely.
+    DROP_IF_OVERLONG_FIELDS = (
+        "company_domain",
+        "linkedin_url",
+        "twitter_handle",
+        "github_handle",
+    )
+
     def __init__(self) -> None:
         """Initialize the email enrichment service."""
         self._hunter_plugin = HunterPlugin()
@@ -214,26 +231,54 @@ class EmailEnrichmentService:
         raw_data = data.get("_raw", {})
         raw_data["_enriched_at"] = datetime.now(timezone.utc).isoformat()
 
+        defaults: dict[str, Any] = {
+            field: self._fit_to_column(field, data.get(field) or "")
+            for field in self.TRUNCATABLE_FIELDS + self.DROP_IF_OVERLONG_FIELDS
+        }
+        defaults["hunter_data"] = raw_data
+
         person, created = Person.objects.update_or_create(
             workspace=workspace,
             email=email,
-            defaults={
-                "first_name": data.get("first_name", ""),
-                "last_name": data.get("last_name", ""),
-                "position": data.get("position", ""),
-                "seniority": data.get("seniority", ""),
-                "company_domain": data.get("company_domain", ""),
-                "linkedin_url": data.get("linkedin_url", ""),
-                "twitter_handle": data.get("twitter_handle", ""),
-                "github_handle": data.get("github_handle", ""),
-                "location": data.get("location", ""),
-                "hunter_data": raw_data,
-            },
+            defaults=defaults,
         )
 
         action = "Created" if created else "Updated"
         logger.debug(f"{action} person record for {email}")
         return person
+
+    def _fit_to_column(self, field_name: str, value: str) -> str:
+        """Fit an enrichment value into its Person column.
+
+        Hunter.io occasionally returns values longer than our columns,
+        which would abort the whole insert with a DataError. Display-text
+        fields are truncated to the column width; link/identifier fields
+        are dropped instead, since a clipped URL or handle would point at
+        the wrong place.
+
+        Args:
+            field_name: Name of the Person model field.
+            value: The value from the normalized Hunter.io response.
+
+        Returns:
+            A value guaranteed to fit the column.
+        """
+        max_length = Person._meta.get_field(field_name).max_length
+        if not max_length or len(value) <= max_length:
+            return value
+
+        if field_name in self.DROP_IF_OVERLONG_FIELDS:
+            logger.warning(
+                f"Dropping overlong {field_name} from Hunter.io "
+                f"({len(value)} chars > {max_length})"
+            )
+            return ""
+
+        logger.warning(
+            f"Truncating overlong {field_name} from Hunter.io "
+            f"({len(value)} chars > {max_length})"
+        )
+        return value[:max_length]
 
     def refresh_enrichment(self, email: str, workspace: "Workspace") -> Person | None:
         """Force refresh enrichment for an email.
