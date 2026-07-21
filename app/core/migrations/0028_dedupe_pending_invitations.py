@@ -13,6 +13,11 @@ applying the constraint with duplicates still present would fail.
 from django.db import migrations
 
 
+# Delete duplicates in bounded batches so the id__in clause never exceeds
+# the database's query parameter limit, however many duplicates exist.
+DELETE_BATCH_SIZE = 500
+
+
 def dedupe_pending_invitations(apps, schema_editor):
     """Keep only the newest pending invitation per (workspace, email)."""
     invitation_model = apps.get_model("core", "WorkspaceInvitation")
@@ -31,8 +36,9 @@ def dedupe_pending_invitations(apps, schema_editor):
         else:
             seen.add(key)
 
-    if duplicate_ids:
-        invitation_model.objects.filter(id__in=duplicate_ids).delete()
+    for start in range(0, len(duplicate_ids), DELETE_BATCH_SIZE):
+        batch = duplicate_ids[start : start + DELETE_BATCH_SIZE]
+        invitation_model.objects.filter(id__in=batch).delete()
 
 
 class Migration(migrations.Migration):

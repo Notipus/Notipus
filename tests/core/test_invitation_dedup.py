@@ -199,6 +199,29 @@ class TestDedupePendingInvitationsMigration:
         assert remaining.count() == 1
         assert remaining.get().id == newer.id
 
+    def test_deletes_in_batches(self, workspace: Workspace, owner_user: User) -> None:
+        """Duplicates spanning multiple delete batches are all removed."""
+        emails = ["Batch@Example.com", "batch@example.com", "BATCH@EXAMPLE.COM"]
+        invitations = [
+            WorkspaceInvitation.objects.create(
+                workspace=workspace, email=email, invited_by=owner_user
+            )
+            for email in emails
+        ]
+        # Make creation order unambiguous: the last one is the newest.
+        for age, invitation in enumerate(reversed(invitations[:-1]), start=1):
+            WorkspaceInvitation.objects.filter(id=invitation.id).update(
+                created_at=timezone.now() - timedelta(days=age)
+            )
+
+        module = import_module("core.migrations.0028_dedupe_pending_invitations")
+        with patch.object(module, "DELETE_BATCH_SIZE", 1):
+            module.dedupe_pending_invitations(django_apps, None)
+
+        remaining = WorkspaceInvitation.objects.filter(workspace=workspace)
+        assert remaining.count() == 1
+        assert remaining.get().id == invitations[-1].id
+
     def test_accepted_invitations_are_untouched(
         self, workspace: Workspace, owner_user: User
     ) -> None:
