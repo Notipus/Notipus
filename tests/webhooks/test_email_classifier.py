@@ -221,23 +221,36 @@ class TestSlackBadgeRendering:
 
     @staticmethod
     def _footer_text(result: dict[str, Any]) -> str:
-        """Extract the concatenated context-block text from a message.
+        """Extract the customer-footer context element text from a message.
+
+        Selects only the context element containing the customer email
+        marker (":bust_in_silhouette:") so assertions are scoped to the
+        customer footer and cannot false-positive on other context
+        blocks (e.g. the provider badge).
 
         Args:
             result: Formatted Slack message dict.
 
         Returns:
-            Joined mrkdwn text of all context blocks.
+            The mrkdwn text of the customer footer element.
         """
         if "blocks" in result:
             blocks = result["blocks"]
         else:
             blocks = result["attachments"][0].get("blocks", [])
-        texts: list[str] = []
-        for block in blocks:
-            if block["type"] == "context":
-                texts.extend(el["text"] for el in block["elements"])
-        return " ".join(texts)
+        matches = [
+            element["text"]
+            for block in blocks
+            if block["type"] == "context"
+            for element in block["elements"]
+            if ":bust_in_silhouette:" in element.get("text", "")
+        ]
+        if len(matches) != 1:
+            pytest.fail(
+                f"Expected exactly one customer-footer context element, "
+                f"found {len(matches)}"
+            )
+        return matches[0]
 
     def _render(self, email: str) -> str:
         """Build a notification for the email and render it to Slack text.
