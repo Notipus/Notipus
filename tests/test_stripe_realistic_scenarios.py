@@ -190,13 +190,18 @@ class TestTrialSignupIntegration:
         header_block = attachment["blocks"][0]
         assert header_block["type"] == "header"
 
-    def test_non_trial_subscription_generates_new_customer_notification(
+    def test_non_trial_subscription_generates_new_subscription_notification(
         self,
         stripe_plugin: StripeSourcePlugin,
         event_processor: EventProcessor,
         customer_data: dict[str, Any],
     ) -> None:
-        """Test that subscription.created with status=active shows 'New customer!'."""
+        """Test that subscription.created with status=active shows 'New subscription!'.
+
+        The headline is subscription-scoped, not customer-scoped: the
+        webhook cannot prove the customer is new (an existing customer
+        adding a second subscription fires the same event).
+        """
         # Create a non-trial subscription payload (status=active, no trial fields)
         active_subscription_data = {
             "id": "sub_active123",
@@ -249,8 +254,8 @@ class TestTrialSignupIntegration:
             event_data, customer_data
         )
 
-        # Verify notification shows "New customer!"
-        assert "New customer" in notification.headline
+        # Verify notification shows "New subscription!"
+        assert "New subscription" in notification.headline
 
     def test_trial_does_not_show_first_payment_insight(
         self,
@@ -1010,24 +1015,58 @@ class TestWebhookCustomerDataExtraction:
     def test_cache_customer_email_from_invoice(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:
-        """Test that customer email is cached from invoice events."""
+        """Test that customer email is cached encrypted, not as plaintext.
+
+        Emails are PII and the cache TTL keeps them in Redis for weeks,
+        so the stored value must be a ciphertext token.
+        """
+        from core.encryption import decrypt, looks_like_token
+
         with patch("plugins.sources.stripe.cache") as mock_cache:
             stripe_plugin._cache_customer_email("cus_test123", "test@example.com")
 
             mock_cache.set.assert_called_once()
             call_args = mock_cache.set.call_args
             assert call_args[0][0] == "stripe_customer_email:cus_test123"
-            assert call_args[0][1] == "test@example.com"
+            stored_value = call_args[0][1]
+            assert stored_value != "test@example.com"
+            assert looks_like_token(stored_value)
+            assert decrypt(stored_value) == "test@example.com"
+
+    def test_email_cache_ttl_covers_trial_length(self) -> None:
+        """Test the cache TTL outlives a 30-day trial.
+
+        trial_will_end fires ~3 days before the trial ends - up to a month
+        after the invoice event that cached the email. A short TTL makes
+        every trial-ending notification anonymous.
+        """
+        from plugins.sources.stripe import CUSTOMER_EMAIL_CACHE_TTL
+
+        thirty_days = 30 * 24 * 60 * 60
+        assert CUSTOMER_EMAIL_CACHE_TTL > thirty_days
 
     def test_get_cached_customer_email(self, stripe_plugin: StripeSourcePlugin) -> None:
-        """Test that cached customer email is retrieved."""
+        """Test that an encrypted cached email is decrypted on retrieval."""
+        from core.encryption import encrypt
+
+        with patch("plugins.sources.stripe.cache") as mock_cache:
+            mock_cache.get.return_value = encrypt("cached@example.com")
+
+            result = stripe_plugin._get_cached_customer_email("cus_test123")
+
+            assert result == "cached@example.com"
+            mock_cache.get.assert_called_once_with("stripe_customer_email:cus_test123")
+
+    def test_get_cached_customer_email_legacy_plaintext(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test legacy plaintext cache entries are still returned as-is."""
         with patch("plugins.sources.stripe.cache") as mock_cache:
             mock_cache.get.return_value = "cached@example.com"
 
             result = stripe_plugin._get_cached_customer_email("cus_test123")
 
             assert result == "cached@example.com"
-            mock_cache.get.assert_called_once_with("stripe_customer_email:cus_test123")
 
     def test_get_customer_data_uses_cached_email_for_subscription(
         self, stripe_plugin: StripeSourcePlugin

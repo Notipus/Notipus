@@ -130,6 +130,116 @@ class TestFirstPaymentRequiresHistoryFields:
         assert "First payment" in result.text
 
 
+class TestFirstPaymentFromStripeBillingReason:
+    """Stripe first payments are detected via invoice billing_reason.
+
+    Stripe never sends order history, but the first invoice of a
+    subscription is unambiguously marked with billing_reason
+    "subscription_create" (renewals: "subscription_cycle", plan changes:
+    "subscription_update").
+    """
+
+    def test_subscription_create_invoice_is_first_payment(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test a paid invoice with billing_reason=subscription_create fires."""
+        event = {
+            "type": "payment_success",
+            "provider": "stripe",
+            "amount": 49.00,
+            "currency": "USD",
+            "metadata": {"billing_reason": "subscription_create"},
+        }
+        customer_data = {"email": "billing@acme.com", "customer_id": "cus_123"}
+
+        result = detector._detect_first_payment(event, customer_data)
+
+        assert result is not None
+        assert result.icon == "new"
+        assert "First payment" in result.text
+
+    def test_aggregated_subscription_created_event_is_first_payment(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test the aggregated subscription_created winner fires.
+
+        The pending event queue folds the losing invoice's billing_reason
+        into the subscription_created winner's metadata; the detector must
+        honor it on that event type too.
+        """
+        event = {
+            "type": "subscription_created",
+            "provider": "stripe",
+            "amount": 99.00,
+            "currency": "USD",
+            "metadata": {"billing_reason": "subscription_create"},
+        }
+        customer_data = {"email": "billing@acme.com", "customer_id": "cus_123"}
+
+        result = detector._detect_first_payment(event, customer_data)
+
+        assert result is not None
+        assert "First payment" in result.text
+
+    def test_subscription_cycle_renewal_is_not_first_payment(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test a renewal invoice (billing_reason=subscription_cycle) stays silent."""
+        event = {
+            "type": "payment_success",
+            "provider": "stripe",
+            "amount": 49.00,
+            "currency": "USD",
+            "metadata": {"billing_reason": "subscription_cycle"},
+        }
+        customer_data = {"email": "billing@acme.com", "customer_id": "cus_123"}
+
+        result = detector._detect_first_payment(event, customer_data)
+
+        assert result is None
+
+    def test_zero_amount_subscription_create_is_not_first_payment(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test the $0 trial-creation invoice is not labeled a payment.
+
+        When a trial starts, Stripe issues a $0 invoice whose
+        billing_reason is also "subscription_create" - no money moved.
+        """
+        event = {
+            "type": "payment_success",
+            "provider": "stripe",
+            "amount": 0.0,
+            "currency": "USD",
+            "metadata": {"billing_reason": "subscription_create"},
+        }
+        customer_data = {"email": "billing@acme.com", "customer_id": "cus_123"}
+
+        result = detector._detect_first_payment(event, customer_data)
+
+        assert result is None
+
+    def test_trial_metadata_blocks_first_payment(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test is_trial metadata still suppresses the insight."""
+        event = {
+            "type": "subscription_created",
+            "provider": "stripe",
+            "amount": 49.00,
+            "currency": "USD",
+            "metadata": {
+                "billing_reason": "subscription_create",
+                "is_trial": True,
+            },
+        }
+        customer_data = {"email": "billing@acme.com", "customer_id": "cus_123"}
+
+        result = detector._detect_first_payment(event, customer_data)
+
+        assert result is None
+
+
 class TestTrialInsightCurrencyAndInterval:
     """The trial insight honors the event currency and billing interval."""
 
