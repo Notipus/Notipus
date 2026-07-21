@@ -355,7 +355,10 @@ def intercept_slack_oauth(page: Page) -> None:
                 )
                 return
             url = urljoin(url, location)
-        route.continue_()
+        # Never fall through to the real network: if the authorize hop
+        # wasn't found, abort so the scenario fails fast and loudly
+        # instead of the browser leaving the machine (or hanging CI).
+        route.abort("failed")
 
     page.route("**/integrate/slack/", handle)
 
