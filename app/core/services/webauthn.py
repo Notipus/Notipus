@@ -59,6 +59,23 @@ class WebAuthnService:
         self.rp_name = "Notipus"
         self.origin = self._get_origin()
 
+    @staticmethod
+    def _pad_challenge(challenge_str: str) -> str:
+        """Re-pad a client-supplied base64url challenge for DB lookup.
+
+        ``options_to_json`` serializes challenges as unpadded base64url,
+        which is what clients echo back, but stored challenges are padded
+        (``base64.urlsafe_b64encode``). Without normalization the lookup
+        can never match.
+
+        Args:
+            challenge_str: Challenge string as received from the client.
+
+        Returns:
+            The challenge string with base64 padding restored.
+        """
+        return challenge_str + "=" * (-len(challenge_str) % 4)
+
     def _get_rp_id(self) -> str:
         """Get the Relying Party ID from settings or environment.
 
@@ -168,6 +185,8 @@ class WebAuthnService:
                 logger.error("No challenge in credential data")
                 return False
 
+            challenge_str = self._pad_challenge(challenge_str)
+
             challenge = WebAuthnChallenge.objects.get(
                 challenge=challenge_str,
                 user=user,
@@ -276,6 +295,8 @@ class WebAuthnService:
             if not challenge_str:
                 logger.error("No challenge in credential data")
                 return None
+
+            challenge_str = self._pad_challenge(challenge_str)
 
             challenge = WebAuthnChallenge.objects.get(
                 challenge=challenge_str,
@@ -413,6 +434,8 @@ class WebAuthnService:
             if not challenge_str:
                 logger.error("No challenge in credential data")
                 return None
+
+            challenge_str = self._pad_challenge(challenge_str)
 
             # Find challenge for signup registration
             challenge = WebAuthnChallenge.objects.get(
