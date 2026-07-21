@@ -65,6 +65,7 @@ class StripeProviderTest(TestCase):
             "email": "john@acme.com",
             "first_name": "John",
             "last_name": "Doe",
+            "customer_id": "cus_123",
         }
         self.assertEqual(result, expected)
 
@@ -109,6 +110,7 @@ class StripeProviderTest(TestCase):
             "email": "",
             "first_name": "",
             "last_name": "",
+            "customer_id": "",
         }
         self.assertEqual(result, expected)
 
@@ -136,6 +138,7 @@ class StripeProviderTest(TestCase):
             "email": "",
             "first_name": "",
             "last_name": "",
+            "customer_id": "",
         }
         self.assertEqual(result, expected)
 
@@ -157,6 +160,7 @@ class StripeProviderTest(TestCase):
             "customer_id": "cus_123",
             "provider": "stripe",
             "external_id": "in_123",
+            "event_id": None,
             "status": "succeeded",
             "created_at": 1234567890,
             "currency": "USD",
@@ -307,16 +311,26 @@ class StripeProviderTest(TestCase):
         with self.assertRaises(InvalidDataError):
             self.provider._extract_stripe_event_info(mock_event)
 
+    @patch("plugins.sources.stripe.stripe.Webhook.construct_event")
     @patch("plugins.sources.stripe.settings.DISABLE_BILLING", True)
-    def test_validate_webhook_billing_disabled(self) -> None:
-        """Test webhook validation when billing is disabled."""
+    def test_validate_webhook_unaffected_by_disable_billing(
+        self, mock_construct_event: Mock
+    ) -> None:
+        """DISABLE_BILLING must not break tenant notification webhooks.
+
+        The flag disables Notipus's own billing endpoint only; a
+        self-hosted deployment with billing disabled still validates and
+        processes tenant Stripe notification webhooks.
+        """
+        mock_construct_event.return_value = Mock()
+
         request = self._create_mock_request(
             '{"type": "invoice.payment_succeeded"}', "t=123456789,v1=test_signature"
         )
 
         result = self.provider.validate_webhook(request)
 
-        self.assertFalse(result)
+        self.assertTrue(result)
 
     @patch("plugins.sources.stripe.stripe.Webhook.construct_event")
     def test_validate_webhook_success(self, mock_construct_event: Mock) -> None:
@@ -342,10 +356,10 @@ class StripeProviderTest(TestCase):
         self, mock_construct_event: Mock
     ) -> None:
         """Test webhook validation with invalid signature."""
-        import stripe.error
+        import stripe
 
         # Mock signature verification error
-        mock_construct_event.side_effect = stripe.error.SignatureVerificationError(
+        mock_construct_event.side_effect = stripe.SignatureVerificationError(
             "Invalid signature", "sig_header"
         )
 
@@ -384,6 +398,7 @@ class StripeProviderTest(TestCase):
         mock_event.data.previous_attributes = None
         # Set request to None (no idempotency key)
         mock_event.request = None
+        mock_event.id = "evt_123"
         mock_construct_event.return_value = mock_event
 
         request = self._create_mock_request(
@@ -398,6 +413,7 @@ class StripeProviderTest(TestCase):
             "customer_id": "cus_123",
             "provider": "stripe",
             "external_id": "in_123",
+            "event_id": "evt_123",
             "status": "succeeded",
             "created_at": 1234567890,
             "currency": "USD",
@@ -420,9 +436,9 @@ class StripeProviderTest(TestCase):
     @patch("plugins.sources.stripe.stripe.Webhook.construct_event")
     def test_parse_webhook_invalid_signature(self, mock_construct_event: Mock) -> None:
         """Test parsing webhook with invalid signature."""
-        import stripe.error
+        import stripe
 
-        mock_construct_event.side_effect = stripe.error.SignatureVerificationError(
+        mock_construct_event.side_effect = stripe.SignatureVerificationError(
             "Invalid signature", "sig_header"
         )
 

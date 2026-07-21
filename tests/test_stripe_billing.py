@@ -628,7 +628,9 @@ class TestStripeAPIGetOrCreateCustomer:
 
         assert result is not None
         assert result["id"] == "cus_existing123"
-        mock_retrieve.assert_called_once_with("cus_existing123")
+        mock_retrieve.assert_called_once_with(
+            "cus_existing123", api_key="sk_test_dev_key"
+        )
         mock_create.assert_not_called()
 
     @patch("core.services.stripe.stripe.Customer.modify")
@@ -770,7 +772,7 @@ class TestStripeAPIGetOrCreateCustomer:
         assert result is not None and result["id"] == "cus_winner"
         # Phase 3 fall-through must re-fetch the persisted customer
         # rather than returning the Phase 2 customer we created.
-        mock_retrieve.assert_called_once_with("cus_winner")
+        mock_retrieve.assert_called_once_with("cus_winner", api_key="sk_test_dev_key")
 
 
 class TestBillingServiceWebhooks:
@@ -819,17 +821,41 @@ class TestBillingServiceWebhooks:
             # Should not raise
             BillingService.handle_trial_ending(subscription_data)
 
-    def test_handle_invoice_paid(self) -> None:
-        """Test invoice paid handler."""
+    def test_handle_invoice_paid_ignores_one_off_invoice(self) -> None:
+        """A paid invoice with no subscription never touches the workspace."""
         invoice_data: dict[str, Any] = {
             "customer": "cus_test123",
             "period_end": 1704067200,
         }
 
-        with patch("core.models.Workspace.objects.filter") as mock_filter:
-            mock_filter.return_value.update.return_value = 1
+        with patch("webhooks.services.billing.Workspace.objects.filter") as mock_filter:
             BillingService.handle_invoice_paid(invoice_data)
-            mock_filter.assert_called_once_with(stripe_customer_id="cus_test123")
+            mock_filter.assert_not_called()
+
+    def test_handle_invoice_paid_activates_matching_subscription(self) -> None:
+        """A paid invoice for the workspace's own subscription activates it."""
+        invoice_data: dict[str, Any] = {
+            "customer": "cus_test123",
+            "subscription": "sub_primary",
+            "amount_paid": 2900,
+            "period_end": 1704067200,
+        }
+
+        with (
+            patch("webhooks.services.billing.Workspace.objects.filter") as mock_filter,
+            patch.object(BillingService, "sync_workspace_from_stripe") as mock_sync,
+        ):
+            workspace = MagicMock(id=42, stripe_subscription_id="sub_primary")
+            mock_filter.return_value.first.return_value = workspace
+
+            BillingService.handle_invoice_paid(invoice_data)
+
+            mock_filter.return_value.update.assert_called_once_with(
+                subscription_status="active",
+                payment_method_added=True,
+                billing_cycle_anchor=1704067200,
+            )
+            mock_sync.assert_called_once_with("cus_test123")
 
     def test_handle_payment_action_required(self) -> None:
         """Test payment action required handler."""
@@ -1061,7 +1087,10 @@ class TestStripeAPISubscriptions:
         assert stripe_api.has_live_subscription("cus_test123") is True
         # Short-circuited after the first ("active") query
         mock_list.assert_called_once_with(
-            customer="cus_test123", status="active", limit=1
+            customer="cus_test123",
+            status="active",
+            limit=1,
+            api_key="sk_test_dev_key",
         )
 
     @patch("core.services.stripe.stripe.Subscription.list")
@@ -1251,7 +1280,7 @@ class TestExtractSubscriptionItems:
 
         result = stripe_api._extract_subscription_items(subscription)
 
-        mock_retrieve.assert_called_once_with("prod_123")
+        mock_retrieve.assert_called_once_with("prod_123", api_key="sk_test_dev_key")
         assert result[0]["product_name"] == "Basic Plan"
         assert result[0]["plan_name"] == "basic"
 
@@ -1283,7 +1312,9 @@ class TestStripeAPIArchive:
         result = stripe_api.archive_product("prod_test123")
 
         assert result is True
-        mock_modify.assert_called_once_with("prod_test123", active=False)
+        mock_modify.assert_called_once_with(
+            "prod_test123", active=False, api_key="sk_test_dev_key"
+        )
 
     @patch("core.services.stripe.stripe.Product.modify")
     def test_archive_product_stripe_error(
@@ -1318,7 +1349,9 @@ class TestStripeAPIArchive:
         result = stripe_api.archive_price("price_test123")
 
         assert result is True
-        mock_modify.assert_called_once_with("price_test123", active=False)
+        mock_modify.assert_called_once_with(
+            "price_test123", active=False, api_key="sk_test_dev_key"
+        )
 
     @patch("core.services.stripe.stripe.Price.modify")
     def test_archive_price_stripe_error(
@@ -1366,7 +1399,7 @@ class TestStripeAPIArchive:
         assert result[0]["unit_amount"] == 2900
         assert result[0]["recurring"]["interval"] == "month"
         mock_list.assert_called_once_with(
-            product="prod_test123", limit=100, active=True
+            api_key="sk_test_dev_key", product="prod_test123", limit=100, active=True
         )
 
     @patch("core.services.stripe.stripe.Price.list")

@@ -305,6 +305,11 @@ class TestImmediateDeliveryFailureReturns5xx:
 class TestBillingWebhookPropagatesDbErrors:
     """Finding 5: billing handler errors must surface as 5xx."""
 
+    @pytest.fixture(autouse=True)
+    def _enable_billing(self, settings) -> None:
+        """Enable billing: the endpoint 404s when DISABLE_BILLING is set."""
+        settings.DISABLE_BILLING = False
+
     @pytest.fixture
     def billing_integration(self) -> GlobalBillingIntegration:
         """Create an active global billing integration."""

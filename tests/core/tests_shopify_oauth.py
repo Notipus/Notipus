@@ -29,52 +29,54 @@ class TestShopifyOAuthHelpers(TestCase):
     def test_normalize_shop_domain_simple_name(self) -> None:
         """Test normalizing a simple shop name."""
         result = _normalize_shop_domain("mystore")
-        assert result == "mystore.myshopify.com"
+        assert result == ("mystore.myshopify.com", None)
 
     def test_normalize_shop_domain_with_suffix(self) -> None:
         """Test normalizing a shop URL with myshopify.com suffix."""
         result = _normalize_shop_domain("mystore.myshopify.com")
-        assert result == "mystore.myshopify.com"
+        assert result == ("mystore.myshopify.com", None)
 
     def test_normalize_shop_domain_with_https(self) -> None:
         """Test normalizing a full HTTPS URL."""
         result = _normalize_shop_domain("https://mystore.myshopify.com")
-        assert result == "mystore.myshopify.com"
+        assert result == ("mystore.myshopify.com", None)
 
     def test_normalize_shop_domain_with_http(self) -> None:
         """Test normalizing a full HTTP URL."""
         result = _normalize_shop_domain("http://mystore.myshopify.com")
-        assert result == "mystore.myshopify.com"
+        assert result == ("mystore.myshopify.com", None)
 
     def test_normalize_shop_domain_with_path(self) -> None:
         """Test normalizing a URL with path."""
         result = _normalize_shop_domain("mystore.myshopify.com/admin")
-        assert result == "mystore.myshopify.com"
+        assert result == ("mystore.myshopify.com", None)
 
     def test_normalize_shop_domain_uppercase(self) -> None:
         """Test normalizing uppercase shop name."""
         result = _normalize_shop_domain("MyStore")
-        assert result == "mystore.myshopify.com"
+        assert result == ("mystore.myshopify.com", None)
 
     def test_normalize_shop_domain_with_hyphens(self) -> None:
         """Test normalizing shop name with hyphens."""
         result = _normalize_shop_domain("my-store")
-        assert result == "my-store.myshopify.com"
+        assert result == ("my-store.myshopify.com", None)
 
     def test_normalize_shop_domain_with_underscores(self) -> None:
         """Test normalizing shop name with underscores."""
         result = _normalize_shop_domain("my_store")
-        assert result == "my_store.myshopify.com"
+        assert result == ("my_store.myshopify.com", None)
 
     def test_normalize_shop_domain_invalid_empty(self) -> None:
         """Test normalizing empty shop URL returns None."""
-        result = _normalize_shop_domain("")
-        assert result is None
+        domain, error = _normalize_shop_domain("")
+        assert domain is None
+        assert error is not None
 
     def test_normalize_shop_domain_invalid_special_chars(self) -> None:
         """Test normalizing shop URL with invalid special characters."""
-        result = _normalize_shop_domain("my@store!")
-        assert result is None
+        domain, error = _normalize_shop_domain("my@store!")
+        assert domain is None
+        assert error is not None
 
     def test_is_valid_shop_domain_valid(self) -> None:
         """Test validation of valid shop domain."""
@@ -416,7 +418,8 @@ class TestShopifyConnectCallbackView:
         webhook_response.status_code = 201
         webhook_response.json.return_value = {"webhook": {"id": 12345}}
 
-        mock_post.side_effect = [token_response] + [webhook_response] * 5
+        # Token exchange + one call per default webhook topic (7)
+        mock_post.side_effect = [token_response] + [webhook_response] * 7
 
         response = client.get(
             reverse("core:shopify_connect_callback"),
@@ -653,7 +656,8 @@ class TestWebhookCreation:
         webhook_response.json.return_value = {"webhook": {"id": 12345}}
 
         # Token exchange + 5 webhook creations
-        mock_post.side_effect = [token_response] + [webhook_response] * 5
+        # Token exchange + one call per default webhook topic (7)
+        mock_post.side_effect = [token_response] + [webhook_response] * 7
 
         response = client.get(
             reverse("core:shopify_connect_callback"),
@@ -666,10 +670,10 @@ class TestWebhookCreation:
 
         assert response.status_code == 302
 
-        # Verify all 5 webhook topics were requested
-        # First call is token exchange, next 5 are webhooks
+        # Verify all 7 default webhook topics were requested
+        # First call is token exchange, the rest are webhooks
         webhook_calls = mock_post.call_args_list[1:]
-        assert len(webhook_calls) == 5
+        assert len(webhook_calls) == 7
 
         # Verify webhook URL format
         for call in webhook_calls:
@@ -723,6 +727,8 @@ class TestWebhookCreation:
             success_response,
             exists_response,
             success_response,
+            success_response,
+            success_response,
         ]
 
         response = client.get(
@@ -743,5 +749,5 @@ class TestWebhookCreation:
             integration_type="shopify",
         )
         assert integration.is_active is True
-        # Should have 3 successful webhook IDs
-        assert len(integration.integration_settings.get("webhook_ids", [])) == 3
+        # Should have 5 successful webhook IDs (7 topics, 2 already existed)
+        assert len(integration.integration_settings.get("webhook_ids", [])) == 5

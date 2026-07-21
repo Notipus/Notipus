@@ -16,9 +16,8 @@ with the Stripe SDK to ensure robust payment processing.
 
 from unittest.mock import Mock, patch
 
+from core.services.stripe import StripeAPI
 from django.test import TestCase
-
-from .services.stripe import StripeAPI
 
 
 class StripeAPITest(TestCase):
@@ -55,7 +54,7 @@ class StripeAPITest(TestCase):
         }
 
         self.assertEqual(result, expected)
-        mock_create.assert_called_once_with(**customer_data)
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key", **customer_data)
 
     @patch("core.services.stripe.stripe.Customer.create")
     def test_create_stripe_customer_stripe_error(self, mock_create) -> None:
@@ -164,7 +163,7 @@ class StripeAPITest(TestCase):
         result = self.api.create_stripe_customer({})
 
         self.assertEqual(result, {"id": "cus_empty"})
-        mock_create.assert_called_once_with()
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key")
 
     @patch("core.services.stripe.stripe.Customer.create")
     def test_create_stripe_customer_with_metadata(self, mock_create) -> None:
@@ -223,7 +222,7 @@ class StripeAPITest(TestCase):
         self.assertEqual(result["address"]["city"], "San Francisco")
 
     @patch("core.services.stripe.stripe.Customer.create")
-    @patch("app.core.services.stripe.logger")
+    @patch("core.services.stripe.logger")
     def test_create_stripe_customer_logs_stripe_error(
         self, mock_logger, mock_create
     ) -> None:
@@ -244,7 +243,7 @@ class StripeAPITest(TestCase):
         )
 
     @patch("core.services.stripe.stripe.Customer.create")
-    @patch("app.core.services.stripe.logger")
+    @patch("core.services.stripe.logger")
     def test_create_stripe_customer_logs_general_error(
         self, mock_logger, mock_create
     ) -> None:

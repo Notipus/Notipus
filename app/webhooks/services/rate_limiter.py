@@ -236,6 +236,43 @@ class RateLimiter:
             self._set_to_fallback(key, value)
             return False
 
+    def _safe_cache_incr(self, key: str) -> int:
+        """Atomically increment a counter with in-memory fallback.
+
+        Uses cache.incr (Redis INCR) so concurrent webhooks can't lose
+        counts the way a read-then-set sequence does. A missing key is
+        initialized with cache.add, which is atomic: only one racer wins
+        the add, and the loser falls through to incr.
+
+        Args:
+            key: Cache key.
+
+        Returns:
+            New counter value after incrementing.
+        """
+
+        def _incr() -> int:
+            try:
+                return cast(int, cache.incr(key))
+            except ValueError:
+                # Key doesn't exist yet this month. add() is atomic; if a
+                # concurrent request created it first, add() returns False
+                # and incr() now succeeds.
+                if cache.add(key, 1, self.cache_timeout):
+                    return 1
+                return cast(int, cache.incr(key))
+
+        try:
+            new_count = cast(int, self.circuit_breaker.call_with_circuit_breaker(_incr))
+            # Mirror into the fallback in case Redis goes down later
+            self._set_to_fallback(key, new_count)
+            return new_count
+        except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
+            logger.warning(f"Cache INCR failed for key {key}, using fallback: {e!s}")
+            new_count = self._get_from_fallback(key, 0) + 1
+            self._set_to_fallback(key, new_count)
+            return new_count
+
     def _get_from_fallback(self, key: str, default: int = 0) -> int:
         """Get value from in-memory fallback with expiration.
 
@@ -357,10 +394,8 @@ class RateLimiter:
             current_month = self.get_current_month_key()
             cache_key = self.get_cache_key(organization_uuid, current_month)
 
-            # Get current value and increment using safe cache operations
-            current_count = self._safe_cache_get(cache_key, 0)
-            new_count = current_count + 1
-            self._safe_cache_set(cache_key, new_count)
+            # Atomic increment: get-then-set loses counts under concurrency
+            new_count = self._safe_cache_incr(cache_key)
 
             logger.info(
                 f"Incremented webhook usage for org {organization_uuid} to {new_count} "

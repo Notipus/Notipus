@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _get_user_workspace = get_workspace_for_user
 
 
+@login_required
 def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Plan selection page.
 
@@ -61,6 +62,7 @@ def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     return render(request, "core/select_plan.html.j2", {"plans": plans})
 
 
+@login_required
 def plan_selected(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Plan confirmation page.
 
@@ -176,8 +178,10 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
         Billing history page or redirect to workspace creation.
     """
     from datetime import datetime
+    from datetime import timezone as dt_timezone
 
     from core.services.stripe import StripeAPI
+    from webhooks.utils.currency import from_minor_units
 
     workspace = _get_user_workspace(request.user)
     if not workspace:
@@ -188,6 +192,16 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
     if workspace.stripe_customer_id:
         stripe_api = StripeAPI()
         raw_invoices = stripe_api.get_invoices(workspace.stripe_customer_id, limit=20)
+
+        def _aware(ts: int | None) -> datetime | None:
+            # Aware datetimes: naive fromtimestamp() uses the server's
+            # local zone and trips USE_TZ comparisons in templates.
+            return (
+                datetime.fromtimestamp(ts, tz=dt_timezone.utc)
+                if ts is not None
+                else None
+            )
+
         # Format invoices for template
         for inv in raw_invoices:
             invoices.append(
@@ -195,15 +209,13 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
                     "id": inv["id"],
                     "number": inv.get("number", "N/A"),
                     "status": inv["status"],
-                    "amount": inv["amount_paid"] / 100,  # Convert from cents
+                    # from_minor_units, not /100: zero- and three-decimal
+                    # currencies (JPY, KWD) have different minor units.
+                    "amount": from_minor_units(inv["amount_paid"], inv["currency"]),
                     "currency": inv["currency"].upper(),
-                    "date": datetime.fromtimestamp(inv["created"]),
-                    "period_start": datetime.fromtimestamp(inv["period_start"])
-                    if inv.get("period_start")
-                    else None,
-                    "period_end": datetime.fromtimestamp(inv["period_end"])
-                    if inv.get("period_end")
-                    else None,
+                    "date": _aware(inv["created"]),
+                    "period_start": _aware(inv.get("period_start")),
+                    "period_end": _aware(inv.get("period_end")),
                     "invoice_url": inv.get("hosted_invoice_url"),
                     "pdf_url": inv.get("invoice_pdf"),
                 }
@@ -313,9 +325,14 @@ def checkout(
         return redirect("core:create_workspace")
 
     try:
-        # Validate plan name
-        valid_plans = ["basic", "pro", "enterprise"]
-        if plan_name not in valid_plans:
+        # Validate against the Plan model (single source of truth for
+        # purchasable plans) instead of a hardcoded list that drifts.
+        plan = (
+            Plan.objects.filter(name=plan_name, is_active=True)
+            .exclude(price_monthly=0)
+            .first()
+        )
+        if plan is None:
             messages.error(request, "Invalid plan selected.")
             return redirect("core:upgrade_plan")
 
@@ -349,17 +366,20 @@ def checkout(
         lookup_key = f"{plan_name}_monthly"
         price = stripe_api.get_price_by_lookup_key(lookup_key)
 
-        if not price:
-            # Fall back to environment variable price ID
-            price_id = django_settings.STRIPE_PLANS.get(plan_name)
+        if price:
+            price_id = price["id"]
+        else:
+            # Fall back to the Plan model's stored price ID, then to the
+            # environment variable mapping.
+            price_id = plan.stripe_price_id_monthly or django_settings.STRIPE_PLANS.get(
+                plan_name
+            )
             if not price_id:
                 logger.error(f"No Stripe price configured for plan: {plan_name}")
                 messages.error(
                     request, "Plan configuration error. Please contact support."
                 )
                 return redirect("core:upgrade_plan")
-        else:
-            price_id = price["id"]
 
         # Create Stripe Checkout Session.
         # Idempotency key collapses duplicate checkout-initiation requests
@@ -467,11 +487,20 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     plan_name = None
 
     if session_id:
-        # Retrieve plan name from Stripe Checkout Session metadata
+        # Retrieve plan name from Stripe Checkout Session metadata,
+        # but only for a session that belongs to this user's workspace —
+        # session_id is caller-supplied, so don't reflect someone else's
+        # session contents back.
         try:
+            workspace = _get_user_workspace(request.user)
             stripe_api = StripeAPI()
             checkout_session = stripe_api.retrieve_checkout_session(session_id)
-            if checkout_session:
+            if (
+                checkout_session
+                and workspace
+                and workspace.stripe_customer_id
+                and checkout_session.get("customer") == workspace.stripe_customer_id
+            ):
                 plan_name = checkout_session.get("metadata", {}).get("plan_name")
         except Exception as e:
             logger.warning(f"Error retrieving Stripe session: {e}")
