@@ -969,6 +969,7 @@ class TestSlackDestinationPluginDivider:
     ) -> None:
         """Test no divider when identity has no details below it."""
         basic_notification.payment = None
+        basic_notification.detail_sections = []
         result = formatter.format(basic_notification)
 
         divider_blocks = [b for b in get_blocks(result) if b["type"] == "divider"]
