@@ -26,3 +26,14 @@ def test_named_loggers_with_handlers_do_not_propagate() -> None:
                 f"Logger {name!r} attaches handlers and propagates to the "
                 "root logger, so every record it emits is printed twice"
             )
+
+
+def test_disallowed_host_logger_is_silenced() -> None:
+    """DisallowedHost records must be dropped entirely.
+
+    Scanners probing unallowed hostnames (e.g. *.fly.dev) would otherwise
+    log a full traceback per hit; the 400 response is outcome enough.
+    """
+    config = LOGGING["loggers"]["django.security.DisallowedHost"]
+    assert config["handlers"] == []
+    assert config["propagate"] is False
