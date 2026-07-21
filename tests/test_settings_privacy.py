@@ -11,15 +11,25 @@ from django.conf import settings
 from django_notipus.settings import _sentry_before_send
 
 
-def test_settings_source_disables_default_pii() -> None:
-    """The settings module must configure Sentry with send_default_pii=False."""
-    from pathlib import Path
+def test_settings_disables_default_pii() -> None:
+    """Sentry must be initialized with send_default_pii=False and the scrubber.
+
+    Spies on the real ``sentry_sdk.init`` call the settings module makes at
+    import time (by reloading it under a patch) and asserts on the runtime
+    keyword arguments, so comment/formatting changes cannot break it.
+    """
+    import importlib
+    from unittest.mock import patch
 
     from django_notipus import settings as settings_module
 
-    source = Path(settings_module.__file__ or "").read_text()
-    assert "send_default_pii=False" in source
-    assert "send_default_pii=True" not in source
+    with patch("sentry_sdk.init") as mock_init:
+        importlib.reload(settings_module)
+
+    assert mock_init.called
+    _, kwargs = mock_init.call_args
+    assert kwargs["send_default_pii"] is False
+    assert kwargs["before_send"] is settings_module._sentry_before_send
 
 
 def test_before_send_drops_webhook_request_body_and_headers() -> None:

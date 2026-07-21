@@ -83,8 +83,10 @@ def _sentry_redact_value(value: Any) -> Any:
             )
             for key, inner in value.items()
         }
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list):
         return [_sentry_redact_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sentry_redact_value(item) for item in value)
     return value
 
 
