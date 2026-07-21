@@ -11,6 +11,7 @@ from typing import Any
 
 from django.core.cache import cache
 from webhooks.models.rich_notification import InsightInfo
+from webhooks.utils.currency import format_money
 
 # How long the "anniversary fired" dedup marker lives. Must be longer than
 # the +/- ANNIVERSARY_TOLERANCE_DAYS detection window so a customer paying
@@ -82,6 +83,18 @@ class InsightDetector:
         "failed_attempt": "warning",
         "at_risk": "warning",
         "large_payment": "money",
+    }
+
+    # Compact price suffixes per billing period (Stripe interval names are
+    # normalized to these by the source parser). Unknown/absent periods fall
+    # back to "/mo" to preserve the historical trial display.
+    BILLING_PERIOD_SUFFIXES = {
+        "monthly": "/mo",
+        "quarterly": "/qtr",
+        "annual": "/yr",
+        "yearly": "/yr",
+        "weekly": "/wk",
+        "daily": "/day",
     }
 
     def __init__(self, config: MilestoneConfig | None = None) -> None:
@@ -187,6 +200,18 @@ class InsightDetector:
         if metadata.get("is_trial"):
             return None
 
+        # Only Shopify populates order/payment history; Stripe and Chargify
+        # never do. Treating their absence as "zero prior orders" mislabels
+        # every renewal as a first payment - and, because this detector sits
+        # high in the priority order, masks the LTV/VIP/large-payment
+        # insights that should fire instead. Require at least one history
+        # field to actually be present before claiming a first payment.
+        history_known = (
+            "orders_count" in customer_data or "payment_history" in customer_data
+        )
+        if not history_known:
+            return None
+
         # Check order count or payment history
         orders_count = customer_data.get("orders_count", 0)
         payment_count = len(customer_data.get("payment_history", []))
@@ -217,14 +242,17 @@ class InsightDetector:
         if event_type != "trial_started":
             return None
 
+        currency = event_data.get("currency", "USD")
         metadata = event_data.get("metadata", {})
         trial_days = metadata.get("trial_days")
         plan_amount = metadata.get("plan_amount")
 
         if trial_days and plan_amount:
+            price = format_money(plan_amount, currency)
+            period = self._billing_period_suffix(metadata.get("billing_period"))
             return InsightInfo(
                 icon=self.ICONS["trial_started"],
-                text=f"{trial_days}-day trial, then ${plan_amount:,.2f}/mo",
+                text=f"{trial_days}-day trial, then {price}{period}",
             )
         elif trial_days:
             return InsightInfo(
@@ -236,6 +264,21 @@ class InsightDetector:
             icon=self.ICONS["trial_started"],
             text="New trial - Welcome aboard!",
         )
+
+    def _billing_period_suffix(self, billing_period: Any) -> str:
+        """Return the compact price suffix for a billing period.
+
+        Args:
+            billing_period: Normalized billing period (e.g. "monthly",
+                "annual"), or None when the interval is unknown.
+
+        Returns:
+            A suffix like "/mo" or "/yr"; "/mo" when the period is unknown
+            or absent, preserving the historical trial display.
+        """
+        if not billing_period:
+            return "/mo"
+        return self.BILLING_PERIOD_SUFFIXES.get(str(billing_period).lower(), "/mo")
 
     def _detect_initial_payment_failure(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
@@ -348,10 +391,15 @@ class InsightDetector:
             return None
 
         current_amount = _to_float(event_data.get("amount"))
-        previous_ltv = _to_float(customer_data.get("total_spent")) or _to_float(
+        # total_spent / lifetime_value already reflect the CURRENT payment:
+        # Shopify's customer total_spent at orders/paid time includes the
+        # order being processed. Treat the reported value as the new LTV and
+        # derive the pre-payment LTV by subtracting the current amount, so a
+        # milestone is not claimed one payment early by double-counting.
+        new_ltv = _to_float(customer_data.get("total_spent")) or _to_float(
             customer_data.get("lifetime_value")
         )
-        new_ltv = previous_ltv + current_amount
+        previous_ltv = new_ltv - current_amount
 
         # Celebrate the LARGEST milestone crossed by this payment (a big
         # payment can cross several at once - one Slack message per event).
