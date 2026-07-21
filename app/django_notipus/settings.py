@@ -10,13 +10,178 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import sentry_sdk
 from django.utils.functional import SimpleLazyObject
+
+if TYPE_CHECKING:
+    from sentry_sdk._types import Event, Hint
+
+_settings_logger = logging.getLogger(__name__)
+
+# URL path fragments that identify tenant-facing webhook endpoints. Requests to
+# these routes carry raw payment payloads and provider signature headers, none
+# of which should ever be shipped to Sentry.
+_SENTRY_WEBHOOK_PATH_MARKERS = ("/webhook/",)
+
+# Substrings that, when found (case-insensitively) in a header name, request
+# data key, or environment key, mark the associated value as sensitive. Kept
+# deliberately broad and conservative: when in doubt, redact.
+_SENTRY_SENSITIVE_KEY_MARKERS = (
+    "authorization",
+    "cookie",
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "api-key",
+    "api_key",
+    "apikey",
+    "signature",
+    "x-shopify-hmac",
+    "x-hub-signature",
+    "stripe-signature",
+    "csrf",
+    "session",
+)
+
+_SENTRY_REDACTED = "[Filtered]"
+
+
+def _sentry_is_sensitive_key(key: str) -> bool:
+    """Return whether a header/data/env key name looks sensitive.
+
+    :param key: The key name to inspect (header, form field, or env var).
+    :returns: ``True`` if the key matches a known-sensitive marker.
+    """
+    lowered = key.lower()
+    return any(marker in lowered for marker in _SENTRY_SENSITIVE_KEY_MARKERS)
+
+
+def _sentry_redact_value(value: Any) -> Any:
+    """Recursively redact sensitive values within nested structures.
+
+    Walks dicts and lists/tuples so that request bodies (which may be deeply
+    nested JSON) have any value under a sensitive-looking key replaced, while
+    non-sensitive structure is preserved.
+
+    :param value: An arbitrary value (dict, list, tuple, or scalar).
+    :returns: A redacted copy of ``value``.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                _SENTRY_REDACTED
+                if _sentry_is_sensitive_key(str(key))
+                else _sentry_redact_value(inner)
+            )
+            for key, inner in value.items()
+        }
+    if isinstance(value, list):
+        return [_sentry_redact_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sentry_redact_value(item) for item in value)
+    return value
+
+
+def _sentry_redact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``mapping`` with sensitive values redacted.
+
+    :param mapping: A dict of header/data/env key-value pairs.
+    :returns: A shallow copy where values under sensitive keys are replaced
+        with a filtered placeholder.
+    """
+    return {
+        key: (_SENTRY_REDACTED if _sentry_is_sensitive_key(str(key)) else value)
+        for key, value in mapping.items()
+    }
+
+
+def _sentry_redact_query_string(query: Any) -> Any:
+    """Redact sensitive keys in a query string, dict or raw-string form.
+
+    Sentry may represent ``query_string`` either as a dict or as a raw
+    ``"a=1&token=..."`` string. Both are handled: pairs whose key looks
+    sensitive have their value replaced with the filtered placeholder.
+
+    :param query: The query string as a dict or ``str``.
+    :returns: The redacted query string in the same form it was given.
+    """
+    if isinstance(query, dict):
+        return _sentry_redact_mapping(query)
+    if isinstance(query, str):
+        pairs = parse_qsl(query, keep_blank_values=True)
+        redacted = [
+            (key, _SENTRY_REDACTED if _sentry_is_sensitive_key(key) else value)
+            for key, value in pairs
+        ]
+        return urlencode(redacted)
+    return query
+
+
+def _sentry_before_send(event: "Event", hint: "Hint") -> "Event | None":
+    """Scrub sensitive data from a Sentry event before it is sent.
+
+    Conservative scrubbing hook applied to every outbound Sentry event:
+
+    * For requests to webhook routes, the raw request body/data is dropped
+      entirely since it may contain payment-payload PII for any tenant.
+    * For all other routes the request body is walked recursively and values
+      under credential/PII-looking keys are redacted.
+    * Request headers, query strings, cookies, and environment variables are
+      redacted key-by-key whenever the key name looks like a credential,
+      secret, or signature (for webhook routes, headers are dropped wholesale).
+
+    :param event: The Sentry event payload (mutated in place and returned).
+    :param hint: Sentry-provided hint metadata (unused, kept for API contract).
+    :returns: The scrubbed event, or ``None`` to drop it entirely.
+    """
+    request = event.get("request")
+    if not isinstance(request, dict):
+        return event
+
+    # Match on the URL path only: substring-matching the full URL would
+    # misclassify routes whose query string merely contains "/webhook/".
+    url = str(request.get("url", ""))
+    path = urlsplit(url).path
+    is_webhook = any(marker in path for marker in _SENTRY_WEBHOOK_PATH_MARKERS)
+
+    # Request body: drop wholesale for webhook routes (payment-payload PII);
+    # otherwise recursively redact sensitive keys within it.
+    if is_webhook:
+        request.pop("data", None)
+        request.pop("cookies", None)
+    elif "data" in request:
+        request["data"] = _sentry_redact_value(request["data"])
+
+    # Headers: strip entirely for webhook routes (signature headers + more);
+    # otherwise redact only the sensitive ones.
+    headers = request.get("headers")
+    if isinstance(headers, dict):
+        request["headers"] = {} if is_webhook else _sentry_redact_mapping(headers)
+
+    # Query string: handle both dict and raw-string forms.
+    if "query_string" in request:
+        request["query_string"] = _sentry_redact_query_string(request["query_string"])
+
+    # Environment variables: redact sensitive keys regardless of route.
+    env = request.get("env")
+    if isinstance(env, dict):
+        request["env"] = _sentry_redact_mapping(env)
+
+    # Cookies elsewhere: redact rather than drop.
+    cookies = request.get("cookies")
+    if isinstance(cookies, dict):
+        request["cookies"] = _sentry_redact_mapping(cookies)
+
+    return event
+
 
 sentry_sdk.init(
     dsn=os.environ.get("SENTRY_DSN", ""),
@@ -29,9 +194,12 @@ sentry_sdk.init(
         if os.environ.get("DEBUG", "False").lower() == "true"
         else "production",
     ),
-    # Add data like request headers and IP for users, see
-    # https://docs.sentry.io/platforms/python/data-management/data-collected/
-    send_default_pii=True,
+    # Privacy: never attach default PII (request bodies, headers, user IP).
+    # Webhook endpoints carry payment-payload PII and raw signature headers for
+    # all tenants, so this must stay False. See _sentry_before_send below for
+    # the belt-and-suspenders scrubbing applied to whatever remains.
+    send_default_pii=False,
+    before_send=_sentry_before_send,
 )
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -160,9 +328,20 @@ AUTHENTICATION_BACKENDS = [
 SITE_ID = 1
 
 # Email configuration
-EMAIL_BACKEND = os.environ.get(
-    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
-)
+_console_email_backend = "django.core.mail.backends.console.EmailBackend"
+EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", _console_email_backend)
+
+# Guard: the console backend only writes emails to stdout. In production this
+# means invitation/verification emails silently vanish into the logs. Warn
+# loudly rather than raising so self-hosters who intentionally rely on the
+# console backend are not broken.
+if not DEBUG and EMAIL_BACKEND == _console_email_backend:
+    _settings_logger.warning(
+        "EMAIL_BACKEND is the console backend while DEBUG is False. "
+        "Outgoing emails (invitations, verification) will only be written to "
+        "logs and never delivered. Set the EMAIL_BACKEND environment variable "
+        "to an SMTP (or other real) backend for production."
+    )
 
 # SMTP settings for production (when EMAIL_BACKEND is smtp)
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
