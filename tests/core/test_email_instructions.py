@@ -177,12 +177,14 @@ class TestSendSetupInstructionsEmail:
         assert "Alice Admin" in message.body
         assert "Alice Admin" in message.alternatives[0][0]
 
-    def test_email_never_contains_a_secret_value(self, workspace: Workspace) -> None:
-        """Test instructions ask for a secure channel, not email replies.
+    def test_email_directs_secret_handover_to_secure_channel(
+        self, workspace: Workspace
+    ) -> None:
+        """Test both bodies steer the secret handover off email.
 
-        The email must instruct the colleague where to FIND the secret,
-        never carry one itself, and steer the handover to a secure
-        channel.
+        The email instructs the colleague where to FIND the secret; the
+        wording asserted here is what steers them to hand it over via a
+        secure channel instead of an email reply.
         """
         send_setup_instructions_email(
             "cfo@example.com",

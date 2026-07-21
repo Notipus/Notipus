@@ -174,10 +174,12 @@ def send_setup_instructions_email(
         f"{settings.BASE_URL}/webhook/customer/"
         f"{workspace.uuid}/{instructions.url_slug}/"
     )
+    # .replace() rather than .format(): instruction copy may grow
+    # literal braces (JSON snippets), which format() would choke on.
     steps = [
         SetupStep(
             title=step.title,
-            description=step.description.format(requester=requester_name),
+            description=step.description.replace("{requester}", requester_name),
         )
         for step in instructions.steps
     ]
