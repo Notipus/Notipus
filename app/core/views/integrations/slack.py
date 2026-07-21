@@ -113,12 +113,13 @@ def slack_connect(request: HttpRequest) -> HttpResponseRedirect:
         request: The HTTP request object.
 
     Returns:
-        Redirect to Slack OAuth authorization, or back to integrations if the
+        Redirect to Slack OAuth authorization, or to the dashboard if the
         user is not an admin/owner.
     """
     # Fail fast: only mint OAuth state for users who could actually complete
-    # the admin-gated callback (mirrors Shopify's gate-at-start).
-    workspace, redirect_response = require_admin_role(request)
+    # the admin-gated callback (mirrors Shopify's gate-at-start). The
+    # workspace itself is unused here; only the permission check matters.
+    _workspace, redirect_response = require_admin_role(request)
     if redirect_response:
         return redirect_response
 
