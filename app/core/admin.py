@@ -9,15 +9,47 @@ from typing import TYPE_CHECKING
 
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.models import User
 from django.template.response import TemplateResponse
 from django.utils import timezone
 from django.utils.html import format_html
 
+from . import analytics
 from .models import Company
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
     from django.http import HttpRequest
+
+
+admin.site.unregister(User)
+
+
+@admin.register(User)
+class UserAdmin(DjangoUserAdmin):
+    """Stock user admin plus the pseudonymous GA4 user id.
+
+    GA4 only ever receives the salted hash (never the pk or email), so
+    this column is the one place a GA4 ``user_id`` can be mapped back
+    to an account: copy the id from a GA4 report and search for it on
+    this page with the browser's find-in-page.
+    """
+
+    # mypy: Django declares these as per-instance generics, so extending
+    # them via the class is flagged as ambiguous; it's the documented way
+    # to extend a ModelAdmin.
+    list_display = (*DjangoUserAdmin.list_display, "ga4_user_id")  # type: ignore[misc]
+    readonly_fields = (*DjangoUserAdmin.readonly_fields, "ga4_user_id")  # type: ignore[misc]
+    fieldsets = (
+        *(DjangoUserAdmin.fieldsets or ()),
+        ("Analytics", {"fields": ("ga4_user_id",)}),
+    )
+
+    @admin.display(description="GA4 user ID")
+    def ga4_user_id(self, obj: User) -> str:
+        """Return the GA4 user_id hash this user appears as in reports."""
+        return analytics.hashed_user_id(obj)
 
 
 @admin.register(Company)

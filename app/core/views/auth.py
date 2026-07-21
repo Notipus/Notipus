@@ -14,6 +14,7 @@ from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect
 
+from .. import analytics
 from ..models import UserProfile
 
 logger = logging.getLogger(__name__)
@@ -190,15 +191,18 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
         logger.warning(f"Slack login rejected: email not verified (sub={slack_id})")
         return HttpResponse("Email address is not verified", status=400)
 
-    user = _resolve_user(slack_id, email, name)
+    user, created = _resolve_user(slack_id, email, name)
 
     # Log the user in
+    analytics.set_login_method(request, "slack")
     login(request, user)
+    if created:
+        analytics.track_event(request, "sign_up", {"method": "slack"})
 
     return redirect("core:dashboard")
 
 
-def _resolve_user(slack_id: str, email: str, name: str) -> User:
+def _resolve_user(slack_id: str, email: str, name: str) -> tuple[User, bool]:
     """Find or create the user and reconcile their Slack profile link.
 
     Args:
@@ -207,7 +211,7 @@ def _resolve_user(slack_id: str, email: str, name: str) -> User:
         name: The user's display name.
 
     Returns:
-        The resolved Django user.
+        Tuple of (resolved Django user, whether the user was created).
     """
     # Find or create user
     user, created = User.objects.get_or_create(
@@ -236,4 +240,4 @@ def _resolve_user(slack_id: str, email: str, name: str) -> User:
             # No profile exists - this is handled later when joining a team
             pass
 
-    return user
+    return user, created

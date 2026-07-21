@@ -11,6 +11,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
 
+from .. import analytics
 from ..models import UserProfile, Workspace, WorkspaceMember
 from .integrations.base import require_admin_role
 
@@ -163,12 +164,17 @@ def create_workspace(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
             if "selected_plan" in request.session:
                 del request.session["selected_plan"]
 
+            analytics.track_event(request, "workspace_created", {"plan": selected_plan})
+
             # For paid plans, redirect to Stripe checkout with trial period
             if selected_plan != "free":
                 checkout_url = _create_stripe_checkout_for_plan(
                     workspace, selected_plan
                 )
                 if checkout_url:
+                    analytics.track_event(
+                        request, "begin_checkout", {"plan": selected_plan}
+                    )
                     return redirect(checkout_url)
                 # Checkout creation failed - workspace is in trial status so user can
                 # still use the app; they can set up billing later from billing page

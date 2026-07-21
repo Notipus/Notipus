@@ -20,9 +20,12 @@ urlpatterns = [
     path("billing/upgrade/", views.upgrade_plan, name="upgrade_plan"),
     path("billing/payment-methods/", views.payment_methods, name="payment_methods"),
     path("billing/history/", views.billing_history, name="billing_history"),
-    path("billing/checkout/<str:plan_name>/", views.checkout, name="checkout"),
+    # success/cancel must precede the <plan_name> route: Django takes the
+    # first match, so the other order routes Stripe's success/cancel
+    # redirects into checkout() with plan_name="success"/"cancel".
     path("billing/checkout/success/", views.checkout_success, name="checkout_success"),
     path("billing/checkout/cancel/", views.checkout_cancel, name="checkout_cancel"),
+    path("billing/checkout/<str:plan_name>/", views.checkout, name="checkout"),
     # Workspace management
     path("workspace/create/", views.create_workspace, name="create_workspace"),
     path("workspace/settings/", views.workspace_settings, name="workspace_settings"),

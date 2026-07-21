@@ -15,6 +15,7 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 from webhooks.services.rate_limiter import rate_limiter
 
+from .. import analytics
 from ..models import Plan
 from ..permissions import get_workspace_for_user
 from .integrations.base import require_admin_role
@@ -41,6 +42,7 @@ def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         # Validate against available plans
         if Plan.objects.filter(name=selected_plan, is_active=True).exists():
             request.session["selected_plan"] = selected_plan
+            analytics.track_event(request, "select_plan", {"plan": selected_plan})
             return redirect("core:plan_selected")
 
     # Get plans from database
@@ -440,6 +442,17 @@ def checkout(
             )
             return redirect("core:upgrade_plan")
 
+        analytics.track_event(
+            request,
+            "begin_checkout",
+            {
+                "plan": plan.name,
+                "currency": "USD",
+                "value": float(plan.price_monthly),
+                "items": [{"item_id": plan.name, "item_name": plan.display_name}],
+            },
+        )
+
         # Redirect to Stripe Checkout
         return redirect(checkout_session["url"])
 
@@ -545,6 +558,25 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
         messages.info(request, "Your subscription has been updated successfully.")
         return redirect("core:billing_dashboard")
 
+    # Track the conversion once per checkout session: Stripe redirects
+    # land here with a reusable URL, so a page refresh must not double
+    # count revenue. transaction_id also lets GA4 dedupe on its side.
+    purchase_tracked_key = f"ga4_purchase_{session_id}"
+    if not request.session.get(purchase_tracked_key):
+        request.session[purchase_tracked_key] = True
+        plan = Plan.objects.filter(name=plan_name, is_active=True).first()
+        analytics.track_event(
+            request,
+            "purchase",
+            {
+                "plan": plan_name,
+                "transaction_id": session_id,
+                "currency": "USD",
+                "value": float(plan.price_monthly) if plan else 0.0,
+                "items": [{"item_id": plan_name}],
+            },
+        )
+
     context: dict[str, Any] = {
         "plan_name": plan_name,
     }
@@ -561,4 +593,5 @@ def checkout_cancel(request: HttpRequest) -> HttpResponse:
     Returns:
         Checkout cancel page.
     """
+    analytics.track_event(request, "checkout_cancelled")
     return render(request, "core/checkout_cancel.html.j2")
