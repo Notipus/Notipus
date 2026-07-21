@@ -3,11 +3,11 @@
 Verifies that webhooks are never silently lost:
 - The dedup marker is written only after successful queue/dispatch, so a
   failed dispatch is retried by the provider instead of being suppressed.
-- Deduplication is keyed on the provider event id (or a composite of
-  event type and object id), so distinct events for the same object
-  both process.
+- Deduplication is keyed on the signed body hash (Chargify/Shopify), the
+  provider event id (Stripe), or a composite of event type and object
+  id, so distinct events for the same object both process.
 - Delivery and billing failures surface as 5xx so providers redeliver.
-- Chargify webhooks without an id are rejected instead of bypassing dedup.
+- Chargify webhooks without an id are rejected (contract violation).
 """
 
 import json
@@ -386,7 +386,7 @@ class TestChargifyMissingWebhookId:
     def test_missing_webhook_id_returns_400(
         self, mock_validate: Mock, client: Client, workspace: Workspace
     ) -> None:
-        """A webhook without an id has no dedup key and is rejected."""
+        """A webhook without an id violates Chargify's contract; rejected."""
         mock_validate.return_value = True
 
         response = client.post(

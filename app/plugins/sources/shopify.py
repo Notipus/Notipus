@@ -19,6 +19,7 @@ from plugins.sources.base import (
     BaseSourcePlugin,
     CustomerNotFoundError,
     InvalidDataError,
+    signed_content_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -487,12 +488,13 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             customer_id = self._extract_shopify_customer_id(data, topic)
             event = self._build_shopify_event_data(event_type, customer_id, data, topic)
 
-        # Surface Shopify's delivery id so the router can deduplicate
-        # retries. The header is stable across redeliveries of the same
-        # webhook; when absent the router falls back to (type, external_id).
-        webhook_id = request.headers.get("X-Shopify-Webhook-Id")
-        if webhook_id:
-            event["event_id"] = webhook_id
+        # Dedup keys on the signed body, never the unsigned
+        # X-Shopify-Webhook-Id header: Shopify's HMAC covers only the
+        # body, so a captured body replayed with a fresh webhook-id
+        # header must map to the SAME dedup key. Redeliveries resend the
+        # identical body (identical hash), while distinct events differ
+        # in signed fields (resource id, updated_at, financial_status).
+        event["content_hash"] = signed_content_hash(request)
 
         return event
 

@@ -4,6 +4,7 @@ Source plugins handle incoming webhooks from payment providers and other
 external services, validating signatures and parsing event data.
 """
 
+import hashlib
 import logging
 from abc import abstractmethod
 from collections.abc import Mapping
@@ -53,6 +54,26 @@ def mask_sensitive_headers(headers: Mapping[str, Any]) -> dict[str, Any]:
         else:
             masked[name] = value
     return masked
+
+
+def signed_content_hash(request: HttpRequest) -> str:
+    """Return the SHA-256 hex digest of the raw request body.
+
+    For providers whose HMAC covers only the request body (Chargify,
+    Shopify), the body is the only signed content, so its hash is a
+    replay-safe deduplication discriminator: provider retries resend the
+    identical body (same hash), while attacker-mutable headers (webhook
+    id, timestamp) never influence the value. Plugins surface it as
+    ``content_hash`` in parsed event data; the router prefers it when
+    building the dedup key.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        Hex-encoded SHA-256 digest of ``request.body``.
+    """
+    return hashlib.sha256(request.body).hexdigest()
 
 
 # Exceptions for source plugins
