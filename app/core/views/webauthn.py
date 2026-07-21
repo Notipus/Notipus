@@ -20,6 +20,13 @@ from ..services.webauthn import WebAuthnService
 
 logger = logging.getLogger(__name__)
 
+# Backend recorded on passkey-authenticated sessions. login() requires an
+# explicit backend when multiple AUTHENTICATION_BACKENDS are configured
+# (a bare call raises and the flow 500s). Deliberately a fixed constant
+# rather than AUTHENTICATION_BACKENDS[0]: WebAuthn verification is our
+# own, and reordering settings must not change its attribution.
+PASSKEY_LOGIN_BACKEND = "django.contrib.auth.backends.ModelBackend"
+
 
 @csrf_exempt
 @require_http_methods(["POST"])
@@ -137,10 +144,8 @@ def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
         user = webauthn_service.verify_authentication(credential_data)
 
         if user:
-            # Log the user in. The backend must be named explicitly:
-            # with multiple AUTHENTICATION_BACKENDS configured, a bare
-            # login() raises and the passkey flow 500s.
-            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+            # Log the user in
+            login(request, user, backend=PASSKEY_LOGIN_BACKEND)
             return JsonResponse(
                 {
                     "success": True,
@@ -266,8 +271,8 @@ def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:
         )
 
         if user:
-            # Log the user in (explicit backend - see authenticate_complete)
-            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+            # Log the user in
+            login(request, user, backend=PASSKEY_LOGIN_BACKEND)
 
             # Passkey signups are the one flow that needs outgoing email:
             # unlike Slack SSO (whose emails are provider-verified), a
