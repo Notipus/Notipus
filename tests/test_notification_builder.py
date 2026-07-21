@@ -658,6 +658,44 @@ class TestActionButtons:
         assert contact_buttons[0].style == "primary"
         assert result.actions[0].text == "Contact Customer"
 
+    @pytest.mark.parametrize(
+        "bad_email",
+        [
+            "foo?cc=victim@evil.com",  # mailto query injection
+            "a b@example.com",  # interior whitespace
+            "not-an-email",  # no @/domain
+            "<script>@example.com",  # markup characters
+            "a@b",  # no domain dot
+            "   ",  # whitespace only
+            12345,  # non-string
+        ],
+    )
+    def test_contact_button_omitted_for_unsafe_email(
+        self,
+        builder: NotificationBuilder,
+        payment_failure_event: dict,
+        bad_email: object,
+    ) -> None:
+        """Test unsafe emails never reach the mailto: button URL."""
+        customer_data = {"email": bad_email, "first_name": "X", "last_name": "Y"}
+        result = builder.build(payment_failure_event, customer_data)
+
+        action_texts = [a.text for a in result.actions]
+        assert "Contact Customer" not in action_texts
+
+    def test_contact_email_normalized_before_use(
+        self,
+        builder: NotificationBuilder,
+        payment_failure_event: dict,
+    ) -> None:
+        """Test surrounding whitespace is normalized, not rejected."""
+        customer_data = {"email": "  alice@acme.com  ", "first_name": "Alice"}
+        result = builder.build(payment_failure_event, customer_data)
+
+        contact_buttons = [a for a in result.actions if a.text == "Contact Customer"]
+        assert len(contact_buttons) == 1
+        assert contact_buttons[0].url == "mailto:alice@acme.com"
+
     def test_dashboard_secondary_on_failure(
         self, builder: NotificationBuilder, customer_data: dict
     ) -> None:
