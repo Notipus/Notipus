@@ -10,14 +10,15 @@ from datetime import datetime, timedelta, timezone
 
 
 def is_timestamp_fresh(
-    timestamp: str | None,
+    timestamp: object,
     max_age_days: int | None,
 ) -> bool:
     """Check whether an ISO 8601 timestamp is still within the cache window.
 
     Args:
-        timestamp: ISO 8601 timestamp string (e.g. from ``datetime.isoformat``),
-            or None when no enrichment has happened yet.
+        timestamp: Usually an ISO 8601 string (e.g. from ``datetime.isoformat``)
+            or None. Accepts ``object`` because the value comes from JSON blobs
+            that may hold non-string/corrupt data; any non-string is stale.
         max_age_days: Age threshold in days. Data is fresh while its age is
             strictly less than this value and stale once the age reaches it.
             ``None`` means the cache never expires (indefinite).

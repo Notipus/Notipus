@@ -49,9 +49,9 @@ class TestIsTimestampFresh:
 
     def test_non_string_timestamp_is_stale(self) -> None:
         """A non-string timestamp (legacy/corrupt JSON) is stale, not an error."""
-        assert is_timestamp_fresh(12345, 30) is False  # type: ignore[arg-type]
-        assert is_timestamp_fresh(12345, None) is False  # type: ignore[arg-type]
-        assert is_timestamp_fresh(["2024-01-01"], 30) is False  # type: ignore[arg-type]
+        assert is_timestamp_fresh(12345, 30) is False
+        assert is_timestamp_fresh(12345, None) is False
+        assert is_timestamp_fresh(["2024-01-01"], 30) is False
 
     def test_none_duration_is_indefinite(self) -> None:
         """A None duration caches indefinitely for any valid timestamp."""

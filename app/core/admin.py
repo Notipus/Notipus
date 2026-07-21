@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
 from django.template.response import TemplateResponse
+from django.utils import timezone
 from django.utils.html import format_html
 
 from .models import Company
@@ -171,6 +172,8 @@ class CompanyAdmin(admin.ModelAdmin):
                 logo_url="",
                 logo_data=None,
                 logo_content_type="",
+                # .update() bypasses auto_now, so set updated_at explicitly.
+                updated_at=timezone.now(),
             )
             self.message_user(request, f"Purged enrichment data for {count} companies.")
             return None

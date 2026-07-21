@@ -160,6 +160,7 @@ class TestCompanyAdminActions:
         request = request_factory.post("/admin/core/company/", {"confirm_purge": "yes"})
         request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
 
+        original_updated_at = sample_company.updated_at
         queryset = Company.objects.filter(pk=sample_company.pk)
 
         # Mock message_user to avoid middleware requirement
@@ -180,6 +181,8 @@ class TestCompanyAdminActions:
         assert sample_company.logo_url == ""
         assert sample_company.logo_data is None
         assert sample_company.logo_content_type == ""
+        # updated_at should advance even though .update() bypasses auto_now
+        assert sample_company.updated_at > original_updated_at
 
     def test_purge_enrichment_data_requires_confirmation(
         self,
