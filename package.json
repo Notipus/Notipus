@@ -9,7 +9,6 @@
     "dev": "bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
   },
   "devDependencies": {
-    "@fortawesome/fontawesome-free": "^7.3.1",
     "@tabler/icons-webfont": "^3.45.0",
     "@tailwindcss/cli": "^4.3.3",
     "autoprefixer": "^10.5.4",
