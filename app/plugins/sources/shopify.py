@@ -355,11 +355,14 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         Returns:
             Standardized event data dictionary.
         """
-        # Extract fulfillment-specific fields
+        # Extract fulfillment-specific fields. ``status`` is Shopify's
+        # fulfillment status (e.g. "success") while ``shipment_status`` is
+        # the carrier's delivery status (e.g. "in_transit", "delivered").
         tracking_number = data.get("tracking_number")
         tracking_company = data.get("tracking_company")
         tracking_url = data.get("tracking_url")
-        fulfillment_status = data.get("status", data.get("shipment_status"))
+        fulfillment_status = data.get("status")
+        shipment_status = data.get("shipment_status")
 
         # Get line items from fulfillment
         line_items = []
@@ -386,8 +389,8 @@ class ShopifySourcePlugin(BaseSourcePlugin):
                     str(data.get("order_number")) if data.get("order_number") else None
                 ),
                 "fulfillment_id": data.get("id"),
-                "fulfillment_status": fulfillment_status,
-                "shipment_status": fulfillment_status,
+                "fulfillment_status": fulfillment_status or shipment_status,
+                "shipment_status": shipment_status or fulfillment_status,
                 "tracking_number": tracking_number,
                 "tracking_company": tracking_company,
                 "tracking_url": tracking_url,
@@ -469,6 +472,11 @@ class ShopifySourcePlugin(BaseSourcePlugin):
 
         # Handle fulfillment-specific topics differently
         if topic in self.FULFILLMENT_TOPICS:
+            # Shopify has no dedicated "delivered" webhook topic; carriers
+            # report delivery via ``shipment_status`` on fulfillment
+            # updates. Promote those to the shipment_delivered event type.
+            if data.get("shipment_status") == "delivered":
+                event_type = "shipment_delivered"
             fulfillment_customer_id = self._extract_customer_id_from_fulfillment(data)
             event = self._build_fulfillment_event_data(
                 event_type, fulfillment_customer_id, data, topic
