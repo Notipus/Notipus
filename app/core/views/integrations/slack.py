@@ -155,6 +155,15 @@ def slack_connect_callback(
     if not code:
         return HttpResponse("Authorization failed: No code provided", status=400)
 
+    # Gate on admin role FIRST. require_admin_role cleanly redirects
+    # anonymous / non-admin users (e.g. an expired session) without leaving a
+    # stray "Invalid OAuth state" flash message that would surface after a
+    # later login. It also stops unauthorized users from burning codes or
+    # hitting the Slack API.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+
     # Validate the state parameter (CSRF protection) BEFORE exchanging the
     # code. Read (do not pop) the stored state so a forged callback with a
     # wrong/missing state cannot clear the legitimate in-progress state and
@@ -165,12 +174,6 @@ def slack_connect_callback(
         logger.error("Slack connect OAuth state mismatch - possible CSRF attack")
         messages.error(request, "Invalid OAuth state. Please try again.")
         return redirect("core:integrations")
-
-    # Require admin role BEFORE consuming the code or calling Slack, so
-    # unauthorized users can't burn authorization codes or hit the Slack API.
-    workspace, redirect_response = require_admin_role(request)
-    if redirect_response:
-        return redirect_response
 
     # State validated and user authorized: consume the state now.
     request.session.pop(SLACK_CONNECT_STATE_SESSION_KEY, None)

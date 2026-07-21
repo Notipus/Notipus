@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 import pytest
 from core.models import Integration, UserProfile, Workspace, WorkspaceMember
 from django.contrib.auth.models import User
+from django.contrib.messages import get_messages
 from django.test import Client, override_settings
 from django.urls import reverse
 
@@ -155,6 +156,28 @@ class TestSlackConnectState:
             workspace=workspace, integration_type="slack_notifications"
         )
         assert integration.oauth_credentials["access_token"] == "xoxb-token"
+
+    @override_settings(**SLACK_CONNECT_SETTINGS)
+    @patch("core.views.integrations.slack.requests.post")
+    def test_callback_anonymous_gated_without_state_message(
+        self, mock_post: Mock, client: Client
+    ) -> None:
+        """An anonymous callback is gated first and leaves no state message.
+
+        The admin gate runs before state validation, so an unauthenticated
+        hit (e.g. expired session) is cleanly redirected to login without
+        persisting an "Invalid OAuth state" flash that would surface later.
+        """
+        response = client.get(
+            reverse("core:slack_connect_callback"),
+            {"code": "abc", "state": "whatever"},
+        )
+
+        assert response.status_code == 302
+        assert "/accounts/login/" in response.url
+        mock_post.assert_not_called()
+        stored = [str(m) for m in get_messages(response.wsgi_request)]
+        assert not any("oauth state" in m.lower() for m in stored)
 
 
 @pytest.mark.django_db
