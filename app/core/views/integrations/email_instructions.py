@@ -14,10 +14,12 @@ instructions to relay - the right tool there is a workspace invitation.
 
 import logging
 from dataclasses import dataclass, field
+from typing import cast
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.core.validators import validate_email
@@ -285,7 +287,10 @@ def email_setup_instructions(
         messages.error(request, "Please enter a valid email address.")
         return redirect(instructions.integrate_route)
 
-    requester_name = request.user.get_full_name() or request.user.email
+    # login_required plus the admin check above guarantee an
+    # authenticated concrete User here.
+    requester = cast(User, request.user)
+    requester_name = requester.get_full_name() or requester.email
     sent = send_setup_instructions_email(
         recipient, workspace, requester_name, instructions
     )
