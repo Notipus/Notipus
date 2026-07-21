@@ -23,10 +23,13 @@ def is_timestamp_fresh(
             ``None`` means the cache never expires (indefinite).
 
     Returns:
-        True if the cached data should be treated as fresh. A missing or
-        unparseable timestamp is always treated as stale (needs refresh).
+        True if the cached data should be treated as fresh. A missing,
+        non-string, or unparseable timestamp is always treated as stale
+        (needs refresh).
     """
-    if not timestamp:
+    # Legacy/corrupt JSON blobs may hold a non-string (or empty) value; treat
+    # anything that is not a usable string as stale rather than raising.
+    if not timestamp or not isinstance(timestamp, str):
         return False
 
     # Always validate the timestamp first so a malformed value is treated as

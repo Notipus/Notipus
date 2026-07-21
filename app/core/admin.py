@@ -158,13 +158,16 @@ class CompanyAdmin(admin.ModelAdmin):
             return None
 
         # Guard against enumerating an unbounded "select all" set on the
-        # confirmation page. Ask the admin to narrow the selection instead.
-        if queryset.count() > self.PURGE_CONFIRM_LIMIT:
+        # confirmation page. Detect over-limit cheaply with a LIMITed PK fetch
+        # rather than a full COUNT(*) over a potentially large table.
+        limit = self.PURGE_CONFIRM_LIMIT
+        over_limit = len(queryset.values_list("pk", flat=True)[: limit + 1]) > limit
+        if over_limit:
             self.message_user(
                 request,
                 (
                     f"Too many companies selected to purge at once "
-                    f"(limit is {self.PURGE_CONFIRM_LIMIT}). "
+                    f"(limit is {limit}). "
                     "Please narrow your selection and try again."
                 ),
                 level=messages.WARNING,
