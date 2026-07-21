@@ -143,16 +143,17 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         missing timestamp is treated as a validation failure so the
         ±window always applies.
 
-        NOTE: This is a window-narrowing mitigation that layers with the
-        router's signed-content dedup. Chargify's HMAC covers the body
-        only, not the timestamp header, so a captured (body, signature)
-        pair can be replayed with a fresh in-tolerance timestamp - but
-        because the router dedups on the SHA-256 of the signed body
-        (``content_hash``), such a replay is suppressed as a duplicate
-        for the dedup window regardless of any headers the attacker
-        mints. The timestamp check rejects replays outside the ±window
-        entirely, covering replays attempted after the dedup marker
-        expires.
+        NOTE: This check is a freshness filter, not replay prevention.
+        Chargify's HMAC covers the body only, not the timestamp header,
+        so an attacker replaying a captured (body, signature) pair can
+        always mint a fresh in-tolerance timestamp; this check only
+        rejects replays that reuse an out-of-window timestamp (and
+        stale or badly delayed deliveries). Actual replay suppression
+        comes from the router's dedup on the SHA-256 of the signed body
+        (``content_hash``), which suppresses a replayed body for the
+        dedup window regardless of any headers the attacker mints. A
+        replay attempted after the dedup marker expires is not
+        prevented by either layer.
 
         This helper is side-effect-free: it returns a boolean and never
         logs, so the single caller (``validate_webhook``) logs a failure

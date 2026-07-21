@@ -193,6 +193,14 @@ class TestDedupKeyPrefersSignedContent:
         shopify = {"provider": "shopify", "content_hash": "same"}
         assert _get_dedup_key(chargify) != _get_dedup_key(shopify)
 
+    def test_missing_provider_falls_back_to_unknown_namespace(self) -> None:
+        """A missing/empty provider never yields an un-namespaced key."""
+        assert _get_dedup_key({"content_hash": "abc"}) == "unknown:sha256:abc"
+        assert (
+            _get_dedup_key({"provider": "", "content_hash": "abc"})
+            == "unknown:sha256:abc"
+        )
+
     def test_event_id_still_used_without_content_hash(self) -> None:
         """Stripe's signed evt_... id keeps working as the dedup key."""
         event_data = {

@@ -253,7 +253,8 @@ def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     ``X-*-Webhook-Id`` header cannot mint a new key. The hash is
     namespaced by provider so equal bodies from different providers
     cannot collide within a workspace (the consolidation service already
-    scopes keys per workspace).
+    scopes keys per workspace); events missing a ``provider`` field fall
+    back to the "unknown" namespace so the key is never un-namespaced.
 
     Falls back to ``event_id`` for providers whose unique event id is
     inside the signed payload (Stripe's ``evt_...``), then to a
@@ -263,7 +264,8 @@ def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     """
     content_hash = event_data.get("content_hash")
     if content_hash:
-        return f"{event_data.get('provider', '')}:sha256:{content_hash}"
+        provider = event_data.get("provider") or "unknown"
+        return f"{provider}:sha256:{content_hash}"
     event_id = event_data.get("event_id")
     if event_id:
         return str(event_id)
