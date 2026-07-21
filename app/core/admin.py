@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
+from django.contrib.admin.exceptions import NotRegistered
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 from django.contrib.auth.models import User
 from django.template.response import TemplateResponse
@@ -23,7 +24,12 @@ if TYPE_CHECKING:
     from django.http import HttpRequest
 
 
-admin.site.unregister(User)
+try:
+    admin.site.unregister(User)
+except NotRegistered:
+    # Import order or another app may already have unregistered it;
+    # re-registering below is all that matters.
+    pass
 
 
 @admin.register(User)

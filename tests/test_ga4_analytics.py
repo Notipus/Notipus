@@ -178,11 +178,21 @@ class TestMiddleware:
         assert event["params"]["page_location"].endswith(reverse("account_login"))
 
     def test_bot_requests_not_tracked(self, ga4: MagicMock, db: None) -> None:
-        """Crawler user agents never produce page views."""
+        """Crawlers get neither page views nor a client-id cookie."""
         client = Client()
-        client.get(reverse("account_login"), HTTP_USER_AGENT="Googlebot/2.1")
-        client.get(reverse("account_login"))  # no UA at all
+        bot = client.get(reverse("account_login"), HTTP_USER_AGENT="Googlebot/2.1")
+        no_ua = client.get(reverse("account_login"))  # no UA at all
         assert _events_named(ga4, "page_view") == []
+        assert analytics.CLIENT_ID_COOKIE not in bot.cookies
+        assert analytics.CLIENT_ID_COOKIE not in no_ua.cookies
+
+    def test_untracked_responses_get_no_cookie(self, ga4: MagicMock, db: None) -> None:
+        """No Set-Cookie on responses that aren't tracked page views."""
+        client = Client()
+        response = client.post(
+            reverse("account_login"), {}, HTTP_USER_AGENT="Mozilla/5.0"
+        )
+        assert analytics.CLIENT_ID_COOKIE not in response.cookies
 
     def test_should_track_page_view_filters(self) -> None:
         """Non-GET, non-HTML, error and excluded paths are skipped."""

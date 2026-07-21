@@ -448,7 +448,12 @@ class GA4Middleware:
 
         response = self.get_response(request)
 
-        if not had_cookie:
+        track_page_view = self._should_track_page_view(request, response)
+
+        # Only mint the cookie for responses that are actually tracked:
+        # Set-Cookie on excluded paths (static assets, webhooks) breaks
+        # response caching, and bot traffic never becomes a page view.
+        if not had_cookie and track_page_view:
             response.set_cookie(
                 CLIENT_ID_COOKIE,
                 client_id,
@@ -458,7 +463,7 @@ class GA4Middleware:
                 samesite="Lax",
             )
 
-        if self._should_track_page_view(request, response):
+        if track_page_view:
             params: dict[str, Any] = {
                 "page_location": sanitize_page_location(request.build_absolute_uri())
             }
