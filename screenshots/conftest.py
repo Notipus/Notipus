@@ -41,7 +41,10 @@ from playwright.sync_api import (
 # tooling, not the app, so the guard adds nothing here.
 os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
 
-DESKTOP_VIEWPORT = {"width": 1440, "height": 900}
+# Full HD desktop frame captured at 2x, so output files are 3840px
+# wide (Full HD is the floor, never the ceiling). Full-page captures
+# grow taller as the page requires.
+DESKTOP_VIEWPORT = {"width": 1920, "height": 1080}
 MOBILE_VIEWPORT = {"width": 390, "height": 844}
 OUTPUT_DIR = Path(__file__).parent / "output"
 
@@ -243,11 +246,7 @@ def session_cookie(office_space_data: dict[str, Any], live_server) -> dict[str, 
 def _new_context(
     browser: Browser, live_server, session_cookie: dict[str, str], **kwargs: Any
 ) -> BrowserContext:
-    context = browser.new_context(
-        base_url=live_server.url,
-        device_scale_factor=2,  # crisp images for marketing use
-        **kwargs,
-    )
+    context = browser.new_context(base_url=live_server.url, **kwargs)
     context.add_cookies([session_cookie])
     return context
 
@@ -256,9 +255,13 @@ def _new_context(
 def page(
     browser: Browser, live_server, session_cookie: dict[str, str]
 ) -> Generator[Page, Any, None]:
-    """Authenticated desktop page."""
+    """Authenticated desktop page (Full HD frame at 2x pixels)."""
     context = _new_context(
-        browser, live_server, session_cookie, viewport=DESKTOP_VIEWPORT
+        browser,
+        live_server,
+        session_cookie,
+        viewport=DESKTOP_VIEWPORT,
+        device_scale_factor=2,
     )
     yield context.new_page()
     context.close()
@@ -274,6 +277,7 @@ def mobile_page(
         live_server,
         session_cookie,
         viewport=MOBILE_VIEWPORT,
+        device_scale_factor=2,  # retina-density, matches real phones
         is_mobile=True,
         has_touch=True,
     )

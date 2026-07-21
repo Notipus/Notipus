@@ -49,5 +49,6 @@ def my_page(page: Page) -> None:
     shoot(page, "my-page", "/my-page/")
 ```
 
-Keep captures at the fixture defaults (1440x900 desktop / 390x844
-mobile, 2x scale) so the set stays visually consistent.
+Keep captures at the fixture defaults (1920x1080 desktop frame and
+390x844 mobile frame, both at 2x — output is 3840px / 780px wide, so
+Full HD is the floor) so the set stays visually consistent.
