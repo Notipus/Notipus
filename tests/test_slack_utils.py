@@ -10,6 +10,7 @@ from plugins.destinations.slack_utils import (
     _sanitize_slack_injection,
     _sanitize_url,
     html_to_slack_mrkdwn,
+    safe_mrkdwn_link,
 )
 
 
@@ -545,3 +546,51 @@ class TestCleanControlCharacters:
     def test_remove_delete_character(self) -> None:
         """Test DEL character (0x7f) is removed."""
         assert _clean_control_characters("a\x7fb") == "ab"
+
+
+class TestSafeMrkdwnLink:
+    """Test safe_mrkdwn_link for untrusted URLs."""
+
+    def test_valid_https_url(self) -> None:
+        """Test a clean https URL builds a link."""
+        result = safe_mrkdwn_link("https://example.com/profile", "Profile")
+        assert result == "<https://example.com/profile|Profile>"
+
+    def test_none_url(self) -> None:
+        """Test None URL returns None."""
+        assert safe_mrkdwn_link(None, "Label") is None
+
+    def test_empty_url(self) -> None:
+        """Test empty URL returns None."""
+        assert safe_mrkdwn_link("", "Label") is None
+
+    def test_rejects_non_http_scheme(self) -> None:
+        """Test javascript: URLs are rejected."""
+        assert safe_mrkdwn_link("javascript:alert(1)", "Label") is None
+
+    def test_rejects_missing_host(self) -> None:
+        """Test scheme-only URLs with no host are rejected."""
+        assert safe_mrkdwn_link("https://", "Label") is None
+        assert safe_mrkdwn_link("https:///path-only", "Label") is None
+
+    def test_rejects_pipe_in_url(self) -> None:
+        """Test a pipe in the URL cannot break the link syntax."""
+        assert safe_mrkdwn_link("https://evil.example/|phish", "Label") is None
+
+    def test_rejects_angle_brackets_in_url(self) -> None:
+        """Test angle brackets in the URL cannot close the link early."""
+        assert safe_mrkdwn_link("https://evil.example/><!channel", "Label") is None
+
+    def test_rejects_interior_whitespace(self) -> None:
+        """Test interior whitespace in the URL is rejected."""
+        assert safe_mrkdwn_link("https://evil.example/a b", "Label") is None
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        """Test surrounding whitespace is normalized, not rejected."""
+        result = safe_mrkdwn_link("  https://example.com  ", "Site")
+        assert result == "<https://example.com|Site>"
+
+    def test_escapes_pipe_in_label(self) -> None:
+        """Test a pipe in the label cannot break the link syntax."""
+        result = safe_mrkdwn_link("https://example.com", "a|b")
+        assert result == "<https://example.com|a-b>"

@@ -17,6 +17,7 @@ from webhooks.models.rich_notification import (
     NotificationSeverity,
     NotificationType,
     PaymentInfo,
+    PersonInfo,
     RichNotification,
 )
 
@@ -242,15 +243,16 @@ class TestSlackDestinationPluginInsight:
         formatter: SlackDestinationPlugin,
         notification_with_insight: RichNotification,
     ) -> None:
-        """Test insight block is present when notification has insight."""
+        """Test insight renders as a full-size section block."""
         result = formatter.format(notification_with_insight)
 
-        # Find context block with insight
+        # Insights are the highest-value line, so they are promoted to a
+        # section block rather than muted context text
         insight_blocks = [
             b
             for b in get_blocks(result)
-            if b["type"] == "context"
-            and any("lifetime" in str(e.get("text", "")) for e in b.get("elements", []))
+            if b["type"] == "section"
+            and "lifetime" in str(b.get("text", {}).get("text", ""))
         ]
         assert len(insight_blocks) == 1
 
@@ -264,11 +266,11 @@ class TestSlackDestinationPluginInsight:
 
         # Find the insight block
         for block in get_blocks(result):
-            if block["type"] == "context":
-                for element in block.get("elements", []):
-                    if "lifetime" in str(element.get("text", "")):
-                        assert "$5,000" in element["text"]
-                        return
+            if block["type"] == "section":
+                text = str(block.get("text", {}).get("text", ""))
+                if "lifetime" in text:
+                    assert "$5,000" in text
+                    return
         pytest.fail("Insight text not found")
 
     def test_no_insight_block_without_insight(
@@ -278,9 +280,8 @@ class TestSlackDestinationPluginInsight:
         basic_notification.insight = None
         result = formatter.format(basic_notification)
 
-        # Count context blocks - should only have provider badge and customer footer
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
-        assert len(context_blocks) == 2  # Provider badge + customer footer
+        for block in get_blocks(result):
+            assert "lifetime" not in str(block)
 
 
 class TestSlackDestinationPluginProviderBadge:
@@ -325,33 +326,69 @@ class TestSlackDestinationPluginProviderBadge:
                     return
         pytest.fail("Payment type not found in badge")
 
-
-class TestSlackDestinationPluginPaymentDetails:
-    """Test payment details section formatting."""
-
-    def test_payment_details_present(
+    def test_provider_badge_sanitized(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:
-        """Test payment details section is present."""
-        result = formatter.format(basic_notification)
-
-        # Find section with payment details
-        section_blocks = [b for b in get_blocks(result) if b["type"] == "section"]
-        assert len(section_blocks) >= 1
-
-    def test_payment_details_contains_amount(
-        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
-    ) -> None:
-        """Test payment details contains amount."""
+        """Test payload-derived badge elements cannot inject Slack syntax."""
+        assert basic_notification.payment is not None
+        basic_notification.payment.payment_method = "<!channel> card"
         result = formatter.format(basic_notification)
 
         for block in get_blocks(result):
-            if block["type"] == "section":
-                text = str(block.get("text", {}).get("text", ""))
-                if "299" in text or "Amount" in text:
-                    assert "299" in text
-                    return
-        pytest.fail("Amount not found in payment details")
+            if block["type"] == "context":
+                text = str(block.get("elements", [{}])[0].get("text", ""))
+                assert "<!channel>" not in text
+
+
+def get_fields_text(result: dict[str, Any]) -> str:
+    """Collect the text of all section-block fields in the message.
+
+    Args:
+        result: Formatted Slack message dict.
+
+    Returns:
+        Newline-joined text of every field across all section blocks.
+    """
+    texts: list[str] = []
+    for block in get_blocks(result):
+        if block.get("type") == "section":
+            for field in block.get("fields", []):
+                texts.append(str(field.get("text", "")))
+    return "\n".join(texts)
+
+
+class TestSlackDestinationPluginPaymentDetails:
+    """Test payment details fields grid formatting."""
+
+    def test_payment_details_fields_present(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test payment details render as a fields grid."""
+        result = formatter.format(basic_notification)
+
+        assert get_fields_text(result) != ""
+
+    def test_amount_not_repeated_when_in_headline(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the grid skips the amount the headline already shows."""
+        # Headline is "$299.00 from Acme Inc" - the amount is visible
+        result = formatter.format(basic_notification)
+
+        fields_text = get_fields_text(result)
+        assert "*Amount*" not in fields_text
+        assert "*ARR*" in fields_text
+
+    def test_amount_shown_when_headline_lacks_it(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the grid carries the amount for amount-less headlines."""
+        basic_notification.headline = "New subscription!"
+        result = formatter.format(basic_notification)
+
+        fields_text = get_fields_text(result)
+        assert "*Amount*" in fields_text
+        assert "$299.00/mo = $3,588 ARR" in fields_text
 
     def test_payment_details_contains_arr(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
@@ -359,12 +396,57 @@ class TestSlackDestinationPluginPaymentDetails:
         """Test payment details contains ARR for monthly subscriptions."""
         result = formatter.format(basic_notification)
 
+        fields_text = get_fields_text(result)
+        assert "ARR" in fields_text
+        assert "$3,588" in fields_text
+
+    def test_payment_details_contains_plan_and_subscription(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test plan and subscription id render as grid fields."""
+        result = formatter.format(basic_notification)
+
+        fields_text = get_fields_text(result)
+        assert "*Plan*\nEnterprise" in fields_text
+        assert "*Subscription*\n#sub_123" in fields_text
+
+    def test_payment_details_skipped_when_all_duplicate(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test no details block when every field would repeat the headline."""
+        basic_notification.headline = "$50.00 received"
+        basic_notification.payment = PaymentInfo(amount=50.00, currency="USD")
+        basic_notification.is_recurring = False
+        basic_notification.billing_interval = None
+        result = formatter.format(basic_notification)
+
+        assert get_fields_text(result) == ""
+
+    def test_amount_fields_sanitize_currency(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test a malformed payload currency cannot inject Slack syntax."""
+        basic_notification.headline = "New subscription!"
+        assert basic_notification.payment is not None
+        basic_notification.payment.currency = "<!channel>"
+        result = formatter.format(basic_notification)
+
+        assert "<!channel>" not in get_fields_text(result).lower()
+
+    def test_failure_reason_shown_with_fields(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the failure reason renders as text above the grid."""
+        assert basic_notification.payment is not None
+        basic_notification.payment.failure_reason = "Card declined"
+        result = formatter.format(basic_notification)
+
         for block in get_blocks(result):
-            if block["type"] == "section":
+            if block.get("type") == "section" and "fields" in block:
                 text = str(block.get("text", {}).get("text", ""))
-                if "ARR" in text:
-                    return
-        pytest.fail("ARR not found in payment details")
+                assert "Card declined" in text
+                return
+        pytest.fail("Payment details block with failure reason not found")
 
 
 class TestSlackDestinationPluginCompanySection:
@@ -465,11 +547,11 @@ class TestSlackDestinationPluginCompanySection:
                 return
         pytest.fail("Company section not found")
 
-    def test_company_section_description_full(
+    def test_company_section_description_truncated(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:
-        """Test long descriptions are shown in full (not truncated)."""
-        long_description = "A" * 200  # 200 character description
+        """Test long descriptions are truncated with an ellipsis."""
+        long_description = "word " * 60  # ~300 characters
         basic_notification.company = CompanyInfo(
             name="Long Corp",
             domain="long.com",
@@ -480,8 +562,64 @@ class TestSlackDestinationPluginCompanySection:
         for block in get_blocks(result):
             if block["type"] == "section" and "Long Corp" in str(block.get("text", {})):
                 text = str(block.get("text", {}).get("text", ""))
-                # Full description should be present (not truncated)
-                assert long_description in text
+                assert long_description.strip() not in text
+                assert "…" in text
+                return
+        pytest.fail("Company section not found")
+
+    def test_company_section_short_description_not_truncated(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test short descriptions are shown in full."""
+        basic_notification.company = CompanyInfo(
+            name="Short Corp",
+            domain="short.com",
+            description="Builds developer tools.",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if block["type"] == "section" and "Short Corp" in str(
+                block.get("text", {})
+            ):
+                text = str(block.get("text", {}).get("text", ""))
+                assert "Builds developer tools." in text
+                assert "…" not in text
+                return
+        pytest.fail("Company section not found")
+
+    def test_company_section_links_domain(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test company domain is linked inline next to the name."""
+        basic_notification.company = CompanyInfo(
+            name="Test Corp",
+            domain="test.com",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if block["type"] == "section" and "Test Corp" in str(block.get("text", {})):
+                text = str(block.get("text", {}).get("text", ""))
+                assert "<https://test.com|test.com>" in text
+                return
+        pytest.fail("Company section not found")
+
+    def test_company_section_skips_unsafe_domain_link(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test an unsafe domain renders no link but keeps the name."""
+        basic_notification.company = CompanyInfo(
+            name="Evil Corp",
+            domain="evil.com/|<!channel>",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if block["type"] == "section" and "Evil Corp" in str(block.get("text", {})):
+                text = str(block.get("text", {}).get("text", ""))
+                assert "<https://" not in text
+                assert "<!channel>" not in text
                 return
         pytest.fail("Company section not found")
 
@@ -519,7 +657,6 @@ class TestSlackDestinationPluginCompanyLinks:
                 text = str(block.get("elements", [{}])[0].get("text", ""))
                 if "LinkedIn" in text:
                     assert "https://linkedin.com/company/acme-corp" in text
-                    assert ":briefcase:" in text
                     return
         pytest.fail("LinkedIn link not found in company links")
 
@@ -560,6 +697,23 @@ class TestSlackDestinationPluginCompanyLinks:
                     assert "Website" not in text
                     return
         pytest.fail("LinkedIn-only links block not found")
+
+    def test_company_links_rejects_unsafe_linkedin_url(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test a LinkedIn URL that could break link syntax is dropped."""
+        basic_notification.company = CompanyInfo(
+            name="Test Corp",
+            domain="",
+            linkedin_url="https://evil.example/|<https://phish.example",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            if block["type"] == "context":
+                text = str(block.get("elements", [{}])[0].get("text", ""))
+                assert "LinkedIn" not in text
+                assert "phish.example" not in text
 
     def test_no_company_links_without_data(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
@@ -617,6 +771,72 @@ class TestSlackDestinationPluginCustomerFooter:
         text = str(last_context.get("elements", [{}])[0].get("text", ""))
 
         assert "Since Mar 2024" in text
+
+    def test_customer_footer_icon_suppressed_with_person(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test footer drops the person icon when a person section shows it."""
+        basic_notification.person = PersonInfo(
+            email="alice@acme.com",
+            first_name="Alice",
+            last_name="Smith",
+        )
+        result = formatter.format(basic_notification)
+
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        footer_text = str(context_blocks[-1].get("elements", [{}])[0].get("text", ""))
+
+        assert "alice@acme.com" in footer_text
+        assert ":bust_in_silhouette:" not in footer_text
+
+    def test_person_merge_includes_customer_facts(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test customer facts fold into the person block, not a footer."""
+        basic_notification.person = PersonInfo(
+            email="alice@acme.com",
+            first_name="Alice",
+            last_name="Smith",
+            position="CTO",
+        )
+        result = formatter.format(basic_notification)
+        blocks = get_blocks(result)
+
+        # Name and job title share one line in the person section
+        person_sections = [
+            b
+            for b in blocks
+            if b["type"] == "section" and "Alice Smith" in str(b.get("text", {}))
+        ]
+        assert len(person_sections) == 1
+        assert "*Alice Smith* — _CTO_" in person_sections[0]["text"]["text"]
+
+        # Exactly one context block carries the customer facts
+        email_contexts = [
+            b
+            for b in blocks
+            if b["type"] == "context" and "alice@acme.com" in str(b.get("elements", []))
+        ]
+        assert len(email_contexts) == 1
+
+    def test_person_fields_sanitized(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test Hunter.io person fields cannot inject Slack syntax."""
+        basic_notification.person = PersonInfo(
+            email="alice@acme.com",
+            first_name="<!channel>",
+            last_name="Smith",
+            position="<https://evil.example|CEO>",
+            location="<!here> HQ",
+        )
+        result = formatter.format(basic_notification)
+
+        for block in get_blocks(result):
+            text = str(block)
+            assert "<!channel>" not in text
+            assert "<!here>" not in text
+            assert "<https://evil.example|" not in text
 
     def test_customer_footer_shows_risk_flag(
         self, formatter: SlackDestinationPlugin
@@ -721,6 +941,78 @@ class TestSlackDestinationPluginDivider:
 
         divider_blocks = [b for b in get_blocks(result) if b["type"] == "divider"]
         assert len(divider_blocks) >= 1
+
+    def test_no_dangling_divider_without_tail_blocks(
+        self, formatter: SlackDestinationPlugin
+    ) -> None:
+        """Test no divider when nothing follows it.
+
+        Sparse events (e.g. a system event with no customer, company,
+        or person data) must not end on a floating rule.
+        """
+        notification = RichNotification(
+            type=NotificationType.INTEGRATION_ERROR,
+            severity=NotificationSeverity.ERROR,
+            headline="Integration Error - Stripe",
+            headline_icon="error",
+            provider="system",
+            provider_display="System",
+            customer=None,
+        )
+        result = formatter.format(notification)
+
+        divider_blocks = [b for b in get_blocks(result) if b["type"] == "divider"]
+        assert len(divider_blocks) == 0
+
+
+class TestSlackDestinationPluginFallbackText:
+    """Test the top-level fallback text used for notification previews."""
+
+    def test_fallback_text_present(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the payload carries a top-level text fallback."""
+        result = formatter.format(basic_notification)
+
+        assert "$299.00 from Acme Inc" in result["text"]
+
+    def test_fallback_text_includes_insight(
+        self,
+        formatter: SlackDestinationPlugin,
+        notification_with_insight: RichNotification,
+    ) -> None:
+        """Test the fallback text carries the insight when present."""
+        result = formatter.format(notification_with_insight)
+
+        assert "Crossed $5,000 lifetime!" in result["text"]
+
+    def test_fallback_text_sanitized(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test Slack injection in payload-derived text is neutralized.
+
+        Headlines and insights can embed payload data (plan names,
+        failure reasons), so the fallback must never carry raw Slack
+        special syntax like broadcast mentions.
+        """
+        basic_notification.headline = "Upgraded to <!channel> plan"
+        result = formatter.format(basic_notification)
+
+        assert "<!channel>" not in result["text"]
+
+    def test_fallback_text_is_single_line(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test whitespace in payload-derived text collapses to one line."""
+        basic_notification.insight = InsightInfo(
+            icon="warning",
+            text="Card declined:\ninsufficient\tfunds",
+        )
+        result = formatter.format(basic_notification)
+
+        assert "\n" not in result["text"]
+        assert "\t" not in result["text"]
+        assert "Card declined: insufficient funds" in result["text"]
 
 
 class TestSlackDestinationPluginEcommerceDetails:

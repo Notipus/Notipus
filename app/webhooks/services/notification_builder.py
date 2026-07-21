@@ -45,6 +45,33 @@ _CHARGIFY_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _SHOPIFY_SHOP_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]*\.myshopify\.com$")
 
 
+# The contact button interpolates the customer email into a mailto:
+# URL. Payload emails can carry whitespace, control characters, or
+# mailto query syntax ("?cc=..."), which would break the button or
+# add unintended recipients, so only a plain single-address shape is
+# accepted. Conservative allowlist; rejecting an exotic-but-valid
+# address just omits the button.
+_MAILTO_EMAIL_RE = re.compile(r"^[A-Za-z0-9._+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
+
+
+def _normalize_contact_email(value: Any) -> str | None:
+    """Normalize and validate a customer email for a mailto: link.
+
+    Args:
+        value: Raw email value from customer data.
+
+    Returns:
+        The normalized email, or None when the value is missing or not
+        a safe plain address.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not _MAILTO_EMAIL_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
 def _normalize_chargify_subdomain(value: Any) -> str | None:
     """Normalize and validate a Chargify site subdomain.
 
@@ -672,35 +699,35 @@ class NotificationBuilder:
         Returns:
             List of ActionButton objects.
         """
+        # Note: the company website is linked inline in the Slack company
+        # section, so it no longer gets its own button - buttons are
+        # reserved for actions.
+        _ = company
+
         event_type = event_data.get("type", "")
 
         actions: list[ActionButton] = []
 
         # Provider-specific dashboard link
         dashboard_action = self._build_provider_dashboard_action(event_data)
-        if dashboard_action:
-            actions.append(dashboard_action)
 
-        # Add company website link if enriched
-        if company and company.domain:
-            actions.append(
-                ActionButton(
-                    text="Website",
-                    url=f"https://{company.domain}",
-                    style="default",
-                )
-            )
-
-        # Add contact customer link for failures
-        email = customer_data.get("email")
+        # On a payment failure the account-saving action is contacting
+        # the customer, so it takes the primary style and first position;
+        # the dashboard link becomes secondary.
+        email = _normalize_contact_email(customer_data.get("email"))
         if event_type == "payment_failure" and email:
             actions.append(
                 ActionButton(
                     text="Contact Customer",
                     url=f"mailto:{email}",
-                    style="default",
+                    style="primary",
                 )
             )
+            if dashboard_action:
+                dashboard_action.style = "default"
+                actions.append(dashboard_action)
+        elif dashboard_action:
+            actions.append(dashboard_action)
 
         return actions
 

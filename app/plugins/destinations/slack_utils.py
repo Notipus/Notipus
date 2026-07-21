@@ -279,6 +279,41 @@ def safe_mrkdwn(text: str | None) -> str:
     return _escape_slack_mrkdwn(text)
 
 
+def safe_mrkdwn_link(url: str | None, label: str) -> str | None:
+    """Build a Slack ``<url|label>`` mrkdwn link from an untrusted URL.
+
+    Enrichment sources (Brandfetch, Hunter.io) and webhook payloads
+    supply the URLs shown in notifications; a crafted value containing
+    ``<``, ``>``, ``|``, or whitespace could break out of the link
+    syntax and inject arbitrary mrkdwn (fake links, mentions). Those
+    characters are invalid in a properly-encoded URL, so URLs carrying
+    them are rejected rather than repaired. Only http/https schemes are
+    allowed, and the label is escaped for the link-text position.
+
+    Args:
+        url: The untrusted URL. May be None.
+        label: Human-readable link text.
+
+    Returns:
+        A safe ``<url|label>`` string, or None when the URL is missing
+        or unusable.
+    """
+    if not url:
+        return None
+    url = _clean_control_characters(url.strip())
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    # Require a host as well as an http(s) scheme - a bare "https://"
+    # would render as a broken link.
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return None
+    if any(c in url for c in "<>|") or any(c.isspace() for c in url):
+        return None
+    return f"<{url}|{_escape_slack_link_text(label)}>"
+
+
 def _escape_slack_link_text(text: str) -> str:
     """Escape text for use inside Slack link display text.
 
