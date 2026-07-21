@@ -8,7 +8,7 @@ import base64
 import hashlib
 import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 from django.conf import settings
@@ -485,7 +485,7 @@ class WebAuthnService:
             )
         return credentials
 
-    def _challenge_cutoff(self) -> Any:
+    def _challenge_cutoff(self) -> datetime:
         """Compute the earliest ``created_at`` a challenge may have to stay valid.
 
         Challenges created before this cutoff have exceeded ``CHALLENGE_TTL`` and
