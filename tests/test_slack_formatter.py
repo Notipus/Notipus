@@ -964,6 +964,75 @@ class TestSlackDestinationPluginDivider:
         divider_blocks = [b for b in get_blocks(result) if b["type"] == "divider"]
         assert len(divider_blocks) == 0
 
+    def test_no_dangling_divider_without_detail_blocks(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test no divider when identity has no details below it."""
+        basic_notification.payment = None
+        basic_notification.detail_sections = []
+        result = formatter.format(basic_notification)
+
+        divider_blocks = [b for b in get_blocks(result) if b["type"] == "divider"]
+        assert len(divider_blocks) == 0
+
+
+class TestSlackDestinationPluginBlockOrder:
+    """Test that customer identity renders above the payment details.
+
+    The audience is CS/sales scanning a channel: Slack collapses tall
+    attachments behind "Show more", so who the event is about must sit
+    above the fold, before subscription IDs and amount grids.
+    """
+
+    def test_customer_before_payment_details(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the customer block precedes the payment fields grid."""
+        blocks = get_blocks(formatter.format(basic_notification))
+
+        customer_idx = next(
+            i
+            for i, b in enumerate(blocks)
+            if b["type"] == "context" and "alice@acme.com" in str(b.get("elements", ""))
+        )
+        payment_idx = next(i for i, b in enumerate(blocks) if "fields" in b)
+
+        assert customer_idx < payment_idx
+
+    def test_company_before_payment_details(
+        self,
+        formatter: SlackDestinationPlugin,
+        notification_with_company: RichNotification,
+    ) -> None:
+        """Test the enriched company block precedes the payment fields grid."""
+        blocks = get_blocks(formatter.format(notification_with_company))
+
+        company_idx = next(
+            i
+            for i, b in enumerate(blocks)
+            if b["type"] == "section"
+            and "Acme Corporation" in str(b.get("text", {}).get("text", ""))
+        )
+        payment_idx = next(i for i, b in enumerate(blocks) if "fields" in b)
+
+        assert company_idx < payment_idx
+
+    def test_divider_separates_identity_from_details(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the divider sits between the identity and the details."""
+        blocks = get_blocks(formatter.format(basic_notification))
+
+        divider_idx = next(i for i, b in enumerate(blocks) if b["type"] == "divider")
+        customer_idx = next(
+            i
+            for i, b in enumerate(blocks)
+            if b["type"] == "context" and "alice@acme.com" in str(b.get("elements", ""))
+        )
+        payment_idx = next(i for i, b in enumerate(blocks) if "fields" in b)
+
+        assert customer_idx < divider_idx < payment_idx
+
 
 class TestSlackDestinationPluginFallbackText:
     """Test the top-level fallback text used for notification previews."""
@@ -1013,6 +1082,45 @@ class TestSlackDestinationPluginFallbackText:
         assert "\n" not in result["text"]
         assert "\t" not in result["text"]
         assert "Card declined: insufficient funds" in result["text"]
+
+    def test_fallback_text_includes_customer_email(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the preview says who the event is about."""
+        basic_notification.headline = "New subscription!"
+        result = formatter.format(basic_notification)
+
+        assert "alice@acme.com" in result["text"]
+
+    def test_fallback_text_prefers_company_name(
+        self,
+        formatter: SlackDestinationPlugin,
+        notification_with_company: RichNotification,
+    ) -> None:
+        """Test the enriched company name wins over the raw email."""
+        notification_with_company.headline = "New subscription!"
+        result = formatter.format(notification_with_company)
+
+        assert "Acme Corporation" in result["text"]
+        assert "alice@acme.com" not in result["text"]
+
+    def test_fallback_text_skips_identity_already_in_headline(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test no duplicate when the headline already names the customer."""
+        basic_notification.headline = "$299.00 from alice@acme.com"
+        result = formatter.format(basic_notification)
+
+        assert result["text"].count("alice@acme.com") == 1
+
+    def test_fallback_text_identity_dedup_is_case_insensitive(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test dedup holds when the headline cases the email differently."""
+        basic_notification.headline = "$299.00 from Alice@Acme.com"
+        result = formatter.format(basic_notification)
+
+        assert result["text"].casefold().count("alice@acme.com") == 1
 
 
 class TestSlackDestinationPluginEcommerceDetails:

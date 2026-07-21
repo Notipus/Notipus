@@ -93,7 +93,7 @@ EMAIL_TAG_BADGES: dict[str, str] = {
 }
 
 # Company descriptions are enrichment boilerplate; anything longer than
-# this dominates the message and can push the customer footer and action
+# this dominates the message and can push the payment details and action
 # buttons behind Slack's "Show more" collapse.
 MAX_DESCRIPTION_LENGTH = 160
 
@@ -219,23 +219,28 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         # Provider badge (adapts based on event type)
         blocks.append(self._format_provider_badge(n))
 
+        # Who this is about comes before the payment details: Slack
+        # collapses tall attachments behind "Show more", and the customer
+        # identity is the one thing that must never fall below that fold.
+        identity = self._format_identity_blocks(n)
+        blocks.extend(identity)
+
         # Payment/order details (for payment events)
+        detail_blocks: list[dict[str, Any]] = []
         if n.payment:
             payment_block = self._format_payment_details(n)
             if payment_block:
-                blocks.append(payment_block)
+                detail_blocks.append(payment_block)
 
         # Generic detail sections (for non-payment events or extras)
         for section in n.detail_sections:
-            blocks.append(self._format_detail_section(section))
+            detail_blocks.append(self._format_detail_section(section))
 
-        # Company/person/customer blocks, preceded by a divider only when
-        # at least one is present - sparse events (e.g. an integration
-        # error with no customer) must not end on a dangling rule.
-        tail = self._format_tail_blocks(n)
-        if tail:
+        # Divider only when it actually separates identity from details -
+        # sparse events must not start or end on a dangling rule.
+        if identity and detail_blocks:
             blocks.append({"type": "divider"})
-            blocks.extend(tail)
+        blocks.extend(detail_blocks)
 
         # Action buttons (if present)
         if n.actions:
@@ -254,8 +259,8 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             ],
         }
 
-    def _format_tail_blocks(self, n: RichNotification) -> list[dict[str, Any]]:
-        """Build the company/person/customer blocks shown after the divider.
+    def _format_identity_blocks(self, n: RichNotification) -> list[dict[str, Any]]:
+        """Build the company/person/customer blocks shown above the details.
 
         Args:
             n: RichNotification.
@@ -264,29 +269,29 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             List of Slack blocks; empty when no enrichment or customer
             data is available.
         """
-        tail: list[dict[str, Any]] = []
+        identity: list[dict[str, Any]] = []
 
         # Company section with logo (if enriched)
         if n.company:
-            tail.append(self._format_company_section(n.company))
+            identity.append(self._format_company_section(n.company))
             # Add LinkedIn link below company section
             links_block = self._format_company_links(n.company)
             if links_block:
-                tail.append(links_block)
+                identity.append(links_block)
 
         # Person section (if enriched via Hunter.io). It absorbs the
         # customer facts (email, tenure, LTV, flags) so the reader gets
         # one person block instead of two overlapping ones.
         if n.person:
-            tail.extend(self._format_person_section(n.person, n.customer))
-        # Standalone customer footer (only shown when there's meaningful
+            identity.extend(self._format_person_section(n.person, n.customer))
+        # Standalone customer line (only shown when there's meaningful
         # data and no person section already carries it)
         elif n.customer:
             customer_footer = self._format_customer_footer(n.customer)
             if customer_footer:
-                tail.append(customer_footer)
+                identity.append(customer_footer)
 
-        return tail
+        return identity
 
     def _format_fallback_text(self, n: RichNotification) -> str:
         """Build the top-level fallback text for the message.
@@ -303,6 +308,11 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             Plain one-line summary, sanitized for mrkdwn.
         """
         parts = [n.headline]
+        who = self._identity_display(n)
+        # Case-insensitive so a headline carrying "Alice@acme.com" does
+        # not get "alice@acme.com" appended again.
+        if who and who.casefold() not in n.headline.casefold():
+            parts.append(who)
         if n.insight:
             parts.append(n.insight.text)
         # Collapse all whitespace (payload-derived strings like failure
@@ -310,6 +320,31 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         one_line = " ".join(" — ".join(parts).split())
         fallback: str = safe_mrkdwn(one_line)
         return fallback
+
+    def _identity_display(self, n: RichNotification) -> str | None:
+        """Pick the best short identity string for previews.
+
+        Prefers the enriched company name, then the customer email,
+        name, or payload-provided company name. Used in the fallback
+        text so mobile push banners and sidebar previews say who the
+        event is about, not just what happened.
+
+        Args:
+            n: RichNotification.
+
+        Returns:
+            Identity string, or None when nothing identifies the
+            customer.
+        """
+        if n.company and n.company.name:
+            company_name: str = n.company.name
+            return company_name
+        if n.customer:
+            customer_display: str | None = (
+                n.customer.email or n.customer.name or n.customer.company_name
+            )
+            return customer_display
+        return None
 
     def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
         """Send formatted notification to Slack via webhook.
@@ -632,8 +667,8 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             text_parts.append(f"_{' • '.join(details)}_")
 
         # Description as blockquote, truncated so enrichment boilerplate
-        # cannot dominate the message or push the actions behind Slack's
-        # "Show more" collapse.
+        # cannot dominate the message or push the payment details and
+        # actions behind Slack's "Show more" collapse.
         if company.description:
             desc = html_to_slack_mrkdwn(company.description)
             desc = _truncate_mrkdwn(desc, MAX_DESCRIPTION_LENGTH)
