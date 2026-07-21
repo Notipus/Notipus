@@ -238,13 +238,13 @@ class InsightDetector:
         if event_type != "trial_started":
             return None
 
+        currency = event_data.get("currency") or "USD"
         metadata = event_data.get("metadata", {})
         trial_days = metadata.get("trial_days")
         plan_amount = metadata.get("plan_amount")
 
         # "is not None" so a $0 trial plan still renders its amount
         if trial_days and plan_amount is not None:
-            currency = event_data.get("currency") or "USD"
             money = format_money(_to_float(plan_amount), currency)
             suffix = interval_suffix(metadata.get("billing_period"))
             return InsightInfo(

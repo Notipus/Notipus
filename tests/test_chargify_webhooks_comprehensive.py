@@ -52,6 +52,8 @@ class TestChargifyWebhookValidation:
         """Test SHA-256 signature validation"""
         body = b"event=payment_success&payload[subscription][id]=12345"
         expected_signature = "a1b2c3d4e5f6"  # Mock signature
+        # A current timestamp header is now required (replay protection).
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         request = request_factory.post(
             "/webhook/chargify/",
@@ -59,6 +61,7 @@ class TestChargifyWebhookValidation:
             content_type="application/x-www-form-urlencoded",
             HTTP_X_CHARGIFY_WEBHOOK_ID="webhook_123",
             HTTP_X_CHARGIFY_WEBHOOK_SIGNATURE_HMAC_SHA_256=expected_signature,
+            HTTP_X_CHARGIFY_WEBHOOK_TIMESTAMP=timestamp,
         )
 
         with patch("hmac.compare_digest", return_value=True):
@@ -68,6 +71,8 @@ class TestChargifyWebhookValidation:
         """Test MD5 signature fallback when SHA-256 not available"""
         body = b"event=payment_success&payload[subscription][id]=12345"
         md5_signature = "legacy_md5_signature"
+        # A current timestamp header is now required (replay protection).
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
         request = request_factory.post(
             "/webhook/chargify/",
@@ -75,6 +80,7 @@ class TestChargifyWebhookValidation:
             content_type="application/x-www-form-urlencoded",
             HTTP_X_CHARGIFY_WEBHOOK_ID="webhook_123",
             HTTP_X_CHARGIFY_WEBHOOK_SIGNATURE=md5_signature,
+            HTTP_X_CHARGIFY_WEBHOOK_TIMESTAMP=timestamp,
         )
 
         with patch("hmac.compare_digest", return_value=True):
@@ -467,12 +473,17 @@ class TestChargifyWebhookTimestampValidation:
 
         assert provider._validate_webhook_timestamp(mock_request) is True
 
-    def test_missing_timestamp_accepted(self, provider, request_factory):
-        """Test that missing timestamp is accepted (optional field)"""
+    def test_missing_timestamp_rejected(self, provider, request_factory):
+        """Test that a missing timestamp is rejected (fail closed).
+
+        The timestamp header is required: without it, a captured signed
+        body could be replayed indefinitely, so a missing timestamp must
+        fail validation rather than be accepted.
+        """
         mock_request = MagicMock()
         mock_request.headers = {}
 
-        assert provider._validate_webhook_timestamp(mock_request) is True
+        assert provider._validate_webhook_timestamp(mock_request) is False
 
     def test_invalid_timestamp_format_rejected(self, provider, request_factory):
         """Test that invalid timestamp format is rejected"""

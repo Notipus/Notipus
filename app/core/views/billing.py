@@ -16,6 +16,7 @@ from webhooks.services.rate_limiter import rate_limiter
 
 from ..models import Plan
 from ..permissions import get_workspace_for_user
+from .integrations.base import require_admin_role
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +121,16 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         request: The HTTP request object.
 
     Returns:
-        Upgrade plan page or redirect to workspace creation.
+        Upgrade plan page, redirect to workspace creation if the user has
+        no workspace, or redirect to the dashboard if the user is not an
+        owner/admin (permission denied).
     """
     from core.services.dashboard import BillingService
 
-    workspace = _get_user_workspace(request.user)
-    if not workspace:
-        return redirect("core:create_workspace")
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     billing_service = BillingService()
     available_plans = billing_service.get_available_plans(workspace.subscription_plan)
@@ -147,11 +151,14 @@ def payment_methods(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
         request: The HTTP request object.
 
     Returns:
-        Payment methods page or redirect to workspace creation.
+        Payment methods page, redirect to workspace creation if the user
+        has no workspace, or redirect to the dashboard if the user is not
+        an owner/admin (permission denied).
     """
-    workspace = _get_user_workspace(request.user)
-    if not workspace:
-        return redirect("core:create_workspace")
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     # In a real implementation, you would fetch payment methods from Stripe
     # using workspace.stripe_customer_id
@@ -175,7 +182,9 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
         request: The HTTP request object.
 
     Returns:
-        Billing history page or redirect to workspace creation.
+        Billing history page, redirect to workspace creation if the user
+        has no workspace, or redirect to the dashboard if the user is not
+        an owner/admin (permission denied).
     """
     from datetime import datetime
     from datetime import timezone as dt_timezone
@@ -183,9 +192,10 @@ def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
     from core.services.stripe import StripeAPI
     from webhooks.utils.currency import from_minor_units
 
-    workspace = _get_user_workspace(request.user)
-    if not workspace:
-        return redirect("core:create_workspace")
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     # Fetch real invoices from Stripe
     invoices: list[dict[str, Any]] = []
@@ -315,14 +325,17 @@ def checkout(
         plan_name: Name of the plan to checkout (basic, pro, enterprise).
 
     Returns:
-        Redirect to Stripe Checkout or error page.
+        Redirect to Stripe Checkout or error page. Redirects to workspace
+        creation if the user has no workspace, or to the dashboard if the
+        user is not an owner/admin (permission denied).
     """
     from core.services.stripe import StripeAPI
     from django.conf import settings as django_settings
 
-    workspace = _get_user_workspace(request.user)
-    if not workspace:
-        return redirect("core:create_workspace")
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     try:
         # Validate against the Plan model (single source of truth for
@@ -389,7 +402,7 @@ def checkout(
             customer_id=customer["id"],
             price_id=price_id,
             metadata={
-                "workspace_id": str(workspace.id),
+                "workspace_id": str(workspace.pk),
                 "plan_name": plan_name,
             },
             # No time-based component: any date bucket (local or UTC)
@@ -429,12 +442,15 @@ def billing_portal(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
 
     Returns:
         Redirect to Stripe Customer Portal or billing dashboard on error.
+        Redirects to workspace creation if the user has no workspace, or to
+        the dashboard if the user is not an owner/admin (permission denied).
     """
     from core.services.stripe import StripeAPI
 
-    workspace = _get_user_workspace(request.user)
-    if not workspace:
-        return redirect("core:create_workspace")
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     try:
         # Check if workspace has a Stripe customer

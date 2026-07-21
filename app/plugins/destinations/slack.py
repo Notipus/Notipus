@@ -5,12 +5,13 @@ format and sends them via Slack's incoming webhook API.
 """
 
 import logging
+import math
 from typing import Any
 
 import requests
 from plugins.base import PluginCapability, PluginMetadata, PluginType
 from plugins.destinations.base import BaseDestinationPlugin
-from plugins.destinations.slack_utils import html_to_slack_mrkdwn
+from plugins.destinations.slack_utils import html_to_slack_mrkdwn, safe_mrkdwn
 from webhooks.models.rich_notification import (
     ActionButton,
     CompanyInfo,
@@ -127,6 +128,34 @@ PAYMENT_METHOD_ICONS: dict[str, str] = {
     "google_pay": "iphone",
     "shop_pay": "shopping_bags",
 }
+
+
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    """Coerce a possibly non-numeric value to float.
+
+    Webhook payloads sometimes deliver numeric fields as strings (e.g.
+    Shopify sends prices like ``"19.99"``). Formatting such a value with a
+    numeric format spec would raise ``ValueError`` and abort the whole
+    notification, so fall back to a default when coercion fails. Non-finite
+    values ("nan", "inf") coerce successfully but would render as literal
+    "nan"/"inf", so they are also treated as invalid and replaced with the
+    default.
+
+    Args:
+        value: The value to coerce (str, int, float, or None).
+        default: Value returned when coercion fails.
+
+    Returns:
+        The coerced finite float, or ``default`` on failure.
+    """
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(result):
+        return default
+    return result
+
 
 # Severity to color mapping
 SEVERITY_COLORS: dict[NotificationSeverity, str] = {
@@ -411,11 +440,11 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         lines.append(f"*Amount:* {payment.format_amount_with_arr()}")
 
         if payment.plan_name:
-            lines.append(f"*Plan:* {payment.plan_name}")
+            lines.append(f"*Plan:* {safe_mrkdwn(payment.plan_name)}")
         if payment.subscription_id:
-            lines.append(f"*Subscription:* #{payment.subscription_id}")
+            lines.append(f"*Subscription:* #{safe_mrkdwn(payment.subscription_id)}")
         if payment.failure_reason:
-            lines.append(f":x: *Reason:* {payment.failure_reason}")
+            lines.append(f":x: *Reason:* {safe_mrkdwn(payment.failure_reason)}")
 
         return {
             "type": "section",
@@ -431,21 +460,27 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         Returns:
             Slack section block dict.
         """
-        order_display = payment.order_number or "N/A"
+        order_display = (
+            safe_mrkdwn(payment.order_number) if payment.order_number else "N/A"
+        )
         lines = [f":shopping_trolley: *Order #{order_display}*"]
 
-        # Amount
-        lines.append(f"*Amount:* {payment.currency} {payment.amount:,.2f}")
+        # Amount (coerce defensively; some providers send amounts as strings)
+        amount = _coerce_float(payment.amount)
+        lines.append(f"*Amount:* {safe_mrkdwn(payment.currency)} {amount:,.2f}")
 
         # Line items (max 5)
         has_many_items = False
         if payment.line_items:
             has_many_items = len(payment.line_items) > 3
             for item in payment.line_items[:5]:
-                qty = item.get("quantity", 1)
-                name = item.get("name", "Item")
-                price = item.get("price", 0)
-                lines.append(f"• {qty}x {name} (${price:.2f})")
+                # qty/price come raw from the webhook and may be strings.
+                qty = _coerce_float(item.get("quantity", 1), default=1.0)
+                name = safe_mrkdwn(str(item.get("name", "Item")))
+                price = _coerce_float(item.get("price", 0))
+                # Render whole quantities without a trailing ".0".
+                qty_display = f"{qty:g}"
+                lines.append(f"• {qty_display}x {name} (${price:.2f})")
 
             if len(payment.line_items) > 5:
                 remaining = len(payment.line_items) - 5
@@ -511,7 +546,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         Returns:
             Slack section block dict.
         """
-        text_parts = [f":office: *{company.name}*"]
+        text_parts = [f":office: *{safe_mrkdwn(company.name)}*"]
 
         # Company details line
         details: list[str] = []
@@ -643,7 +678,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         # Email, with compact domain-type badges (e.g.
         # ":bust_in_silhouette: jane@stanford.edu · :mortar_board: Education")
         if customer.email:
-            email_parts = [f":bust_in_silhouette: {customer.email}"]
+            email_parts = [f":bust_in_silhouette: {safe_mrkdwn(customer.email)}"]
             email_parts.extend(
                 EMAIL_TAG_BADGES[tag]
                 for tag in customer.email_tags
@@ -653,7 +688,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
 
         # Name if no email
         if not customer.email and customer.name:
-            elements.append(f":bust_in_silhouette: {customer.name}")
+            elements.append(f":bust_in_silhouette: {safe_mrkdwn(customer.name)}")
 
         # Tenure (no emoji for cleaner look)
         if customer.tenure_display:

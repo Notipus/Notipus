@@ -559,6 +559,16 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             True if signature is valid, False otherwise (including when
             the request body is not bytes and cannot be verified).
         """
+        # Never bypass validation: an empty webhook secret means the HMAC
+        # cannot be verified, so reject (even with DEBUG=True). Without this
+        # guard an attacker could forge a valid HMAC over arbitrary payloads.
+        if not self.webhook_secret:
+            logger.error(
+                "SECURITY: Webhook secret not configured! "
+                "Rejecting webhook to prevent unauthorized access."
+            )
+            return False
+
         hmac_header = request.headers.get("X-Shopify-Hmac-SHA256")
         if not hmac_header:
             return False

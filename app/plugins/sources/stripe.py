@@ -123,6 +123,17 @@ class StripeSourcePlugin(BaseSourcePlugin):
             },
         )
 
+        # Never bypass validation: an empty webhook secret means we cannot
+        # verify the signature, so reject (even with DEBUG=True). Without
+        # this guard, Stripe's construct_event with an empty secret lets an
+        # attacker forge a valid signature over arbitrary payloads.
+        if not self.webhook_secret:
+            logger.error(
+                "SECURITY: Webhook secret not configured! "
+                "Rejecting webhook to prevent unauthorized access."
+            )
+            return False
+
         signature = request.headers.get("Stripe-Signature")
         payload = request.body
 
@@ -1090,6 +1101,46 @@ class StripeSourcePlugin(BaseSourcePlugin):
         ):
             metadata["billing_period"] = "monthly"
 
+    def _construct_verified_event(self, request: HttpRequest) -> Any:
+        """Verify the signature and construct the Stripe event object.
+
+        Fails closed on an empty secret: construct_event with an empty
+        secret would let an attacker forge a valid signature over arbitrary
+        payloads, so reject before any signature work (even with DEBUG).
+
+        Args:
+            request: The incoming HTTP request.
+
+        Returns:
+            The verified Stripe event object.
+
+        Raises:
+            InvalidDataError: If the secret is unconfigured, the signature
+                header is missing, or signature verification fails.
+        """
+        if not self.webhook_secret:
+            logger.error(
+                "SECURITY: Webhook secret not configured! "
+                "Rejecting webhook to prevent unauthorized access."
+            )
+            raise InvalidDataError("Webhook secret not configured")
+
+        signature = request.headers.get("Stripe-Signature")
+        payload = request.body
+
+        if not signature:
+            raise InvalidDataError("Missing Stripe signature")
+
+        try:
+            # Use Stripe SDK to construct and validate the event
+            return stripe.Webhook.construct_event(
+                payload, signature, self.webhook_secret
+            )
+        except stripe.SignatureVerificationError as e:
+            raise InvalidDataError(f"Invalid webhook signature: {e!s}") from e
+        except Exception as e:
+            raise InvalidDataError(f"Webhook parsing error: {e!s}") from e
+
     def parse_webhook(
         self, request: HttpRequest, **kwargs: Any
     ) -> dict[str, Any] | None:
@@ -1114,21 +1165,9 @@ class StripeSourcePlugin(BaseSourcePlugin):
             },
         )
 
-        signature = request.headers.get("Stripe-Signature")
-        payload = request.body
-
-        if not signature:
-            raise InvalidDataError("Missing Stripe signature")
-
-        try:
-            # Use Stripe SDK to construct and validate the event
-            event = stripe.Webhook.construct_event(
-                payload, signature, self.webhook_secret
-            )
-        except stripe.SignatureVerificationError as e:
-            raise InvalidDataError(f"Invalid webhook signature: {e!s}") from e
-        except Exception as e:
-            raise InvalidDataError(f"Webhook parsing error: {e!s}") from e
+        # Signature verification (and the fail-closed empty-secret guard)
+        # is owned by _construct_verified_event.
+        event = self._construct_verified_event(request)
 
         # Extract idempotency_key from the event for cross-event deduplication
         # All events triggered by the same Stripe API request share this key

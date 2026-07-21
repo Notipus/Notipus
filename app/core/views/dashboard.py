@@ -12,6 +12,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
 
 from ..models import UserProfile, Workspace, WorkspaceMember
+from .integrations.base import require_admin_role
 
 logger = logging.getLogger(__name__)
 
@@ -190,31 +191,24 @@ def workspace_settings(request: HttpRequest) -> HttpResponse | HttpResponseRedir
         request: The HTTP request object.
 
     Returns:
-        Settings page or redirect to workspace creation.
+        Settings page, redirect to workspace creation if the user has no
+        workspace, or redirect to the dashboard if the user is not an
+        owner/admin (permission denied).
     """
-    try:
-        # Try to get workspace from WorkspaceMember first
-        member = WorkspaceMember.objects.filter(
-            user=request.user, is_active=True
-        ).first()
-        if member:
-            workspace = member.workspace
-        else:
-            # Fall back to UserProfile for backward compatibility
-            user_profile = UserProfile.objects.get(user=request.user)
-            workspace = user_profile.workspace
+    # Modifying workspace settings is an admin capability: shop_domain in
+    # particular participates in webhook routing / tenant identity, so gate
+    # the whole view behind the owner/admin role check.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
-        if request.method == "POST":
-            workspace.name = request.POST.get("name", workspace.name)
-            workspace.shop_domain = request.POST.get(
-                "shop_domain", workspace.shop_domain
-            )
-            workspace.save()
-            messages.success(request, "Workspace settings updated!")
-            return redirect("core:workspace_settings")
+    if request.method == "POST":
+        workspace.name = request.POST.get("name", workspace.name)
+        workspace.shop_domain = request.POST.get("shop_domain", workspace.shop_domain)
+        workspace.save()
+        messages.success(request, "Workspace settings updated!")
+        return redirect("core:workspace_settings")
 
-        context = {"workspace": workspace}
-        return render(request, "core/workspace_settings.html.j2", context)
-
-    except UserProfile.DoesNotExist:
-        return redirect("core:create_workspace")
+    context = {"workspace": workspace}
+    return render(request, "core/workspace_settings.html.j2", context)
