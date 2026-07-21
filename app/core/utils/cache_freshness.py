@@ -31,8 +31,14 @@ def is_timestamp_fresh(
     if max_age_days is None:
         return True
 
+    # Normalize a trailing "Z" (UTC designator) which older
+    # datetime.fromisoformat() implementations reject.
+    normalized = timestamp.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
     try:
-        enriched_at = datetime.fromisoformat(timestamp)
+        enriched_at = datetime.fromisoformat(normalized)
     except (ValueError, TypeError):
         return False
 

@@ -51,6 +51,17 @@ class TestIsTimestampFresh:
         """A None duration caches indefinitely for any valid timestamp."""
         assert is_timestamp_fresh(_iso_days_ago(3650), None) is True
 
+    def test_zulu_suffix_timestamp_is_fresh(self) -> None:
+        """A recent timestamp using the ``Z`` UTC suffix parses as fresh."""
+        recent_zulu = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+            microsecond=0, tzinfo=None
+        ).isoformat() + "Z"
+        assert is_timestamp_fresh(recent_zulu, 30) is True
+
+    def test_old_zulu_suffix_timestamp_is_stale(self) -> None:
+        """An old timestamp using the ``Z`` UTC suffix parses as stale."""
+        assert is_timestamp_fresh("2024-01-01T00:00:00Z", 30) is False
+
     def test_naive_timestamp_treated_as_utc(self) -> None:
         """A naive timestamp is compared as if it were UTC."""
         naive = (datetime.now(timezone.utc) - timedelta(days=1)).replace(tzinfo=None)
