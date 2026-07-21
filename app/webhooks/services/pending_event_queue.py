@@ -26,6 +26,7 @@ import copy
 import logging
 import threading
 import time
+import uuid
 from typing import Any, ClassVar, cast
 
 from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
@@ -231,7 +232,8 @@ class PendingEventQueue:
         Raises:
             RuntimeError: If the append lock could not be acquired.
         """
-        if not self._acquire_append_lock(key):
+        token = self._acquire_append_lock(key)
+        if token is None:
             raise RuntimeError(f"Could not acquire append lock for {key}")
         try:
             existing = decrypt_cache_value(cache.get(key)) or []
@@ -240,12 +242,17 @@ class PendingEventQueue:
             # data) and must be encrypted at rest in Redis.
             cache.set(key, encrypt_cache_value(existing), timeout=self.TTL_SECONDS)
         finally:
-            self._release_append_lock(key)
+            self._release_append_lock(key, token)
 
     def _acquire_append_lock(
         self, key: str, max_attempts: int = APPEND_LOCK_MAX_ATTEMPTS
-    ) -> bool:
+    ) -> str | None:
         """Try to acquire the distributed append lock for a pending list.
+
+        The lock value is a per-acquisition token so release can verify
+        ownership: without it, a holder delayed past the lock TTL (GC
+        pause, slow cache) would unconditionally delete the lock a
+        successor has since acquired, reintroducing concurrent writers.
 
         Args:
             key: Cache key of the pending list the lock protects.
@@ -255,22 +262,36 @@ class PendingEventQueue:
                 TTL so a crashed holder's lock expires within it.
 
         Returns:
-            True when acquired, False when all attempts timed out.
+            The ownership token when acquired, None when all attempts
+            timed out.
         """
         lock_key = f"append_lock:{key}"
+        token = uuid.uuid4().hex
         for _ in range(max_attempts):
-            if cache.add(lock_key, "1", timeout=APPEND_LOCK_TTL_SECONDS):
-                return True
+            if cache.add(lock_key, token, timeout=APPEND_LOCK_TTL_SECONDS):
+                return token
             time.sleep(APPEND_LOCK_RETRY_DELAY_SECONDS)
-        return False
+        return None
 
-    def _release_append_lock(self, key: str) -> None:
-        """Release the distributed append lock for a pending list.
+    def _release_append_lock(self, key: str, token: str) -> None:
+        """Release the distributed append lock if still owned.
+
+        Compare-then-delete through the cache API is not atomic (Redis
+        Lua cannot see the backend's prefixed, pickled keys), so a
+        successor acquiring between the get and the delete can still
+        lose its lock - but only within that microsecond window, versus
+        the unconditional delete which clobbered the successor whenever
+        THIS holder ran past the lock TTL. The append lock guards a
+        ~millisecond read-modify-write, so shrinking the exposure to the
+        compare window is the practical fix.
 
         Args:
             key: Cache key of the pending list the lock protects.
+            token: Ownership token returned by ``_acquire_append_lock``.
         """
-        cache.delete(f"append_lock:{key}")
+        lock_key = f"append_lock:{key}"
+        if cache.get(lock_key) == token:
+            cache.delete(lock_key)
 
     def _schedule_processing(
         self,
@@ -461,9 +482,10 @@ class PendingEventQueue:
             Items still queued (appended during the send), empty when the
             list is fully drained.
         """
-        if not self._acquire_append_lock(
+        token = self._acquire_append_lock(
             key, max_attempts=APPEND_LOCK_FINALIZE_MAX_ATTEMPTS
-        ):
+        )
+        if token is None:
             # The finalize budget outlasts the lock TTL, so this means
             # sustained contention, not one crashed holder. Fall back to
             # the pre-lock behavior of deleting the whole key rather than
@@ -490,7 +512,7 @@ class PendingEventQueue:
                 cache.delete(key)
             return remainder
         finally:
-            self._release_append_lock(key)
+            self._release_append_lock(key, token)
 
     def _read_pending_items(self, key: str) -> list[dict[str, Any]] | None:
         """Read and decrypt the pending list, purging poisoned entries.

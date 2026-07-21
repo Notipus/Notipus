@@ -1433,18 +1433,25 @@ class TestLockedAppend:
                     queue._locked_append("pending_webhook:ws:idem", {"x": 1})
 
     def test_append_releases_lock_even_on_error(self, queue: PendingEventQueue) -> None:
-        """Test that the append lock is released when cache.set fails."""
-        with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
-            mock_cache.add.return_value = True
-            mock_cache.get.return_value = []
-            mock_cache.set.side_effect = RuntimeError("redis down")
+        """Test that the append lock is released when cache.set fails.
 
+        Uses the stateful fake because release now verifies ownership
+        (get-compare-delete) before removing the lock.
+        """
+        fake_cache = InMemoryCache()
+        key = "pending_webhook:ws:idem"
+        lock_key = f"append_lock:{key}"
+
+        def failing_set(k: str, value: Any, timeout: Any = None) -> None:
+            raise RuntimeError("redis down")
+
+        fake_cache.set = failing_set  # type: ignore[method-assign]
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
             with pytest.raises(RuntimeError, match="redis down"):
-                queue._locked_append("pending_webhook:ws:idem", {"x": 1})
+                queue._locked_append(key, {"x": 1})
 
-            mock_cache.delete.assert_called_once_with(
-                "append_lock:pending_webhook:ws:idem"
-            )
+        assert lock_key not in fake_cache.store
 
 
 class TestPeriodicRecovery:
@@ -1721,6 +1728,36 @@ class TestProcessDeleteRace:
             APPEND_LOCK_FINALIZE_MAX_ATTEMPTS * APPEND_LOCK_RETRY_DELAY_SECONDS
         )
         assert finalize_budget > APPEND_LOCK_TTL_SECONDS
+
+    def test_stale_release_does_not_clobber_successors_lock(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Release verifies ownership before deleting the lock.
+
+        A holder delayed past the lock TTL (GC pause, slow cache) must
+        not delete the lock a successor has since acquired; only the
+        current owner's token releases it.
+        """
+        fake_cache = InMemoryCache()
+        lock_key = f"append_lock:{self.KEY}"
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            stale_token = queue._acquire_append_lock(self.KEY)
+            assert stale_token is not None
+
+            # Simulate TTL expiry followed by a successor's acquisition
+            fake_cache.delete(lock_key)
+            new_token = queue._acquire_append_lock(self.KEY)
+            assert new_token is not None
+            assert new_token != stale_token
+
+            # The stale holder's release is a no-op...
+            queue._release_append_lock(self.KEY, stale_token)
+            assert fake_cache.store[lock_key] == new_token
+
+            # ...while the rightful owner's release works
+            queue._release_append_lock(self.KEY, new_token)
+            assert lock_key not in fake_cache.store
 
 
 class TestPoisonedEntryPurge:
