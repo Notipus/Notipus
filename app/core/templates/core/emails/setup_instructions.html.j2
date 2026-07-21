@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="description"
+              content="Setup instructions for connecting {{ provider_name }} to Notipus">
+        <meta name="keywords"
+              content="notipus, setup, webhook, {{ provider_name }}">
+        <title>Connect {{ provider_name }} to Notipus</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f5f5f5;
+            }
+
+            .container {
+                background-color: #ffffff;
+                border-radius: 8px;
+                padding: 40px;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            }
+
+            .header {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+
+            .logo {
+                font-size: 24px;
+                font-weight: bold;
+                color: #6366f1;
+            }
+
+            h1 {
+                color: #1f2937;
+                font-size: 24px;
+                margin-bottom: 20px;
+            }
+
+            p {
+                color: #4b5563;
+                margin-bottom: 16px;
+            }
+
+            ol.steps {
+                color: #4b5563;
+                padding-left: 20px;
+            }
+
+            ol.steps li {
+                margin-bottom: 16px;
+            }
+
+            .step-title {
+                color: #1f2937;
+                font-weight: 600;
+            }
+
+            .code-box {
+                background-color: #f3f4f6;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                padding: 12px 16px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                font-size: 13px;
+                word-break: break-all;
+                color: #1f2937;
+                margin-bottom: 16px;
+            }
+
+            .code-box ul {
+                margin: 0;
+                padding-left: 18px;
+            }
+
+            .label {
+                font-size: 13px;
+                font-weight: 600;
+                color: #6b7280;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                margin-bottom: 6px;
+            }
+
+            .footer {
+                margin-top: 40px;
+                padding-top: 20px;
+                border-top: 1px solid #e5e7eb;
+                font-size: 14px;
+                color: #6b7280;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">Notipus</div>
+            </div>
+
+            <h1>Help connect {{ provider_name }} to Notipus</h1>
+
+            <p>
+                <strong>{{ requester_name }}</strong> is setting up
+                <strong>{{ provider_name }}</strong> notifications for
+                <strong>{{ workspace_name }}</strong> on Notipus and needs help
+                from someone with access to the {{ provider_name }} account.
+            </p>
+
+            <ol class="steps">
+                {% for step in steps %}
+                    <li>
+                        <span class="step-title">{{ step.title }}</span>
+                        <br>
+                        {{ step.description }}
+                    </li>
+                {% endfor %}
+            </ol>
+
+            <div class="label">Webhook URL</div>
+            <div class="code-box">{{ webhook_url }}</div>
+
+            {% if webhook_events %}
+                <div class="label">Events to select</div>
+                <div class="code-box">
+                    <ul>
+                        {% for event in webhook_events %}<li>{{ event }}</li>{% endfor %}
+                    </ul>
+                </div>
+            {% endif %}
+
+            <div class="footer">
+                <p>If you weren't expecting this email, you can safely ignore it.</p>
+                <p>— The Notipus Team</p>
+            </div>
+        </div>
+    </body>
+</html>

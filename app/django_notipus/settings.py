@@ -746,8 +746,10 @@ SHOPIFY_REDIRECT_URI = os.environ.get(
 SHOPIFY_API_VERSION = "2025-01"  # Stable API version for webhook management
 SHOPIFY_SCOPES = "read_orders,read_customers,write_webhooks"
 
-# Base URL for webhook endpoints (used in OAuth callbacks)
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
+# Base URL for webhook endpoints (used in OAuth callbacks). Trailing
+# slash stripped so f"{BASE_URL}/webhook/..." concatenations cannot
+# produce a double slash when the env var carries one.
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000").rstrip("/")
 
 # ============================================================================
 # Unified Plugin Configuration
