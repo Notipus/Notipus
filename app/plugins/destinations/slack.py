@@ -5,6 +5,7 @@ format and sends them via Slack's incoming webhook API.
 """
 
 import logging
+import math
 from typing import Any
 
 import requests
@@ -135,19 +136,25 @@ def _coerce_float(value: Any, default: float = 0.0) -> float:
     Webhook payloads sometimes deliver numeric fields as strings (e.g.
     Shopify sends prices like ``"19.99"``). Formatting such a value with a
     numeric format spec would raise ``ValueError`` and abort the whole
-    notification, so fall back to a default when coercion fails.
+    notification, so fall back to a default when coercion fails. Non-finite
+    values ("nan", "inf") coerce successfully but would render as literal
+    "nan"/"inf", so they are also treated as invalid and replaced with the
+    default.
 
     Args:
         value: The value to coerce (str, int, float, or None).
         default: Value returned when coercion fails.
 
     Returns:
-        The coerced float, or ``default`` on failure.
+        The coerced finite float, or ``default`` on failure.
     """
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(result):
+        return default
+    return result
 
 
 # Severity to color mapping

@@ -34,15 +34,14 @@ logger = logging.getLogger(__name__)
 _CHARGIFY_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
-# A Shopify shop domain is a full hostname (e.g. "acme.myshopify.com")
-# that gets interpolated into a URL host. Validate it as a dotted series
-# of DNS labels so an attacker-controlled value cannot smuggle a path,
-# port, credentials, scheme, or an alternate host into the link.
-_SHOPIFY_SHOP_DOMAIN_RE = re.compile(
-    r"^(?=.{1,253}$)"
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
-)
+# A Shopify shop domain is always the store's admin host on the
+# ".myshopify.com" suffix (e.g. "acme.myshopify.com"). It gets
+# interpolated into a URL host, so restrict it to a single shop-name
+# label followed by that exact suffix. This mirrors _is_valid_shop_domain
+# in app/core/views/integrations/shopify.py and prevents an
+# attacker-controlled value from pointing the dashboard button at an
+# arbitrary host (e.g. "evil.com"), a path, port, or credentials.
+_SHOPIFY_SHOP_DOMAIN_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]*\.myshopify\.com$")
 
 
 def _normalize_chargify_subdomain(value: Any) -> str | None:
@@ -74,10 +73,11 @@ def _normalize_shopify_shop_domain(value: Any) -> str | None:
 
     The shop domain originates from webhook payload data and is
     interpolated into a URL host, so it is normalized (surrounding
-    whitespace stripped, lowercased) and then required to be a plain
-    dotted hostname (a series of valid DNS labels). Values carrying a
-    scheme, port, path, credentials, interior whitespace, or other
-    unexpected characters are rejected.
+    whitespace stripped, lowercased) and then required to be a shop-name
+    label on the ".myshopify.com" admin suffix (e.g. "acme.myshopify.com").
+    Any other host (e.g. "evil.com"), or a value carrying a scheme, port,
+    path, credentials, interior whitespace, or other unexpected
+    characters, is rejected.
 
     Args:
         value: Raw shop domain value from event metadata.

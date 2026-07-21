@@ -10,7 +10,7 @@ that an unsafe Shopify shop domain is rejected before it reaches a URL.
 from typing import Any
 
 import pytest
-from plugins.destinations.slack import SlackDestinationPlugin
+from plugins.destinations.slack import SlackDestinationPlugin, _coerce_float
 from plugins.destinations.slack_utils import safe_mrkdwn
 from webhooks.models.rich_notification import (
     CompanyInfo,
@@ -238,9 +238,55 @@ def test_non_numeric_price_falls_back_without_raising(
     assert "$0.00" in rendered
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "NaN", "Infinity"])
+def test_coerce_float_rejects_non_finite(value: str) -> None:
+    """Non-finite strings coerce to the default, not "nan"/"inf"."""
+    assert _coerce_float(value) == 0.0
+    assert _coerce_float(value, default=1.0) == 1.0
+
+
+def test_coerce_float_accepts_finite_values() -> None:
+    """Ordinary numeric strings and numbers still coerce normally."""
+    assert _coerce_float("19.99") == 19.99
+    assert _coerce_float(3) == 3.0
+    assert _coerce_float("garbage") == 0.0
+
+
+def test_non_finite_line_item_price_falls_back(
+    plugin: SlackDestinationPlugin,
+) -> None:
+    """A non-finite price renders as $0.00 rather than "$nan"/"$inf"."""
+    notification = RichNotification(
+        type=NotificationType.PAYMENT_SUCCESS,
+        severity=NotificationSeverity.SUCCESS,
+        headline="Order paid",
+        headline_icon="money",
+        provider="shopify",
+        provider_display="Shopify",
+        payment=PaymentInfo(
+            amount="inf",  # type: ignore[arg-type]
+            currency="USD",
+            order_number="1001",
+            line_items=[{"quantity": 1, "name": "Widget", "price": "nan"}],
+        ),
+    )
+
+    rendered = render_text(plugin.format(notification))
+
+    assert "nan" not in rendered.lower()
+    assert "inf" not in rendered.lower()
+    assert "$0.00" in rendered
+
+
 @pytest.mark.parametrize(
     "shop_domain",
     [
+        # A plain attacker-chosen host is rejected: only the
+        # ".myshopify.com" admin suffix is accepted.
+        "evil.com",
+        "sub.evil.com",
+        "acme.myshopify.com.evil.com",
+        "notmyshopify.com",
         "evil.com/admin/orders/1?x=",
         "evil.com#",
         "evil.com/../../foo",
@@ -248,6 +294,7 @@ def test_non_numeric_price_falls_back_without_raising(
         "http://evil.com",
         "evil.com:8080",
         "user:pass@evil.com",
+        "acme.myshopify.com/../evil",
         "",
         "nodot",
     ],
