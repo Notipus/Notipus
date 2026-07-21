@@ -342,6 +342,24 @@ class TestChargifyWebhookParsing:
             assert "is_signup_payment" not in result["metadata"]
             assert "amount" not in result
 
+    def test_total_spent_respects_zero_decimal_currency(
+        self, provider: ChargifySourcePlugin
+    ) -> None:
+        """Test total_spent uses per-currency minor units, not a fixed /100.
+
+        JPY has no minor unit: 5000 in the payload is ¥5,000, and a
+        hardcoded /100 would report ¥50.
+        """
+        provider._current_webhook_data = {
+            "payload[subscription][currency]": "JPY",
+            "payload[subscription][total_revenue_in_cents]": "5000",
+            "payload[subscription][customer][email]": "test@example.com",
+        }
+
+        customer_data = provider.get_customer_data("cust_456")
+
+        assert customer_data["total_spent"] == 5000.0
+
     def test_signup_success_malformed_revenue_does_not_reject(
         self, provider: ChargifySourcePlugin, request_factory: RequestFactory
     ) -> None:

@@ -366,9 +366,15 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             # "" is how a form-encoded payload spells "absent" - skip it
             # silently rather than warn on every such webhook.
             if total_revenue_cents not in (None, ""):
+                # Same minor-unit conversion as every payment amount:
+                # a hardcoded /100 would be 100x off for zero-decimal
+                # currencies like JPY.
+                currency = self._extract_currency(self._current_webhook_data)
                 try:
-                    customer_data["total_spent"] = float(total_revenue_cents) / 100
-                except (ValueError, TypeError):
+                    customer_data["total_spent"] = float(
+                        self._parse_amount_cents(total_revenue_cents, currency)
+                    )
+                except InvalidDataError:
                     logger.warning(
                         "Ignoring malformed total_revenue_in_cents in "
                         "Chargify customer data",
