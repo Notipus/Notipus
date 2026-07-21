@@ -26,6 +26,13 @@ x-common-variables: &common-variables
   # CodeQL[SM02380]: Development default secret - not used in production
   SECRET_DJANGO_KEY: ${SECRET_DJANGO_KEY:-django-dev-key-not-for-production-use}
   DEBUG: ${DEBUG:-True}
+  # Encryption at rest for tenant credentials: comma-separated base64url
+  # 32-byte keys (ChaCha20-Poly1305), first = primary. REQUIRED when
+  # DEBUG=False; in dev a key is derived from SECRET_DJANGO_KEY when unset.
+  # Generate: python -c "import os,base64;
+  #   print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+  # See README "Security: encryption at rest".
+  FIELD_ENCRYPTION_KEYS: ${FIELD_ENCRYPTION_KEYS:-}
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,django,notipus_django}
 
   # Global Authentication (Notipus's OAuth apps)

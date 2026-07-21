@@ -237,6 +237,37 @@ if not DEBUG and SECRET_KEY == _default_secret_key and not _is_build_command:
         "Set SECRET_DJANGO_KEY environment variable to a secure random value."
     )
 
+# Field-level encryption at rest (see core.encryption / core.fields).
+# FIELD_ENCRYPTION_KEYS is a comma-separated list of base64url-encoded 32-byte
+# (256-bit) keys for ChaCha20-Poly1305. The first key is the primary (used to
+# encrypt); all keys can decrypt, which enables key rotation. Generate a key:
+#   python -c "import os, base64; \
+#       print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+#
+# Key resolution is intentionally LAZY (see core.encryption.get_keys): the
+# cipher keys are resolved on first encrypt/decrypt, not here. This means:
+#   * Build steps that never touch encrypted fields (e.g. collectstatic) run
+#     without keys configured.
+#   * Any actual encrypt/decrypt with DEBUG=False and no keys raises
+#     ImproperlyConfigured (fail loud) -- including the re-encrypt data
+#     migration run by `migrate`, which must use the REAL key, never a
+#     throwaway derived one.
+#   * With DEBUG=True and no keys, a deterministic dev-only key is derived
+#     from SECRET_KEY so local dev and the test suite work without config.
+_field_encryption_keys_env = os.environ.get("FIELD_ENCRYPTION_KEYS", "")
+FIELD_ENCRYPTION_KEYS = [
+    key.strip() for key in _field_encryption_keys_env.split(",") if key.strip()
+]
+
+# Whether the DEBUG-only derived-key fallback is permitted when no keys are
+# configured. Captured here from the configured DEBUG (env) rather than read
+# as ``settings.DEBUG`` at runtime, because Django's test runner forces
+# ``settings.DEBUG = False`` during tests -- which must still use the dev
+# fallback so the suite runs without provisioning FIELD_ENCRYPTION_KEYS. In a
+# real production deployment DEBUG is False here, so this is False and any
+# encrypt/decrypt without configured keys fails loud.
+FIELD_ENCRYPTION_ALLOW_DEV_FALLBACK = DEBUG
+
 APP_NAME = os.environ.get("FLY_APP_NAME")
 
 # Security: Restrict allowed hosts to prevent Host header attacks
