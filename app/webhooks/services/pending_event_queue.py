@@ -236,7 +236,11 @@ class PendingEventQueue:
         if token is None:
             raise RuntimeError(f"Could not acquire append lock for {key}")
         try:
-            existing = decrypt_cache_value(cache.get(key)) or []
+            existing = self._read_pending_items(key)
+            if existing is None:
+                # Poisoned entry purged and logged (with its attempt
+                # counter); the new item starts a fresh group.
+                existing = []
             existing.append(item)
             # Pending payloads carry customer PII (emails, names, order
             # data) and must be encrypted at rest in Redis.

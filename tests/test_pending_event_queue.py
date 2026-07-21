@@ -1878,6 +1878,29 @@ class TestPoisonedEntryPurge:
         assert recovered is False
         assert self.KEY not in fake_cache.store
 
+    def test_append_over_poisoned_entry_purges_and_starts_fresh(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Appending over a poisoned entry purges it and starts a new group.
+
+        Without this, the append silently overwrote the undecryptable
+        entry while its attempt counter survived and the loss went
+        unlogged.
+        """
+        fake_cache = InMemoryCache()
+        fake_cache.store[self.KEY] = self.POISONED
+        fake_cache.store[self.ATTEMPTS_KEY] = 7
+        item = {
+            "event_data": {"type": "invoice_paid", "_queued_at": 3.0},
+            "customer_data": {"email": "test@example.com"},
+        }
+
+        with patch("webhooks.services.pending_event_queue.cache", fake_cache):
+            queue._locked_append(self.KEY, item)
+
+        assert decrypt_cache_value(fake_cache.store[self.KEY]) == [item]
+        assert self.ATTEMPTS_KEY not in fake_cache.store
+
     def test_true_miss_is_not_treated_as_poisoned(
         self, queue: PendingEventQueue
     ) -> None:
