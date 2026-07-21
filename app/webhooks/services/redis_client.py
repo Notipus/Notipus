@@ -31,12 +31,16 @@ def get_raw_redis_client() -> Any | None:
         return cache.client.get_client()  # type: ignore[attr-defined]
     except AttributeError:
         pass  # Not django-redis; try Django's built-in backend
-    except Exception as e:
-        logger.warning(f"Cannot access raw Redis client: {e}")
+    except Exception:
+        logger.warning("Cannot access raw Redis client", exc_info=True)
         return None
 
     try:
         return cache._cache.get_client(None, write=True)  # type: ignore[attr-defined]
-    except Exception as e:
-        logger.warning(f"Cannot access raw Redis client: {e}")
+    except AttributeError:
+        # Not a Redis-backed cache at all (LocMemCache/DummyCache in
+        # dev/tests): an expected configuration, not a failure to log.
+        return None
+    except Exception:
+        logger.warning("Cannot access raw Redis client", exc_info=True)
         return None
