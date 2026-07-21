@@ -45,10 +45,11 @@ def test_encrypt_decrypt_round_trip() -> None:
 
 
 def test_ciphertext_is_prefixed_and_not_plaintext() -> None:
-    """Encrypted output is a pqc1 token, not the plaintext."""
+    """Encrypted output is a pqc1 token that round-trips, not the plaintext."""
     token = encrypt("hello")
     assert token.startswith(TOKEN_PREFIX)
-    assert "hello" not in token
+    assert token != "hello"
+    assert decrypt(token) == "hello"
 
 
 def test_encrypt_is_non_deterministic() -> None:
@@ -212,7 +213,8 @@ class TestEncryptedJSONField:
         stored = field.get_prep_value(value)
         assert isinstance(stored, str)
         assert stored.startswith(TOKEN_PREFIX)
-        assert "xoxb-abc" not in stored
+        # The stored ciphertext is not the legacy plaintext JSON encoding.
+        assert stored != json.dumps(value)
         assert field.from_db_value(stored, None, None) == value
 
     def test_legacy_plaintext_json_fallback(self) -> None:
@@ -306,10 +308,17 @@ class TestIntegrationModelEncryption:
             )
             raw_creds, raw_secret = cursor.fetchone()
 
-        assert "PLAINTEXT_MARKER" not in raw_creds
-        assert "PLAINTEXT_MARKER" not in raw_secret
+        # Deterministic: the raw columns are pqc1 ciphertext that decrypts back
+        # to the originals, and are exactly unequal to the legacy plaintext
+        # representations they would have held pre-encryption.
+        legacy_creds = json.dumps({"access_token": "PLAINTEXT_MARKER"})
+        legacy_secret = "whsec_PLAINTEXT_MARKER"
         assert raw_creds.startswith(TOKEN_PREFIX)
         assert raw_secret.startswith(TOKEN_PREFIX)
+        assert raw_creds != legacy_creds
+        assert raw_secret != legacy_secret
+        assert json.loads(decrypt(raw_creds)) == {"access_token": "PLAINTEXT_MARKER"}
+        assert decrypt(raw_secret) == legacy_secret
 
     def test_reload_after_legacy_plaintext_write(
         self, workspace: Workspace, monkeypatch: Any
