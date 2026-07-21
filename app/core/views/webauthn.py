@@ -7,6 +7,7 @@ import json
 import logging
 from typing import Any, cast
 
+from allauth.account.utils import setup_user_email
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
@@ -136,8 +137,10 @@ def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
         user = webauthn_service.verify_authentication(credential_data)
 
         if user:
-            # Log the user in
-            login(request, user)
+            # Log the user in. The backend must be named explicitly:
+            # with multiple AUTHENTICATION_BACKENDS configured, a bare
+            # login() raises and the passkey flow 500s.
+            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
             return JsonResponse(
                 {
                     "success": True,
@@ -263,8 +266,20 @@ def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:
         )
 
         if user:
-            # Log the user in
-            login(request, user)
+            # Log the user in (explicit backend - see authenticate_complete)
+            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+
+            # Passkey signups are the one flow that needs outgoing email:
+            # unlike Slack SSO (whose emails are provider-verified), a
+            # passkey user typed their address unverified. Register it
+            # with allauth and send the verification email. Never fail
+            # the signup over email delivery.
+            try:
+                email_address = setup_user_email(request, user, [])
+                if email_address is not None:
+                    email_address.send_confirmation(request, signup=True)
+            except Exception:
+                logger.exception("Failed to send verification email for passkey signup")
 
             return JsonResponse(
                 {
