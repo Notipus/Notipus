@@ -6,7 +6,7 @@
     "build:css": "bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --minify",
     "build:fonts": "mkdir -p app/static/dist/fonts && cp -r node_modules/@tabler/icons-webfont/dist/fonts/* app/static/dist/fonts/",
     "build": "bun run build:fonts && bun run build:css",
-    "dev": "bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
+    "dev": "bun run build:fonts && bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
   },
   "devDependencies": {
     "@tabler/icons-webfont": "^3.45.0",
