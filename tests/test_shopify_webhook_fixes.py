@@ -296,8 +296,13 @@ class TestShopifyEventTypeMapping:
             )
 
 
-class TestShopifyEventIdDedup:
-    """Tests for surfacing X-Shopify-Webhook-Id as the router dedup key."""
+class TestShopifySignedContentDedupKey:
+    """Tests for surfacing the signed body hash as the router dedup key.
+
+    Shopify's HMAC covers only the raw body, so the unsigned
+    X-Shopify-Webhook-Id header must never key dedup: an attacker
+    replaying a captured (body, signature) pair can mint a fresh id.
+    """
 
     @pytest.fixture
     def provider(self) -> ShopifySourcePlugin:
@@ -316,31 +321,38 @@ class TestShopifyEventIdDedup:
             "total_price": "10.00",
         }
         mock_request.data = json.dumps(payload).encode()
+        mock_request.body = mock_request.data
         return mock_request
 
-    def test_webhook_id_header_surfaced_as_event_id(
+    def test_signed_body_hash_surfaced_as_content_hash(
         self, provider: ShopifySourcePlugin
     ) -> None:
-        """X-Shopify-Webhook-Id is surfaced as event_id for router dedup."""
+        """sha256(body) is surfaced as content_hash; event_id is not set."""
         request = self._make_request(
             {"X-Shopify-Webhook-Id": "b54557e4-bdd9-4b37-8a5f-bf7d70bcd043"}
         )
         event = provider.parse_webhook(request)
         assert event is not None
-        assert event["event_id"] == "b54557e4-bdd9-4b37-8a5f-bf7d70bcd043"
-
-    def test_missing_webhook_id_header_omits_event_id(
-        self, provider: ShopifySourcePlugin
-    ) -> None:
-        """Without the header, event_id is absent (router falls back)."""
-        event = provider.parse_webhook(self._make_request({}))
-        assert event is not None
+        assert event["content_hash"] == hashlib.sha256(request.body).hexdigest()
         assert "event_id" not in event
 
-    def test_fulfillment_webhook_also_surfaces_event_id(
+    def test_webhook_id_header_does_not_change_dedup_key(
         self, provider: ShopifySourcePlugin
     ) -> None:
-        """Fulfillment topic parsing also surfaces the delivery id."""
+        """The same body with different id headers hashes identically."""
+        first = provider.parse_webhook(
+            self._make_request({"X-Shopify-Webhook-Id": "original-delivery"})
+        )
+        replay = provider.parse_webhook(
+            self._make_request({"X-Shopify-Webhook-Id": "attacker-minted-id"})
+        )
+        assert first is not None and replay is not None
+        assert first["content_hash"] == replay["content_hash"]
+
+    def test_fulfillment_webhook_also_surfaces_content_hash(
+        self, provider: ShopifySourcePlugin
+    ) -> None:
+        """Fulfillment topic parsing also surfaces the signed body hash."""
         mock_request = Mock()
         mock_request.content_type = "application/json"
         mock_request.headers = {
@@ -354,10 +366,12 @@ class TestShopifyEventIdDedup:
             "customer": {"id": 456},
         }
         mock_request.data = json.dumps(payload).encode()
+        mock_request.body = mock_request.data
 
         event = provider.parse_webhook(mock_request)
         assert event is not None
-        assert event["event_id"] == "delivery-123"
+        assert event["content_hash"] == hashlib.sha256(mock_request.body).hexdigest()
+        assert "event_id" not in event
 
 
 class TestOrderCancelledNotification:
@@ -466,6 +480,7 @@ class TestConsolidationBucketIntegrity:
             "total_price": "10.00",
         }
         mock_request.data = json.dumps(payload).encode()
+        mock_request.body = mock_request.data
 
         event = provider.parse_webhook(mock_request)
 
@@ -501,6 +516,7 @@ class TestDecimalPrecision:
             ],
         }
         mock_request.data = json.dumps(payload).encode()
+        mock_request.body = mock_request.data
 
         event = provider.parse_webhook(mock_request)
 

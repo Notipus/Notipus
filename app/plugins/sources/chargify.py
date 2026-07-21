@@ -19,6 +19,7 @@ from plugins.sources.base import (
     CustomerNotFoundError,
     InvalidDataError,
     mask_sensitive_headers,
+    signed_content_hash,
 )
 from webhooks.utils.currency import from_minor_units
 
@@ -31,8 +32,10 @@ class ChargifySourcePlugin(BaseSourcePlugin):
     Handles webhook validation using HMAC signatures (SHA-256 preferred,
     with MD5 fallback) and parsing of various subscription and payment
     events. Deduplication is handled at the router level via the
-    event consolidation service, keyed on the ``X-Chargify-Webhook-Id``
-    header surfaced as ``event_id`` in the parsed event data.
+    event consolidation service, keyed on the SHA-256 of the raw
+    (HMAC-signed) request body surfaced as ``content_hash`` in the
+    parsed event data. The unsigned ``X-Chargify-Webhook-Id`` header is
+    never trusted for dedup; it is used only for logging.
 
     Attributes:
         EVENT_TYPE_MAPPING: Maps routable Chargify event names to the
@@ -140,13 +143,16 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         missing timestamp is treated as a validation failure so the
         ±window always applies.
 
-        NOTE: This is a window-narrowing mitigation, NOT full replay
-        prevention. Chargify's HMAC covers the body only, not the
-        timestamp header, so a captured (body, signature) pair can still be
-        replayed with a fresh in-tolerance timestamp within the ±window.
-        It layers with the existing webhook-id dedup at the router. Robust
-        signed-content (body-hash) dedup at the router is tracked in
-        https://github.com/Notipus/Notipus/issues/118.
+        NOTE: This is a window-narrowing mitigation that layers with the
+        router's signed-content dedup. Chargify's HMAC covers the body
+        only, not the timestamp header, so a captured (body, signature)
+        pair can be replayed with a fresh in-tolerance timestamp - but
+        because the router dedups on the SHA-256 of the signed body
+        (``content_hash``), such a replay is suppressed as a duplicate
+        for the dedup window regardless of any headers the attacker
+        mints. The timestamp check rejects replays outside the ±window
+        entirely, covering replays attempted after the dedup marker
+        expires.
 
         This helper is side-effect-free: it returns a boolean and never
         logs, so the single caller (``validate_webhook``) logs a failure
@@ -387,7 +393,8 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         """Route webhook event to appropriate handler.
 
         Deduplication happens at the router level (event consolidation
-        service), keyed on the webhook id surfaced via ``event_id``.
+        service), keyed on the signed body hash surfaced via
+        ``content_hash``.
 
         Args:
             event_type: The webhook event type (must be a key of
@@ -472,9 +479,11 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         if not event_type:
             raise InvalidDataError("Missing event type")
 
-        # The webhook id is required: it is the deduplication key, so a
-        # missing id must be a validation failure (400) rather than a
-        # webhook that bypasses dedup on every retry.
+        # The webhook id is part of Chargify's webhook contract: every
+        # genuine delivery carries it, so its absence indicates a forged
+        # or broken request and is rejected (400). It is used only for
+        # logging/traceability - dedup keys on the signed body hash, so
+        # the unsigned header can no longer mint fresh dedup keys.
         webhook_id = request.headers.get("X-Chargify-Webhook-Id", "")
         if not webhook_id:
             raise InvalidDataError("Missing X-Chargify-Webhook-Id header")
@@ -499,8 +508,13 @@ class ChargifySourcePlugin(BaseSourcePlugin):
 
         event = self._handle_chargify_event(event_type, customer_id, data, webhook_id)
 
-        # Surface the webhook id so the router can deduplicate retries
-        event["event_id"] = webhook_id
+        # Dedup keys on the signed body, never the unsigned webhook id:
+        # Chargify's HMAC covers only the body, so a captured body
+        # replayed with a fresh X-Chargify-Webhook-Id must map to the
+        # SAME dedup key. Retries resend the identical body (identical
+        # hash), while distinct events differ in signed fields (embedded
+        # webhook id, transaction id, subscription state/timestamps).
+        event["content_hash"] = signed_content_hash(request)
         return event
 
     def _parse_shopify_order_ref(self, memo: str) -> str | None:

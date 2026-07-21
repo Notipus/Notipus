@@ -5,10 +5,12 @@ deduplication, timestamp handling, and error scenarios for the
 Chargify provider.
 """
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlencode
 
 import pytest
 from django.test import RequestFactory
@@ -32,6 +34,8 @@ def _mock_chargify_request(
     mock_request.content_type = "application/x-www-form-urlencoded"
     mock_request.headers = {"X-Chargify-Webhook-Id": webhook_id}
     mock_request.POST.dict.return_value = form_data
+    # Raw body bytes: the parser hashes the signed body for router dedup
+    mock_request.body = urlencode(form_data).encode()
     return mock_request
 
 
@@ -188,12 +192,7 @@ class TestChargifyWebhookParsing:
             "created_at": "2024-01-15T10:30:00Z",
         }
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         result = provider.parse_webhook(mock_request)
 
@@ -221,12 +220,7 @@ class TestChargifyWebhookParsing:
             "created_at": "2024-01-15T10:30:00Z",
         }
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         result = provider.parse_webhook(mock_request)
 
@@ -249,12 +243,7 @@ class TestChargifyWebhookParsing:
             "created_at": "2024-01-15T10:30:00Z",
         }
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         result = provider.parse_webhook(mock_request)
 
@@ -295,12 +284,7 @@ class TestChargifyWebhookParsing:
         """Test rejection when customer ID is missing"""
         form_data = {"event": "payment_success"}
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         with pytest.raises(InvalidDataError, match="Missing customer ID"):
             provider.parse_webhook(mock_request)
@@ -318,12 +302,7 @@ class TestChargifyWebhookParsing:
             "payload[subscription][customer][id]": "cust_456",
         }
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         assert provider.parse_webhook(mock_request) is None
 
@@ -332,8 +311,10 @@ class TestChargifyWebhookDeduplication:
     """Test Chargify webhook deduplication key handling.
 
     Deduplication itself happens at the router level via the event
-    consolidation service; the plugin's job is to surface a stable
-    dedup key (the webhook id) and reject webhooks without one.
+    consolidation service; the plugin's job is to surface the signed
+    body hash (``content_hash``) as the dedup key. The unsigned
+    webhook-id header is still required (Chargify contract, used for
+    logging) but never keys dedup.
     """
 
     @pytest.fixture
@@ -355,27 +336,31 @@ class TestChargifyWebhookDeduplication:
             "created_at": "2024-01-15T10:30:00Z",
         }
 
-    def test_webhook_id_surfaced_as_event_id(
+    def test_signed_body_hash_surfaced_as_content_hash(
         self, provider: ChargifySourcePlugin, form_data: dict[str, str]
     ) -> None:
-        """Test that the webhook id is surfaced for router-level dedup."""
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {"X-Chargify-Webhook-Id": "webhook_12345"}
-        mock_request.POST.dict.return_value = form_data
+        """The signed body hash is surfaced for router-level dedup.
+
+        The unsigned webhook-id header must NOT be surfaced as a dedup
+        key: an attacker replaying a captured body can mint a fresh id.
+        """
+        mock_request = _mock_chargify_request(form_data, webhook_id="webhook_12345")
 
         result = provider.parse_webhook(mock_request)
 
         assert result is not None
-        assert result["event_id"] == "webhook_12345"
+        expected = hashlib.sha256(mock_request.body).hexdigest()
+        assert result["content_hash"] == expected
+        assert "event_id" not in result
 
     def test_missing_webhook_id_rejected_in_parse(
         self, provider: ChargifySourcePlugin, form_data: dict[str, str]
     ) -> None:
         """Test that a missing X-Chargify-Webhook-Id fails validation.
 
-        Without the webhook id there is no stable dedup key, so the
-        webhook must be rejected (400) rather than bypassing dedup.
+        Every genuine Chargify delivery carries the header; its absence
+        indicates a forged or broken request and is rejected (400).
+        Dedup itself keys on the signed body hash, not this header.
         """
         mock_request = MagicMock()
         mock_request.content_type = "application/x-www-form-urlencoded"
@@ -613,12 +598,7 @@ class TestChargifyErrorHandling:
             "created_at": "2024-01-15T10:30:00Z",
         }
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         with pytest.raises(InvalidDataError, match="Invalid amount format"):
             provider.parse_webhook(mock_request)
@@ -631,12 +611,7 @@ class TestChargifyErrorHandling:
             "created_at": "2024-01-15T10:30:00Z",
         }
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         with pytest.raises(InvalidDataError, match="Missing amount"):
             provider.parse_webhook(mock_request)
@@ -671,12 +646,7 @@ class TestChargifyErrorHandling:
             "created_at": "2024-01-15T10:30:00Z",
         }
 
-        mock_request = MagicMock()
-        mock_request.content_type = "application/x-www-form-urlencoded"
-        mock_request.headers = {
-            "X-Chargify-Webhook-Id": "webhook_123",
-        }
-        mock_request.POST.dict.return_value = form_data
+        mock_request = _mock_chargify_request(form_data)
 
         # Should handle large payloads gracefully
         result = provider.parse_webhook(mock_request)
@@ -798,7 +768,7 @@ class TestChargifyEventRouting:
         assert result["metadata"]["subscription_id"] == "sub_12345"
         assert result["metadata"]["plan_name"] == "Premium Plan"
         assert result["metadata"]["chargify_event"] == chargify_event
-        assert result["event_id"] == "webhook_123"
+        assert result["content_hash"]
 
     @pytest.mark.parametrize(
         "chargify_event",
