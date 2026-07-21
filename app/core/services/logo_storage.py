@@ -8,6 +8,7 @@ import logging
 
 import requests
 from core.models import Company
+from core.utils.url_safety import is_safe_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -84,17 +85,33 @@ class LogoStorageService:
         Returns:
             Tuple of (logo_data, content_type) or (None, "") on failure.
         """
+        # Reject URLs that resolve to non-public hosts (SSRF guard).
+        if not is_safe_public_url(url):
+            logger.warning(f"Refusing to download logo from unsafe URL: {url}")
+            return None, ""
+
         try:
-            # Make request with timeout and size limit
+            # Make request with timeout and size limit. Redirects are disabled
+            # so an attacker cannot bypass the SSRF check by redirecting to an
+            # internal host after the initial validation.
             response = requests.get(
                 url,
                 timeout=REQUEST_TIMEOUT,
                 stream=True,
+                allow_redirects=False,
                 headers={
                     "User-Agent": "Notipus/1.0 (Logo Fetcher)",
                     "Accept": "image/*",
                 },
             )
+
+            # Treat any redirect as a failed download rather than following it.
+            if response.is_redirect or response.is_permanent_redirect:
+                logger.warning(
+                    f"Refusing to follow redirect while downloading logo from {url}"
+                )
+                return None, ""
+
             response.raise_for_status()
 
             # Check content type
@@ -140,6 +157,14 @@ class LogoStorageService:
             True if logo was refreshed successfully.
         """
         if not company.logo_url:
+            return False
+
+        # Reject URLs that resolve to non-public hosts (SSRF guard).
+        if not is_safe_public_url(company.logo_url):
+            logger.warning(
+                f"Refusing to refresh logo for {company.domain} from "
+                f"unsafe URL: {company.logo_url}"
+            )
             return False
 
         return self.download_and_store(company, company.logo_url)
