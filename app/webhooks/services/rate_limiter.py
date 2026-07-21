@@ -226,12 +226,12 @@ class RateLimiter:
             )
             return value, True
         except (RedisUnavailableError, InvalidCacheBackendError, Exception) as e:
-            # Log at ERROR (not WARNING/silent) so cache outages that degrade
-            # quota enforcement are visible in monitoring instead of silently
-            # disabling rate limiting.
+            # Log at ERROR (not WARNING/silent) so cache outages are visible in
+            # monitoring. This helper is generic (also used by get_usage_stats),
+            # so the message stays generic; enforcement-specific context is
+            # logged by check_rate_limit.
             logger.error(
-                "Cache GET failed for key %s; rate-limit enforcement degraded "
-                "to in-memory fallback: %s",
+                "Cache GET failed for key %s; using in-memory fallback: %s",
                 key,
                 e,
                 exc_info=True,
@@ -482,7 +482,10 @@ class RateLimiter:
 
         except Exception as e:
             logger.error(
-                f"Error checking rate limit for organization {organization.uuid}: {e!s}"
+                "Error checking rate limit for organization %s: %s",
+                organization.uuid,
+                e,
+                exc_info=True,
             )
             # Availability tradeoff (see check above): rate limiting failed
             # completely, so default to fail-open to avoid rejecting all
