@@ -1,16 +1,22 @@
-# Notipus - Webhook to Slack Notifier
+# Notipus — Enriched Slack Notifications for Payment Events
 
-A webhook-driven notification service that sends enriched payment and subscription events from Shopify and Chargify to Slack. The service provides meaningful, actionable insights for customer success teams with a fun and engaging tone.
+Notipus turns payment and subscription webhooks from **Stripe**, **Shopify**, and **Maxio (formerly Chargify)** into enriched Slack notifications. It's more than a webhook relay: every alert tells you who the customer is, what they're worth, and whether they need attention — company background, contact name and role, lifetime value, tenure, and churn-risk flags, delivered where your team actually looks.
+
+Managed service: [notipus.com](https://notipus.com) · Self-hosting: [see below](#self-hosting)
 
 ## Features
 
-- 🎯 **Smart Event Processing**: Automatically categorizes and prioritizes events based on type and customer value
-- 💡 **Rich Context**: Enriches notifications with customer history, metrics, and actionable insights
-- 🎨 **Engaging Messages**: Uses whimsical language and emojis to make notifications fun and memorable
-- 📊 **Business Metrics**: Includes relevant business metrics like lifetime value and payment history
-- 🔄 **Event Analysis**: Analyzes events to provide actionable recommendations
-- ⚡ **Multiple Payment Providers**: Supports Shopify, Chargify, and Stripe webhooks
-- 🔗 **One-Click Integrations**: OAuth-based connections for Slack and Stripe (no manual token copying)
+- ⚡ **Three payment sources**: Stripe, Shopify, and Maxio (Chargify) webhooks, with signature validation on every request
+- 🔗 **One-click setup**: OAuth-based connections for Slack, Stripe (Stripe Connect creates the webhook endpoint for you), and Shopify — no manual token copying
+- 💡 **Automatic enrichment**: company data (logo, industry, size) via Brandfetch and person data (name, job title, seniority, LinkedIn) via Hunter.io
+- 📊 **Insight detection**: VIP and at-risk flags, lifetime-value milestones ($1k–$100k), trial start/conversion, upgrade and downgrade detection, payment-retry tracking, customer anniversaries
+- 🔄 **Noise reduction**: related events are consolidated and deduplicated into a single message instead of five pings
+- 🎯 **Full event coverage**: new subscriptions, payment success/failure, refunds, cancellations and reactivations, Shopify orders and fulfillment
+- 🎨 **Engaging messages**: Slack Block Kit formatting with action buttons that deep-link back to the originating dashboard
+
+## Self-Hosting
+
+Notipus is source-available and free to self-host. The full stack (Django, PostgreSQL, Redis) runs with Docker — follow the [Installation](#installation) steps below. Prefer not to run it yourself? Use the managed service at [notipus.com](https://notipus.com).
 
 ## Tech Stack
 
