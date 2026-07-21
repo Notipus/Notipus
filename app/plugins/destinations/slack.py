@@ -309,7 +309,9 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         """
         parts = [n.headline]
         who = self._identity_display(n)
-        if who and who not in n.headline:
+        # Case-insensitive so a headline carrying "Alice@acme.com" does
+        # not get "alice@acme.com" appended again.
+        if who and who.casefold() not in n.headline.casefold():
             parts.append(who)
         if n.insight:
             parts.append(n.insight.text)

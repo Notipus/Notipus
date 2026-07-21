@@ -1113,6 +1113,15 @@ class TestSlackDestinationPluginFallbackText:
 
         assert result["text"].count("alice@acme.com") == 1
 
+    def test_fallback_text_identity_dedup_is_case_insensitive(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test dedup holds when the headline cases the email differently."""
+        basic_notification.headline = "$299.00 from Alice@Acme.com"
+        result = formatter.format(basic_notification)
+
+        assert result["text"].casefold().count("alice@acme.com") == 1
+
 
 class TestSlackDestinationPluginEcommerceDetails:
     """Test e-commerce order details formatting."""
