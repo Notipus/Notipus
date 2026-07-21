@@ -224,7 +224,11 @@ class InsightDetector:
     def _detect_first_payment(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
     ) -> InsightInfo | None:
-        """Detect if this is the customer's first payment.
+        """Detect a first payment, at the scope the payload can prove.
+
+        Stripe proves a subscription's first payment (the insight says
+        "for this subscription"); Shopify's order count proves a
+        customer's first order (the insight says "from this customer").
 
         Two truthful signals, one per provider family:
 
