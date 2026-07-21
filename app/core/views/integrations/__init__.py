@@ -28,6 +28,7 @@ from ...models import UserProfile, WorkspaceMember
 
 # Import all integration views for re-export
 from .chargify import integrate_chargify
+from .email_instructions import email_setup_instructions
 from .hunter import disconnect_hunter, integrate_hunter
 from .shopify import (
     disconnect_shopify,
@@ -56,6 +57,8 @@ logger = logging.getLogger(__name__)
 __all__ = [
     # Main page
     "integrations",
+    # Shared
+    "email_setup_instructions",
     # Slack
     "integrate_slack",
     "slack_connect",

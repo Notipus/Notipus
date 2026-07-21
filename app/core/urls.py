@@ -64,6 +64,11 @@ urlpatterns = [
     path("integrate/chargify/", views.integrate_chargify, name="integrate_chargify"),
     path("integrate/stripe/", views.integrate_stripe, name="integrate_stripe"),
     path("integrate/hunter/", views.integrate_hunter, name="integrate_hunter"),
+    path(
+        "integrate/<str:provider>/email-instructions/",
+        views.email_setup_instructions,
+        name="email_setup_instructions",
+    ),
     # Legacy API endpoints (working views)
     path("api/auth/slack/", views.slack_auth, name="slack_auth"),
     path(

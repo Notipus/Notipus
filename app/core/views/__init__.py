@@ -36,6 +36,7 @@ from .integrations import (
     disconnect_shopify,
     disconnect_slack,
     disconnect_stripe,
+    email_setup_instructions,
     get_slack_channels,
     integrate_chargify,
     integrate_hunter,
@@ -85,6 +86,7 @@ __all__ = [
     "workspace_settings",
     # Integrations
     "integrations",
+    "email_setup_instructions",
     "integrate_slack",
     "integrate_shopify",
     "integrate_chargify",

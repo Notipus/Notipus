@@ -210,6 +210,29 @@
                 </div>
             </div>
 
+            <!-- Email instructions to a colleague -->
+            <div class="mt-8 bg-white shadow-lg rounded-xl border border-gray-100 p-8">
+                <h3 class="text-lg font-semibold text-gray-900 mb-2">✉️ Not the person with Chargify access?</h3>
+                <p class="text-sm text-gray-600 mb-4">
+                    Email these instructions to the teammate who manages your Chargify/Maxio account.
+                    They'll add the webhook and send you back the secret to paste above.
+                </p>
+                <form method="post"
+                      action="{% url 'core:email_setup_instructions' 'chargify' %}"
+                      class="flex flex-col sm:flex-row gap-3">
+                    {% csrf_token %}
+                    <input type="email"
+                           name="recipient_email"
+                           required
+                           placeholder="colleague@yourcompany.com"
+                           class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 block w-full p-2.5">
+                    <button type="submit"
+                            class="inline-flex items-center justify-center px-4 py-2.5 text-sm font-medium rounded-lg text-primary-600 bg-primary-100 hover:bg-primary-200 transition-colors">
+                        Send instructions
+                    </button>
+                </form>
+            </div>
+
             <!-- Benefits -->
             <div class="mt-8 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-6 border border-blue-200">
                 <h3 class="text-lg font-semibold text-blue-900 mb-4">🎯 What you'll get with Chargify/Maxio integration:</h3>

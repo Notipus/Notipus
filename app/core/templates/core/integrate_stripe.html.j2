@@ -284,6 +284,32 @@
                     </div>
                 </div>
             </form>
+
+            <!-- Email instructions to a colleague -->
+            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
+                <h3 class="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
+                    <i class="ti ti-mail-forward text-[#635bff]"></i>
+                    Not the person with Stripe access?
+                </h3>
+                <p class="text-sm text-gray-600 mb-4">
+                    Email these instructions to the teammate who manages your Stripe account.
+                    They'll create the webhook endpoint and send you back the signing secret to paste above.
+                </p>
+                <form method="post"
+                      action="{% url 'core:email_setup_instructions' 'stripe' %}"
+                      class="flex flex-col sm:flex-row gap-3">
+                    {% csrf_token %}
+                    <input type="email"
+                           name="recipient_email"
+                           required
+                           placeholder="colleague@yourcompany.com"
+                           class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-[#635bff] focus:border-[#635bff] block w-full p-2.5">
+                    <button type="submit"
+                            class="inline-flex items-center justify-center px-4 py-2.5 text-sm font-medium rounded-lg text-[#635bff] bg-[#635bff]/10 hover:bg-[#635bff]/20 transition-colors">
+                        <i class="ti ti-send mr-2"></i> Send instructions
+                    </button>
+                </form>
+            </div>
         </div>
     </div>
 
