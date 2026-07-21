@@ -96,8 +96,11 @@ class StripeAPI:
                      settings.STRIPE_SECRET_KEY (for Notipus billing).
         """
         self.api_key = api_key or settings.STRIPE_SECRET_KEY
-        # Configure Stripe with the secret key and API version
-        stripe.api_key = self.api_key
+        # The key is passed per SDK call (api_key=self.api_key), never
+        # assigned to the module-global stripe.api_key: a global would
+        # leak this instance's key into concurrent requests using a
+        # different one. The API version is safe to set globally — it is
+        # identical for every caller.
         stripe.api_version = settings.STRIPE_API_VERSION
 
     def get_account_info(self) -> dict[str, Any] | None:
@@ -107,7 +110,6 @@ class StripeAPI:
             Dict with account info if successful, None if API key is invalid.
         """
         try:
-            # Temporarily set the API key for this request
             # Retrieve the connected account info
             account = stripe.Account.retrieve(api_key=self.api_key)
             return {
@@ -171,12 +173,13 @@ class StripeAPI:
             Created customer data dictionary, or None on failure.
         """
         try:
-            # Configure Stripe API key and version for this operation
-            stripe.api_key = settings.STRIPE_SECRET_KEY
             stripe.api_version = settings.STRIPE_API_VERSION
 
-            # Use Stripe SDK to create customer
-            customer = stripe.Customer.create(**customer_data)
+            # Use Stripe SDK to create customer; key passed per call, not
+            # via the module-global (see __init__).
+            customer = stripe.Customer.create(
+                api_key=settings.STRIPE_SECRET_KEY, **customer_data
+            )
             return customer.to_dict()
         except stripe.StripeError as e:
             logger.error(f"Stripe error creating customer: {e!s}")

@@ -91,6 +91,36 @@ def get_notification_settings(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Internal server error"}, status=500)
 
 
+def _validate_settings_payload(data: Any) -> JsonResponse | None:
+    """Validate an update payload before anything is applied.
+
+    Args:
+        data: Decoded JSON body of the update request.
+
+    Returns:
+        A 400 JsonResponse describing the first problem, or None when the
+        payload is a well-formed object of known boolean fields.
+    """
+    # Valid JSON that isn't an object (list/number/string) must be a
+    # 400, not an AttributeError-turned-500 at data.items().
+    if not isinstance(data, dict):
+        return JsonResponse({"error": "Request body must be a JSON object"}, status=400)
+
+    for field, value in data.items():
+        if field not in ALLOWED_NOTIFICATION_FIELDS:
+            return JsonResponse(
+                {"error": f"Field '{field}' is not allowed to be updated"},
+                status=400,
+            )
+        if not isinstance(value, bool):
+            return JsonResponse(
+                {"error": f"Field '{field}' must be a boolean value"},
+                status=400,
+            )
+
+    return None
+
+
 @login_required
 def update_notification_settings(request: HttpRequest) -> JsonResponse:
     """Update notification settings for the user's workspace.
@@ -111,20 +141,10 @@ def update_notification_settings(request: HttpRequest) -> JsonResponse:
     try:
         workspace = _get_user_workspace(request)
 
-        data: dict[str, Any] = json.loads(request.body)
-
-        # Validate everything before touching the model
-        for field, value in data.items():
-            if field not in ALLOWED_NOTIFICATION_FIELDS:
-                return JsonResponse(
-                    {"error": f"Field '{field}' is not allowed to be updated"},
-                    status=400,
-                )
-            if not isinstance(value, bool):
-                return JsonResponse(
-                    {"error": f"Field '{field}' must be a boolean value"},
-                    status=400,
-                )
+        data: Any = json.loads(request.body)
+        error_response = _validate_settings_payload(data)
+        if error_response is not None:
+            return error_response
 
         settings_obj, _created = NotificationSettings.objects.get_or_create(
             workspace=workspace

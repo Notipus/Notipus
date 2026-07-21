@@ -219,6 +219,21 @@ class NotificationSettingsViewsTest(TestCase):
         data = json.loads(response.content)
         self.assertEqual(data["error"], "Invalid JSON data")
 
+    def test_update_notification_settings_non_object_json(self):
+        """Valid JSON that isn't an object must be a 400, not a 500"""
+        self.client.force_login(self.user)
+
+        for payload in (json.dumps([1, 2]), json.dumps("text"), json.dumps(42)):
+            response = self.client.post(
+                reverse("core:update_notification_settings"),
+                data=payload,
+                content_type="application/json",
+            )
+
+            self.assertEqual(response.status_code, 400)
+            data = json.loads(response.content)
+            self.assertEqual(data["error"], "Request body must be a JSON object")
+
     def test_update_notification_settings_wrong_method(self):
         """Test update with wrong HTTP method"""
         self.client.force_login(self.user)
