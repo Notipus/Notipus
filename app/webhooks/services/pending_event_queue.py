@@ -498,7 +498,12 @@ class PendingEventQueue:
             cache.delete(key)
             return []
         try:
-            current = decrypt_cache_value(cache.get(key)) or []
+            current = self._read_pending_items(key)
+            if current is None:
+                # The list turned undecryptable mid-send (key rotation in
+                # exactly that window); _read_pending_items already purged
+                # it and logged at error level.
+                return []
             remainder = list(current)
             for item in processed_items:
                 try:
