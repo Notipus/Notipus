@@ -271,8 +271,9 @@ def test_subscription_created_event() -> None:
     notification = processor.build_rich_notification(event_data, customer_data)
     assert isinstance(notification, RichNotification)
     assert notification.type == NotificationType.SUBSCRIPTION_CREATED
-    # Headlines are now event-focused
-    assert "New customer" in notification.headline
+    # Headlines claim only what the webhook proves: a new subscription,
+    # not necessarily a new customer.
+    assert "New subscription" in notification.headline
 
 
 def test_subscription_canceled_event() -> None:

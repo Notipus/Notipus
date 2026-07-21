@@ -260,6 +260,73 @@ class TestPendingEventQueueAggregation:
         assert event["currency"] == "USD"
         assert event["external_id"] == "in_second"
 
+    def test_aggregate_preserves_billing_reason_from_losing_invoice(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test the losing invoice's billing_reason survives aggregation.
+
+        subscription.created wins the type contest over invoice.paid, but
+        the invoice's billing_reason ("subscription_create") is Stripe's
+        only truthful first-payment signal - it must be folded into the
+        winner's metadata for InsightDetector.
+        """
+        stored_items = [
+            {
+                "event_data": {
+                    "type": "subscription_created",
+                    "customer_id": "cus_123",
+                    "amount": 99.00,
+                    "metadata": {"plan_name": "Pro"},
+                },
+                "customer_data": {"email": ""},
+            },
+            {
+                "event_data": {
+                    "type": "payment_success",
+                    "customer_id": "cus_123",
+                    "amount": 99.00,
+                    "metadata": {"billing_reason": "subscription_create"},
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["type"] == "subscription_created"
+        assert event["metadata"]["billing_reason"] == "subscription_create"
+        assert event["metadata"]["plan_name"] == "Pro"
+
+    def test_aggregate_keeps_winning_invoice_billing_reason(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Test a winning invoice's own billing_reason is not overwritten."""
+        stored_items = [
+            {
+                "event_data": {
+                    "type": "payment_success",
+                    "customer_id": "cus_123",
+                    "amount": 49.00,
+                    "metadata": {"billing_reason": "subscription_cycle"},
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+            {
+                "event_data": {
+                    "type": "invoice_paid",
+                    "customer_id": "cus_123",
+                    "amount": 49.00,
+                    "metadata": {"billing_reason": "subscription_create"},
+                },
+                "customer_data": {"email": "test@example.com"},
+            },
+        ]
+
+        event, customer = queue._aggregate_events(stored_items)
+
+        assert event["type"] == "payment_success"
+        assert event["metadata"]["billing_reason"] == "subscription_cycle"
+
     def test_aggregate_surfaces_payment_failure_with_subscription_created(
         self, queue: PendingEventQueue
     ) -> None:

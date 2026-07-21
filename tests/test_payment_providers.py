@@ -4,11 +4,13 @@ This module tests Chargify, Shopify, and Stripe webhook handling
 including signature validation, data parsing, and deduplication.
 """
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
+from urllib.parse import urlencode
 
 import pytest
 from plugins.sources.base import BaseSourcePlugin, InvalidDataError
@@ -66,6 +68,7 @@ def test_chargify_payment_failure_parsing() -> None:
         "payload[transaction][failure_message]": "Card was declined",
         "created_at": "2024-03-15T10:00:00Z",
     }
+    mock_request.body = urlencode(mock_request.POST.dict.return_value).encode()
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
@@ -154,6 +157,7 @@ def test_shopify_order_parsing() -> None:
     mock_request.get_json.return_value = shopify_data
     # Ensure request.data is JSON in byte format
     mock_request.data = json.dumps(shopify_data).encode("utf-8")
+    mock_request.body = mock_request.data
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
@@ -359,6 +363,7 @@ def test_chargify_subscription_state_change() -> None:
         "payload[subscription][total_revenue_in_cents]": "299900",
         "created_at": "2024-03-15T10:00:00Z",
     }
+    mock_request.body = urlencode(mock_request.POST.dict.return_value).encode()
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
@@ -424,6 +429,7 @@ def test_shopify_customer_data_update() -> None:
     }
     mock_request.get_json.return_value = mock_data
     mock_request.data = json.dumps(mock_data).encode("utf-8")
+    mock_request.body = mock_request.data
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
@@ -435,9 +441,11 @@ def test_shopify_customer_data_update() -> None:
 def test_chargify_webhook_deduplication() -> None:
     """Verify Chargify webhook dedup key handling.
 
-    The plugin surfaces the webhook id as ``event_id`` so the router can
-    deduplicate via the event consolidation service, and rejects webhooks
-    without an id (no stable dedup key).
+    The plugin surfaces the SHA-256 of the signed request body as
+    ``content_hash`` so the router can deduplicate via the event
+    consolidation service. The unsigned webhook-id header must not
+    influence the key (a replayed body with a minted id dedupes to the
+    same key), but its absence is still rejected (Chargify contract).
     """
     provider = ChargifySourcePlugin("")
 
@@ -462,18 +470,21 @@ def test_chargify_webhook_deduplication() -> None:
         "created_at": "2024-03-15T10:00:00Z",
     }
     mock_request.POST.dict.return_value = form_data
-    # Event parses and surfaces the webhook id as the dedup key
+    mock_request.body = urlencode(form_data).encode()
+    # Event parses and surfaces the signed body hash as the dedup key
     event1 = provider.parse_webhook(mock_request)
     assert event1 is not None
     assert event1["type"] == "payment_success"
     assert event1["customer_id"] == "cust_123"
-    assert event1["event_id"] == "test_webhook_1"
+    assert event1["content_hash"] == hashlib.sha256(mock_request.body).hexdigest()
+    assert "event_id" not in event1
 
-    # A different webhook ID produces a different dedup key
+    # A different (attacker-minted) webhook ID header does NOT change
+    # the dedup key: the body is identical, so the hash is identical
     mock_request.headers["X-Chargify-Webhook-Id"] = "different_webhook_id"
     event2 = provider.parse_webhook(mock_request)
     assert event2 is not None
-    assert event2["event_id"] == "different_webhook_id"
+    assert event2["content_hash"] == event1["content_hash"]
 
     # Missing webhook ID must not bypass dedup - it is a validation error
     mock_request.headers = {}
@@ -607,6 +618,7 @@ def test_chargify_payment_success_with_shopify_ref() -> None:
         ),
         "created_at": "2024-03-15T10:00:00Z",
     }
+    mock_request.body = urlencode(mock_request.POST.dict.return_value).encode()
 
     event = provider.parse_webhook(mock_request)
     assert event is not None

@@ -2,6 +2,57 @@
 
 This module analyzes payment events and customer data to detect significant
 milestones and generate contextual insights for notifications.
+
+SIGNAL AVAILABILITY CONTRACT
+============================
+
+We only ever see webhook payloads - there is no provider API access. Every
+detector must therefore be built on a signal the provider ACTUALLY sends,
+and must stay silent (return None) when that signal is absent. The two
+failure modes this prevents are both silent in production:
+
+* False positive: defaulting a missing field (e.g. treating unknown order
+  history as 0 labeled every Stripe renewal a "first payment").
+* Dead feature: requiring a field the provider never sends (e.g. keying
+  first-payment solely off Shopify's orders_count made the insight
+  unreachable for Stripe, which never sends order history).
+
+Per-provider signal sources (update this table when adding a detector):
+
+======================  ======================  ==================  ==========
+Signal                  Stripe                  Chargify            Shopify
+======================  ======================  ==================  ==========
+first payment           metadata.billing_reason (none - silent)     orders_count
+                        == "subscription_create"
+lifetime spend (LTV,    (none - silent)         total_spent from    total_spent
+VIP, at-risk)                                   total_revenue_      (see note)
+                                                in_cents (see note)
+customer created_at     (none - anniversary     customer.           customer.
+(anniversary, tenure)   silent)                 created_at          created_at
+trial metadata          parser-derived          (none)              n/a
+failure attempt count   attempt_count/          failure_reason      n/a
+                        next_payment_attempt    only
+customer email          invoices only; cached   customer.email      customer.
+                        (encrypted) for                             email
+                        subscription events
+======================  ======================  ==================  ==========
+
+Note on lifetime-spend semantics (issue #110): neither Shopify nor
+Chargify documents whether the lifetime-spend snapshot embedded in a
+payment webhook already includes the payment being reported, and
+Shopify's customer aggregates are known to update asynchronously (the
+snapshot can lag the triggering order; the fields were removed from
+webhook payloads entirely in API 2025-01). The LTV-milestone detector
+therefore uses the conservative post-payment reading - the reported
+total is treated as the NEW lifetime value, a proven floor under every
+scenario - so a milestone can fire late but never early or falsely.
+See _detect_ltv_milestone for the full reasoning.
+
+Note on aggregation: the pending event queue keeps only the winning event's
+metadata. If a detector needs a field from a lower-priority event in the
+same idempotency bucket (e.g. the invoice's billing_reason when
+subscription_created wins), that field must be explicitly merged in
+PendingEventQueue._aggregate_events or it is silently discarded.
 """
 
 import calendar
@@ -184,12 +235,22 @@ class InsightDetector:
     def _detect_first_payment(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
     ) -> InsightInfo | None:
-        """Detect if this is the customer's first payment.
+        """Detect a first payment, at the scope the payload can prove.
 
-        Requires the provider to have sent an order count (Shopify embeds
-        it in order webhooks). Absence of history data is NOT evidence of
-        a first payment - Stripe/Chargify payloads carry no history, and
-        defaulting to 0 would label every renewal a "first payment".
+        Stripe proves a subscription's first payment (the insight says
+        "for this subscription"); Shopify's order count proves a
+        customer's first order (the insight says "from this customer").
+
+        Two truthful signals, one per provider family:
+
+        - Stripe: the invoice's ``billing_reason`` is "subscription_create"
+          only on a subscription's first invoice (renewals are
+          "subscription_cycle", plan changes "subscription_update").
+        - Shopify: the customer object's order count.
+
+        Absence of BOTH signals is NOT evidence of a first payment -
+        Chargify payloads carry neither, and defaulting to 0 would label
+        every renewal a "first payment".
 
         Args:
             event_data: Event data dictionary.
@@ -200,13 +261,33 @@ class InsightDetector:
         """
         event_type = event_data.get("type", "")
         # Note: trial_started is excluded - no payment has occurred yet
-        if event_type not in ("payment_success", "subscription_created"):
+        if event_type not in (
+            "payment_success",
+            "invoice_paid",
+            "subscription_created",
+        ):
             return None
 
         # Don't show "first payment" for trials - they haven't paid yet
-        metadata = event_data.get("metadata", {})
+        metadata = event_data.get("metadata") or {}
         if metadata.get("is_trial"):
             return None
+
+        # Stripe: first invoice of a new subscription. Require a positive
+        # amount so the $0 invoice Stripe issues when a trial starts (also
+        # billing_reason "subscription_create") never counts as a payment.
+        # Wording is subscription-scoped, not customer-scoped: the webhook
+        # proves this subscription's first payment, but an existing customer
+        # adding a second subscription looks identical - we never claim
+        # more than the payload can prove.
+        if (
+            metadata.get("billing_reason") == "subscription_create"
+            and _to_float(event_data.get("amount")) > 0
+        ):
+            return InsightInfo(
+                icon=self.ICONS["first_payment"],
+                text="First payment for this subscription",
+            )
 
         orders_count = customer_data.get("orders_count")
         if orders_count is None:
@@ -366,6 +447,32 @@ class InsightDetector:
         treated as $0 - a single large payment would falsely "cross"
         every milestone below its amount.
 
+        Semantics of the reported total (issue #110): neither Shopify
+        nor Chargify documents whether the lifetime-spend snapshot in a
+        payment webhook already includes the payment being reported.
+        For Shopify it is known to be updated ASYNCHRONOUSLY - the
+        customer aggregates can lag the order that triggered the
+        webhook (Shopify's own Flow troubleshooting doc says
+        orders_count/total_spent/last_order_id "will be invalid" for a
+        customer who just ordered until the record refreshes, and the
+        fields were removed from webhook payloads entirely in API
+        2025-01). So the snapshot may be pre-payment, post-payment, or
+        stale, and we must never guess.
+
+        The only reading that can never celebrate EARLY is to treat the
+        reported total as the post-payment ceiling: fire a milestone
+        only when the reported total itself proves it was reached
+        (milestone <= reported) and this payment's window plausibly
+        crossed it (milestone > reported - amount). The reported total
+        is a floor on true lifetime spend under every scenario
+        (post-payment: exact; pre-payment or stale: undercount), so a
+        fired milestone is always genuinely reached. If the snapshot
+        turns out to be pre-payment, the celebration arrives one
+        payment late - per product rule, a delayed celebration beats a
+        false one. Note the strict "crossed under both interpretations"
+        test is the empty set (pre window (r, r+a] and post window
+        (r-a, r] never overlap), so this is the conservative rule.
+
         Args:
             event_data: Event data dictionary.
             customer_data: Customer data dictionary.
@@ -377,12 +484,16 @@ class InsightDetector:
         if event_type != "payment_success":
             return None
 
-        previous_ltv = _get_ltv(customer_data)
-        if previous_ltv is None:
+        reported_total = _get_ltv(customer_data)
+        if reported_total is None:
             return None
 
         current_amount = _to_float(event_data.get("amount"))
-        new_ltv = previous_ltv + current_amount
+        # Post-payment (conservative) reading: the reported total is the
+        # new LTV; the pre-payment LTV is at least reported - amount,
+        # clamped at 0 (a stale snapshot can be smaller than the payment).
+        new_ltv = reported_total
+        previous_ltv = max(reported_total - current_amount, 0.0)
 
         # Celebrate the LARGEST milestone crossed by this payment (a big
         # payment can cross several at once - one Slack message per event).

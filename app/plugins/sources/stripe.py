@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 import stripe
-from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
+from core.encryption import InvalidToken, decrypt, encrypt, looks_like_token
 from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpRequest
@@ -24,9 +24,17 @@ from webhooks.utils.currency import from_minor_units
 
 logger = logging.getLogger(__name__)
 
-# Cache key prefix and TTL for customer email lookup
+# Cache key prefix and TTL for customer email lookup.
+#
+# The TTL must span the longest gap between an email-carrying event (an
+# invoice) and an email-less subscription event that needs the lookup.
+# customer.subscription.trial_will_end fires ~3 days before a trial ends -
+# up to a month after the $0 trial-creation invoice cached the email. The
+# old 1-hour TTL guaranteed those notifications rendered with no customer
+# identity at all ("Trial ending soon / Stripe"). 45 days covers 30-day
+# trials with headroom; every later invoice refreshes the entry.
 CUSTOMER_EMAIL_CACHE_PREFIX = "stripe_customer_email:"
-CUSTOMER_EMAIL_CACHE_TTL = 3600  # 1 hour
+CUSTOMER_EMAIL_CACHE_TTL = 45 * 24 * 60 * 60  # 45 days
 
 # Maximum allowed gap between a subscription's trial_end and the invoice's
 # period_start for the invoice to count as the first post-trial invoice.
@@ -1324,6 +1332,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         We cache the email from invoice events so subscription events can
         look it up by customer ID.
 
+        The value is encrypted at rest: customer emails are PII and the
+        long TTL keeps them in Redis for weeks (Slack compliance requires
+        customer PII encrypted at rest in both Postgres and Redis).
+
         Args:
             customer_id: Stripe customer ID (e.g., cus_xxx).
             email: Customer email address.
@@ -1332,12 +1344,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return
         try:
             cache_key = f"{CUSTOMER_EMAIL_CACHE_PREFIX}{customer_id}"
-            # Customer emails are PII and must be encrypted at rest in Redis.
-            cache.set(
-                cache_key,
-                encrypt_cache_value(email),
-                timeout=CUSTOMER_EMAIL_CACHE_TTL,
-            )
+            cache.set(cache_key, encrypt(email), timeout=CUSTOMER_EMAIL_CACHE_TTL)
             logger.debug(f"Cached customer email for {customer_id}")
         except Exception as e:
             # Don't fail webhook processing if caching fails
@@ -1345,6 +1352,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
     def _get_cached_customer_email(self, customer_id: str) -> str:
         """Retrieve cached customer email by customer ID.
+
+        Tolerates legacy plaintext entries written before encryption was
+        introduced; an encrypted entry that no configured key can decrypt
+        is treated as a cache miss rather than surfacing ciphertext.
 
         Args:
             customer_id: Stripe customer ID (e.g., cus_xxx).
@@ -1356,10 +1367,24 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return ""
         try:
             cache_key = f"{CUSTOMER_EMAIL_CACHE_PREFIX}{customer_id}"
-            email = decrypt_cache_value(cache.get(cache_key))
-            if email:
+            cached = cache.get(cache_key)
+            if cached:
+                email = str(cached)
+                if looks_like_token(email):
+                    try:
+                        email = decrypt(email)
+                    except InvalidToken:
+                        # Evict the entry: it can never decrypt again, and
+                        # leaving it would repeat this warning (and a doomed
+                        # decrypt attempt) on every lookup until TTL expiry.
+                        cache.delete(cache_key)
+                        logger.warning(
+                            f"Cached email for {customer_id} could not be "
+                            "decrypted; evicted and treated as cache miss"
+                        )
+                        return ""
                 logger.debug(f"Found cached email for {customer_id}")
-                return str(email)
+                return email
         except Exception as e:
             logger.warning(f"Failed to get cached customer email: {e}")
         return ""

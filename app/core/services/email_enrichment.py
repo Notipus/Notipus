@@ -41,6 +41,10 @@ class EmailEnrichmentService:
     Uses Hunter.io to retrieve person information based on email addresses.
     Results are cached in the Person model to avoid redundant API calls.
 
+    The cache is scoped per workspace: enrichment data is fetched under a
+    workspace's own Hunter.io contract and contains personal data, so one
+    workspace's cached Person rows are never served to another workspace.
+
     Requirements:
     - Workspace must be on Pro or Enterprise plan
     - Workspace must have Hunter.io integration configured with API key
@@ -96,8 +100,8 @@ class EmailEnrichmentService:
             return None
 
         try:
-            # Check for cached data
-            person = Person.objects.filter(email=email).first()
+            # Check for cached data (scoped to this workspace only)
+            person = Person.objects.filter(workspace=workspace, email=email).first()
             if person and self._is_fresh(person):
                 logger.debug(f"Using cached person data for {email}")
                 return person
@@ -107,7 +111,7 @@ class EmailEnrichmentService:
 
             if data:
                 # Store/update Person record
-                person = self._update_person(email, data)
+                person = self._update_person(workspace, email, data)
                 logger.info(f"Enriched email {email} from Hunter.io")
                 return person
             else:
@@ -193,10 +197,13 @@ class EmailEnrichmentService:
         """
         return cast("dict[str, Any]", self._hunter_plugin.enrich_email(email, api_key))
 
-    def _update_person(self, email: str, data: dict[str, Any]) -> Person:
-        """Update or create a Person record with enrichment data.
+    def _update_person(
+        self, workspace: "Workspace", email: str, data: dict[str, Any]
+    ) -> Person:
+        """Update or create a workspace-scoped Person record with enrichment data.
 
         Args:
+            workspace: The workspace that owns the cached enrichment data.
             email: The email address.
             data: Normalized data from Hunter.io.
 
@@ -208,6 +215,7 @@ class EmailEnrichmentService:
         raw_data["_enriched_at"] = datetime.now(timezone.utc).isoformat()
 
         person, created = Person.objects.update_or_create(
+            workspace=workspace,
             email=email,
             defaults={
                 "first_name": data.get("first_name", ""),
@@ -245,8 +253,8 @@ class EmailEnrichmentService:
         email = email.lower().strip()
 
         try:
-            # Clear existing enrichment data
-            person = Person.objects.filter(email=email).first()
+            # Clear existing enrichment data (for this workspace only)
+            person = Person.objects.filter(workspace=workspace, email=email).first()
             if person:
                 person.hunter_data = {}
                 person.save(update_fields=["hunter_data", "updated_at"])
@@ -258,20 +266,21 @@ class EmailEnrichmentService:
             logger.error(f"Error refreshing enrichment for {email}: {e!s}")
             return None
 
-    def get_cached_person(self, email: str) -> Person | None:
+    def get_cached_person(self, email: str, workspace: "Workspace") -> Person | None:
         """Get cached person data without calling the API.
 
         Args:
             email: The email address to look up.
+            workspace: The workspace whose cache to consult.
 
         Returns:
-            Person instance if cached, None otherwise.
+            Person instance if cached for this workspace, None otherwise.
         """
         if not email:
             return None
 
         email = email.lower().strip()
-        return Person.objects.filter(email=email).first()
+        return Person.objects.filter(workspace=workspace, email=email).first()
 
     def is_enrichment_available(self, workspace: "Workspace") -> bool:
         """Check if email enrichment is available for a workspace.

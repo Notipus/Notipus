@@ -71,7 +71,7 @@ def decrypt_cache_value(stored: Any, *, log_failures: bool = True) -> Any:
         return None
     if isinstance(stored, str) and looks_like_token(stored):
         try:
-            return json.loads(decrypt(stored))
+            plaintext = decrypt(stored)
         except InvalidToken:
             if log_failures:
                 logger.warning(
@@ -79,4 +79,11 @@ def decrypt_cache_value(stored: Any, *, log_failures: bool = True) -> Any:
                     "key; treating as a cache miss"
                 )
             return None
+        try:
+            return json.loads(plaintext)
+        except ValueError:
+            # A token written with core.encryption.encrypt() directly
+            # (no JSON layer, e.g. the Stripe email cache) - the
+            # decrypted plaintext IS the value.
+            return plaintext
     return stored

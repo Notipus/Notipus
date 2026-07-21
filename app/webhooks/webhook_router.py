@@ -245,12 +245,27 @@ def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
 def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     """Build the deduplication key for a parsed webhook event.
 
-    Prefers the provider's unique event id (e.g. Stripe's ``evt_...`` or
-    Chargify's webhook id). Falls back to a composite of event type and
-    object id so distinct events for the same object (e.g.
-    subscription.created and subscription.updated for one subscription)
-    don't collide.
+    Prefers ``content_hash``: the SHA-256 of the raw, HMAC-signed request
+    body, set by source plugins whose provider event id only travels in
+    an unsigned header (Chargify, Shopify). Keying on signed content
+    means a legitimate provider retry (identical body) dedupes to the
+    same key, while a captured body replayed with a freshly minted
+    ``X-*-Webhook-Id`` header cannot mint a new key. The hash is
+    namespaced by provider so equal bodies from different providers
+    cannot collide within a workspace (the consolidation service already
+    scopes keys per workspace); events missing a ``provider`` field fall
+    back to the "unknown" namespace so the key is never un-namespaced.
+
+    Falls back to ``event_id`` for providers whose unique event id is
+    inside the signed payload (Stripe's ``evt_...``), then to a
+    composite of event type and object id so distinct events for the
+    same object (e.g. subscription.created and subscription.updated for
+    one subscription) don't collide.
     """
+    content_hash = event_data.get("content_hash")
+    if content_hash:
+        provider = event_data.get("provider") or "unknown"
+        return f"{provider}:sha256:{content_hash}"
     event_id = event_data.get("event_id")
     if event_id:
         return str(event_id)

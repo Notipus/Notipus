@@ -76,6 +76,18 @@ class TestDecryptCacheValue:
         bogus = TOKEN_PREFIX + "A" * 64
         assert decrypt_cache_value(bogus) is None
 
+    def test_raw_encrypt_token_returns_plaintext(self) -> None:
+        """A token from core.encryption.encrypt (no JSON layer) still reads.
+
+        The Stripe email cache (PR #125) encrypts the raw string without
+        JSON-serializing; reading such a token through this helper must
+        return the plaintext, not raise JSONDecodeError.
+        """
+        from core.encryption import encrypt
+
+        token = encrypt("plain@example.com")
+        assert decrypt_cache_value(token) == "plain@example.com"
+
     def test_log_failures_false_suppresses_warning(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

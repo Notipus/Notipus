@@ -690,6 +690,7 @@ class PendingEventQueue:
                     result_customer[field] = customer_data[field]
 
         self._merge_payment_failure(result_event, stored_items)
+        self._merge_paid_invoice_metadata(result_event, stored_items)
 
         logger.info(
             f"Aggregated {len(stored_items)} events: type={result_event.get('type')}, "
@@ -751,6 +752,43 @@ class PendingEventQueue:
             f"Merged payment_failure into {result_event.get('type')} notification "
             f"(reason: {failure_metadata.get('failure_reason', 'unknown')})"
         )
+
+    def _merge_paid_invoice_metadata(
+        self,
+        result_event: dict[str, Any],
+        stored_items: list[dict[str, Any]],
+    ) -> None:
+        """Fold a losing paid invoice's billing_reason into the winner.
+
+        When subscription.created and invoice.paid share an idempotency
+        bucket, the subscription event wins the type contest and its
+        metadata carries no billing_reason. That field is the only
+        truthful first-payment signal Stripe gives us ("subscription_create"
+        appears solely on a subscription's first invoice), so preserve it
+        for InsightDetector instead of discarding it with the loser.
+
+        Args:
+            result_event: Aggregated event data (mutated).
+            stored_items: Original list of stored items.
+        """
+        metadata = result_event.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            result_event["metadata"] = metadata
+        if metadata.get("billing_reason"):
+            return  # The winner was itself an invoice event
+
+        for item in stored_items:
+            event_data = item["event_data"]
+            if event_data.get("type") not in ("payment_success", "invoice_paid"):
+                continue
+            item_metadata = event_data.get("metadata")
+            if not isinstance(item_metadata, dict):
+                continue
+            billing_reason = item_metadata.get("billing_reason")
+            if billing_reason:
+                metadata["billing_reason"] = billing_reason
+                return
 
     def _warn_if_missing_email(
         self,

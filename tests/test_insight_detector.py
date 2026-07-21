@@ -201,7 +201,8 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 200.00}
         customer = {
             "orders_count": 5,
-            "total_spent": 900.00,  # Will cross $1000 with this payment
+            # Reported total is read as post-payment: $900 -> $1,100
+            "total_spent": 1100.00,
             "payment_history": [{"status": "success", "amount": 300}] * 3,
         }
 
@@ -216,7 +217,8 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 500.00}
         customer = {
             "orders_count": 20,
-            "total_spent": 4800.00,  # Will cross $5000 with this payment
+            # Reported total is read as post-payment: $4,700 -> $5,200
+            "total_spent": 5200.00,
             "payment_history": [{"status": "success", "amount": 300}] * 5,
         }
 
@@ -246,7 +248,8 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 100.00}
         customer = {
             "orders_count": 3,
-            "total_spent": 450.00,  # Will cross $500 with this payment
+            # Reported total is read as post-payment: $420 -> $520
+            "total_spent": 520.00,
             "payment_history": [{"status": "success", "amount": 150}] * 3,
         }
 
@@ -272,7 +275,7 @@ class TestLTVMilestoneDetection:
     def test_milestone_uses_event_currency(self, detector: InsightDetector) -> None:
         """Test that milestone text uses the payment's currency, not $."""
         event = {"type": "payment_success", "amount": 200.00, "currency": "EUR"}
-        customer = {"orders_count": 5, "total_spent": 900.00}
+        customer = {"orders_count": 5, "total_spent": 1100.00}
 
         result = detector._detect_ltv_milestone(event, customer)
 
@@ -288,7 +291,8 @@ class TestLargestLTVMilestone:
         event = {"type": "payment_success", "amount": 60000.00}
         customer = {
             "orders_count": 10,
-            "total_spent": 500.00,
+            # Reported total is read as post-payment: $500 -> $60,500
+            "total_spent": 60500.00,
             "payment_history": [{"status": "success", "amount": 250}] * 2,
         }
 
@@ -305,7 +309,8 @@ class TestLargestLTVMilestone:
         event = {"type": "payment_success", "amount": 200.00}
         customer = {
             "orders_count": 10,
-            "total_spent": 4900.00,  # Crosses only $5,000
+            # Reported total is read as post-payment: crosses only $5,000
+            "total_spent": 5100.00,
             "payment_history": [{"status": "success", "amount": 200}] * 2,
         }
 
@@ -313,6 +318,137 @@ class TestLargestLTVMilestone:
 
         assert result is not None
         assert "5,000" in result.text
+
+
+class TestLTVMilestoneConservativeSemantics:
+    """Regression tests for the conservative total_spent reading (issue #110).
+
+    Neither Shopify nor Chargify documents whether the lifetime-spend
+    snapshot in a payment webhook includes the payment being reported,
+    and Shopify's aggregates update asynchronously. The detector must
+    therefore treat the reported total as the post-payment ceiling: a
+    milestone fires only when reported - amount < milestone <= reported.
+    A celebration may arrive late but can never be early or false.
+    """
+
+    def test_milestone_fires_when_reported_total_proves_it(
+        self, detector: InsightDetector
+    ) -> None:
+        """A reported total at/above the milestone within the payment window fires.
+
+        Reported $1,000 with a $200 payment: window ($800, $1,000] contains
+        the $1,000 milestone, and the customer provably reached $1,000.
+        """
+        event = {"type": "payment_success", "amount": 200.00}
+        customer = {"orders_count": 5, "total_spent": 1000.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is not None
+        assert "1,000" in result.text
+
+    def test_no_early_celebration_when_total_below_milestone(
+        self, detector: InsightDetector
+    ) -> None:
+        """A reported total below the milestone must never fire it.
+
+        Under the old pre-payment math, reported $900 + $200 payment
+        claimed "Crossed $1,000 lifetime!". If $900 was already the
+        post-payment total, that celebration was one payment early. The
+        conservative reading stays silent until the provider's own
+        number proves the milestone.
+        """
+        event = {"type": "payment_success", "amount": 200.00}
+        customer = {"orders_count": 5, "total_spent": 900.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_stale_zero_snapshot_stays_silent(self, detector: InsightDetector) -> None:
+        """A stale $0 snapshot with a large payment must not fire milestones.
+
+        Shopify's customer aggregates can lag the triggering order, so
+        total_spent "0.00" plus a $1,500 payment proves nothing about
+        lifetime spend having crossed $1,000 - the old math would have
+        celebrated it.
+        """
+        event = {"type": "payment_success", "amount": 1500.00}
+        customer = {"orders_count": 3, "total_spent": "0.00"}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_negative_previous_ltv_clamped_to_zero(
+        self, detector: InsightDetector
+    ) -> None:
+        """A payment larger than the reported total clamps previous LTV to 0.
+
+        Reported $1,200 with a $1,500 payment: reported - amount is
+        negative, so the window becomes ($0, $1,200] and the $1,000
+        milestone (proven by the reported total) still fires.
+        """
+        event = {"type": "payment_success", "amount": 1500.00}
+        customer = {"orders_count": 4, "total_spent": 1200.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is not None
+        assert "1,000" in result.text
+
+    def test_zero_amount_payment_never_fires(self, detector: InsightDetector) -> None:
+        """A zero-amount event yields an empty window and stays silent.
+
+        With amount 0 the window (reported, reported] is empty even when
+        the reported total sits exactly on a milestone - nothing was
+        crossed BY this payment.
+        """
+        event = {"type": "payment_success", "amount": 0}
+        customer = {"orders_count": 9, "total_spent": 5000.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_chargify_lifetime_value_same_conservative_reading(
+        self, detector: InsightDetector
+    ) -> None:
+        """Chargify-style totals get the same conservative semantics.
+
+        Chargify's total_revenue_in_cents ("total payments since
+        signup") is equally undocumented on whether it includes the
+        payment that triggered the webhook, so the post-payment reading
+        applies: $950 reported + $100 payment does not fire $1,000, but
+        a reported $1,000 does.
+        """
+        event = {"type": "payment_success", "amount": 100.00}
+
+        below = detector._detect_ltv_milestone(
+            event, {"total_spent": 950.00, "customer_id": "chargify_1"}
+        )
+        assert below is None
+
+        proven = detector._detect_ltv_milestone(
+            event, {"total_spent": 1000.00, "customer_id": "chargify_1"}
+        )
+        assert proven is not None
+        assert "1,000" in proven.text
+
+    def test_stripe_without_ltv_field_still_silent(
+        self, detector: InsightDetector
+    ) -> None:
+        """Stripe payloads carry no lifetime-spend field and stay silent.
+
+        The conservative change must not alter Stripe's behavior:
+        unknown LTV is not $0, so no milestone can ever fire.
+        """
+        event = {"type": "payment_success", "amount": 10000.00}
+        customer = {"email": "big@example.com", "customer_id": "cus_123"}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
 
 
 class TestAnniversaryDetection:
@@ -874,7 +1010,8 @@ class TestStringLTVHandling:
         event = {"type": "payment_success", "amount": 200.00}
         customer = {
             "orders_count": 5,
-            "total_spent": "900.00",  # String that will cross $1000
+            # String reported total, read as post-payment: crossed $1,000
+            "total_spent": "1100.00",
             "payment_history": [{"status": "success", "amount": 300}] * 3,
         }
 
@@ -888,7 +1025,8 @@ class TestStringLTVHandling:
         event = {"type": "payment_success", "amount": "200.00"}  # String amount
         customer = {
             "orders_count": 5,
-            "total_spent": 900.00,
+            # Reported total is read as post-payment: crossed $1,000
+            "total_spent": 1100.00,
             "payment_history": [{"status": "success", "amount": 300}] * 3,
         }
 
@@ -919,7 +1057,8 @@ class TestInsightPriority:
         event = {"type": "payment_success", "amount": 1500.00}
         customer = {
             "orders_count": 5,
-            "total_spent": 900.00,  # Will cross $1000
+            # Reported total proves $1,000 was crossed by this payment
+            "total_spent": 2000.00,
         }
 
         result = detector.detect(event, customer)
