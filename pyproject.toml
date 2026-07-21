@@ -37,6 +37,10 @@ dev = [
     "pytest-env>=1.6.0",
     "pytest-socket>=0.8.0",
 ]
+# Marketing screenshot capture (bin/record_screenshots.sh)
+screenshots = [
+    "playwright>=1.49,<2.0",
+]
 
 [tool.ruff]
 line-length = 88

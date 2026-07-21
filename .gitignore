@@ -172,5 +172,8 @@ app/static/tabler-fonts/
 
 # Django collectstatic output
 app/staticfiles/
+
+# Marketing screenshot captures
+screenshots/output/
 shopify.app.toml
 .DS_Store

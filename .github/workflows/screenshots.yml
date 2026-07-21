@@ -1,0 +1,67 @@
+name: Marketing Screenshots
+
+# Manual-only: these captures exist for the marketing site and docs,
+# not for CI verification.
+on:
+  workflow_dispatch:
+    inputs:
+      screenshot:
+        description: 'Screenshot to capture (e.g. dashboard.py, or "all")'
+        required: false
+        default: 'all'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Capture Screenshots
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Install Playwright browser dependencies
+        run: uv run playwright install --with-deps chromium
+
+      - name: Capture screenshots
+        run: bin/record_screenshots.sh "${{ github.event.inputs.screenshot }}"
+
+      - name: Upload to Cloudflare R2
+        if: ${{ always() && env.R2_BUCKET != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws s3 sync screenshots/output/ "s3://${R2_BUCKET}/screenshots/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type image/png \
+            --cache-control "public, max-age=300" \
+            --exclude "*" --include "*.png" \
+            --no-progress
+
+      - name: Upload screenshots artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/output/*.png
+          if-no-files-found: warn
