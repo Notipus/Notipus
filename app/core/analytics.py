@@ -42,6 +42,7 @@ import hmac
 import logging
 import re
 import secrets
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -113,6 +114,12 @@ _BOT_UA_MARKERS = (
 _EXCLUDED_PATH_PREFIXES = ("/admin/", "/static/", "/webhook/")
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ga4")
+
+# Backpressure for the fire-and-forget queue: at most this many
+# payloads may be queued or in flight; beyond it, events are dropped.
+_MAX_PENDING_DELIVERIES = 1000
+_pending_deliveries = 0
+_pending_lock = threading.Lock()
 
 
 def is_configured() -> bool:
@@ -250,9 +257,32 @@ def _post(payload: dict[str, Any]) -> None:
         logger.warning(f"GA4 event delivery failed: {e!s}")
 
 
+def _release_pending_slot(_future: Any) -> None:
+    """Free a delivery slot once a payload finishes (done callback)."""
+    global _pending_deliveries
+    with _pending_lock:
+        _pending_deliveries -= 1
+
+
 def _submit(payload: dict[str, Any]) -> None:
-    """Queue a payload for asynchronous delivery."""
-    _executor.submit(_post, payload)
+    """Queue a payload for asynchronous delivery.
+
+    Bounded: when GA4 is slow or unreachable and the backlog reaches
+    ``_MAX_PENDING_DELIVERIES``, new events are dropped with a warning
+    instead of queueing without limit — losing analytics beats memory
+    pressure from an ever-growing work queue under sustained traffic.
+    """
+    global _pending_deliveries
+    with _pending_lock:
+        if _pending_deliveries >= _MAX_PENDING_DELIVERIES:
+            logger.warning("GA4 event dropped: delivery backlog full")
+            return
+        _pending_deliveries += 1
+    try:
+        _executor.submit(_post, payload).add_done_callback(_release_pending_slot)
+    except RuntimeError:
+        # Interpreter shutdown; the slot leaks but nothing runs anymore.
+        pass
 
 
 def hashed_user_id(user: Any) -> str:
@@ -275,9 +305,17 @@ def hashed_user_id(user: Any) -> str:
 
 
 def _redact_pii(value: Any) -> Any:
-    """Redact email-shaped substrings from a string param value."""
+    """Redact email-shaped substrings anywhere in a param value.
+
+    Recurses into dicts/lists/tuples so nested structures (e.g. the
+    ecommerce ``items`` list) get the same guarantee as flat strings.
+    """
     if isinstance(value, str):
         return _EMAIL_RE.sub("[redacted]", value)
+    if isinstance(value, dict):
+        return {key: _redact_pii(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_pii(item) for item in value]
     return value
 
 

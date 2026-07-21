@@ -1,7 +1,11 @@
+from typing import Any
+
 from allauth.account.signals import user_signed_up
+from django.contrib.auth.models import User
 from django.contrib.auth.signals import user_logged_in
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.http import HttpRequest
 
 from . import analytics
 from .models import (
@@ -18,7 +22,7 @@ def create_workspace_notification_settings(sender, instance, created, **kwargs):
 
 
 @receiver(user_signed_up)
-def track_sign_up(request, user, **kwargs):
+def track_sign_up(request: HttpRequest, user: User, **kwargs: Any) -> None:
     """Send a GA4 sign_up event for allauth signups (email and social).
 
     Custom flows that bypass allauth (Slack OIDC, passkeys) track their
@@ -30,7 +34,9 @@ def track_sign_up(request, user, **kwargs):
 
 
 @receiver(user_logged_in)
-def track_login(sender, request, user, **kwargs):
+def track_login(
+    sender: Any, request: HttpRequest | None, user: User, **kwargs: Any
+) -> None:
     """Send a GA4 login event for every authentication flow.
 
     Django's user_logged_in signal fires for all flows (allauth, Slack

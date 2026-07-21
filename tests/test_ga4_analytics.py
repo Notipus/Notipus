@@ -6,6 +6,7 @@ page-view middleware, and the SaaS funnel events emitted by views,
 signals, and the Stripe billing sync.
 """
 
+import time
 from typing import Any, Generator
 from unittest.mock import MagicMock, patch
 
@@ -370,3 +371,93 @@ class TestBillingSyncEvents:
             assert BillingService.sync_workspace_from_stripe("cus_42")
 
         assert _events_named(ga4, "plan_change") == []
+
+    def test_subscription_cancelled_tracked_on_deletion(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """Cancelling the workspace's subscription sends the event."""
+        from webhooks.services.billing import BillingService
+
+        workspace = Workspace.objects.create(
+            name="Acme",
+            stripe_customer_id="cus_42",
+            subscription_plan="pro",
+            stripe_subscription_id="sub_main",
+        )
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_subscription_deleted(
+                {"id": "sub_main", "customer": "cus_42"}
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "cancelled"
+        (event,) = _events_named(ga4, "subscription_cancelled")
+        assert event["params"]["plan"] == "pro"
+
+    def test_addon_deletion_does_not_track_cancellation(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """Deleting a non-primary subscription must not emit the event."""
+        from webhooks.services.billing import BillingService
+
+        Workspace.objects.create(
+            name="Acme",
+            stripe_customer_id="cus_42",
+            subscription_plan="pro",
+            stripe_subscription_id="sub_main",
+        )
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_subscription_deleted(
+                {"id": "sub_addon", "customer": "cus_42"}
+            )
+
+        assert _events_named(ga4, "subscription_cancelled") == []
+
+
+class TestDeliveryBackpressure:
+    """The fire-and-forget queue is bounded, never unbounded."""
+
+    def test_events_dropped_when_backlog_full(self) -> None:
+        """At the pending cap, payloads are dropped, not queued."""
+        with override_settings(**GA4_TEST_SETTINGS):
+            with (
+                patch.object(analytics, "_MAX_PENDING_DELIVERIES", 0),
+                patch.object(analytics._executor, "submit") as mock_submit,
+            ):
+                analytics._submit({"client_id": "1.2", "events": []})
+            mock_submit.assert_not_called()
+
+    def test_slot_released_after_delivery(self) -> None:
+        """Completed deliveries free their slot for later events."""
+        with patch.object(analytics, "_post"):
+            baseline = analytics._pending_deliveries
+            analytics._submit({"client_id": "1.2", "events": []})
+            # The done callback runs synchronously once the (mocked)
+            # delivery finishes; poll briefly for the pool thread.
+            for _ in range(50):
+                if analytics._pending_deliveries == baseline:
+                    break
+                time.sleep(0.01)
+            assert analytics._pending_deliveries == baseline
+
+
+class TestNestedRedaction:
+    """PII redaction reaches nested param structures."""
+
+    def test_emails_redacted_inside_items(self) -> None:
+        """Email-shaped strings inside nested dicts/lists are scrubbed."""
+        params = analytics._build_event_params(
+            {
+                "items": [{"item_id": "pro", "note": "bought by user@example.com"}],
+                "meta": {"contact": ["ops@example.com", "plain text"]},
+            },
+            None,
+        )
+        assert "user@example.com" not in str(params)
+        assert "ops@example.com" not in str(params)
+        assert params["items"][0]["item_id"] == "pro"
+        assert params["meta"]["contact"][1] == "plain text"
