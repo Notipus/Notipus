@@ -502,10 +502,12 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
 
         if is_ecommerce:
             return self._format_ecommerce_details(payment)
-        return self._format_subscription_details(payment, n.headline)
+        return self._format_subscription_details(
+            payment, n.headline, is_trial=n.type in TRIAL_NOTIFICATION_TYPES
+        )
 
     def _format_subscription_details(
-        self, payment: PaymentInfo, headline: str
+        self, payment: PaymentInfo, headline: str, is_trial: bool = False
     ) -> dict[str, Any] | None:
         """Format SaaS subscription payment details as a two-column grid.
 
@@ -515,10 +517,18 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         (e.g. "New subscription!") get the full amount-with-ARR field so
         the money is never lost.
 
+        Trials are the exception: no payment has occurred, and the 0 the
+        parser reports is Stripe's placeholder invoice, not a price - so
+        an "Amount $0.00" field would be showing data we don't have. The
+        post-trial plan price is surfaced by the trial insight instead.
+        A trial that does carry a real amount (e.g. trial_converted's
+        first charge) still shows it.
+
         Args:
             payment: PaymentInfo object.
             headline: The notification headline, used to detect whether
                 the amount is already visible.
+            is_trial: Whether the notification is a trial event.
 
         Returns:
             Slack section block dict with a ``fields`` grid, or None
@@ -531,7 +541,9 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
 
         amount_display: str = format_money(payment.amount, payment.currency)
         arr = payment.get_arr()
-        if amount_display not in headline:
+        if is_trial and not payment.amount:
+            pass  # placeholder $0, not a payment - show no amount at all
+        elif amount_display not in headline:
             # Sanitized because format_money falls back to the raw
             # payload currency code for unknown currencies.
             fields.append(f"*Amount*\n{safe_mrkdwn(payment.format_amount_with_arr())}")

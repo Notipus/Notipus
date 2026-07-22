@@ -1511,3 +1511,88 @@ class TestSlackDestinationPluginMetadata:
             provider_display="Segment",
         )
         assert usage_notification.is_payment_event is False
+
+
+class TestTrialAmountSuppression:
+    """Trial events must not render Stripe's placeholder $0 as an amount."""
+
+    def _trial_notification(
+        self, notification_type: NotificationType, amount: float
+    ) -> RichNotification:
+        """Build a trial notification with the given amount.
+
+        Args:
+            notification_type: The trial notification type to use.
+            amount: The parsed payment amount.
+
+        Returns:
+            RichNotification resembling a Stripe trial event.
+        """
+        return RichNotification(
+            type=notification_type,
+            severity=NotificationSeverity.WARNING,
+            headline="Trial ending soon",
+            headline_icon="warning",
+            provider="stripe",
+            provider_display="Stripe",
+            payment=PaymentInfo(
+                amount=amount,
+                currency="USD",
+                interval="monthly",
+                plan_name="Pro",
+                subscription_id="sub_trial123",
+            ),
+        )
+
+    def _all_field_text(self, result: dict[str, Any]) -> str:
+        """Concatenate every block field and text in the formatted output."""
+        chunks: list[str] = []
+        for block in get_blocks(result):
+            for f in block.get("fields", []):
+                chunks.append(f["text"])
+            text = block.get("text")
+            if isinstance(text, dict):
+                chunks.append(text["text"])
+        return "\n".join(chunks)
+
+    def test_trial_ending_zero_amount_not_shown(
+        self, formatter: SlackDestinationPlugin
+    ) -> None:
+        """A trial's placeholder $0.00 must not appear anywhere."""
+        n = self._trial_notification(NotificationType.TRIAL_ENDING, 0.0)
+        text = self._all_field_text(formatter.format(n))
+        assert "$0.00" not in text
+        assert "*Amount*" not in text
+
+    def test_trial_started_zero_amount_not_shown(
+        self, formatter: SlackDestinationPlugin
+    ) -> None:
+        """trial_started with the placeholder $0 hides the amount too."""
+        n = self._trial_notification(NotificationType.TRIAL_STARTED, 0.0)
+        text = self._all_field_text(formatter.format(n))
+        assert "$0.00" not in text
+
+    def test_trial_zero_amount_keeps_plan_and_subscription(
+        self, formatter: SlackDestinationPlugin
+    ) -> None:
+        """Suppressing the amount must not drop the other detail fields."""
+        n = self._trial_notification(NotificationType.TRIAL_ENDING, 0.0)
+        text = self._all_field_text(formatter.format(n))
+        assert "Pro" in text
+        assert "sub_trial123" in text
+
+    def test_trial_with_real_amount_still_shows_it(
+        self, formatter: SlackDestinationPlugin
+    ) -> None:
+        """A trial event carrying a real charge keeps its amount."""
+        n = self._trial_notification(NotificationType.TRIAL_CONVERTED, 49.0)
+        text = self._all_field_text(formatter.format(n))
+        assert "$49.00" in text
+
+    def test_free_plan_outside_trial_still_shows_zero(
+        self, formatter: SlackDestinationPlugin
+    ) -> None:
+        """A genuine $0 plan on a non-trial event is real data and stays."""
+        n = self._trial_notification(NotificationType.SUBSCRIPTION_CREATED, 0.0)
+        text = self._all_field_text(formatter.format(n))
+        assert "$0.00" in text
