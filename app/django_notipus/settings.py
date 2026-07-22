@@ -661,6 +661,13 @@ LOGGING = {
             "level": "ERROR",  # Always silence static file duplicate warnings
             "propagate": False,
         },
+        # Scanners probing unallowed hostnames (e.g. *.fly.dev) trigger a
+        # DisallowedHost log per hit; the 400 response is the correct and
+        # sufficient outcome, so drop the log noise entirely.
+        "django.security.DisallowedHost": {
+            "handlers": [],
+            "propagate": False,
+        },
     },
     # Set root logger level based on DEBUG
     "root": {
