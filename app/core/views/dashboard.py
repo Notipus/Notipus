@@ -4,10 +4,12 @@ This module handles the main dashboard and workspace settings.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from django.contrib import messages
+from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
+from django.db import transaction
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
 
@@ -168,11 +170,15 @@ def _provision_free_workspace(request: HttpRequest) -> Workspace:
     at OAuth) or their username, and pick a paid plan later from the
     upgrade page.
 
+    Safe under concurrent first visits: the user row is locked while
+    provisioning, so a racing request waits and then adopts the
+    winner's workspace instead of creating a duplicate.
+
     Args:
         request: The HTTP request object for the workspace-less user.
 
     Returns:
-        The provisioned Workspace.
+        The provisioned (or concurrently created) Workspace.
     """
     # get_username() exists on the AbstractBaseUser union; the view is
     # login_required so this is never an AnonymousUser.
@@ -180,9 +186,22 @@ def _provision_free_workspace(request: HttpRequest) -> Workspace:
         request.session.get(SLACK_TEAM_NAME_SESSION_KEY)
         or f"{request.user.get_username()}'s Workspace"
     )
-    workspace = _create_workspace_records(
-        request.user, name=name, shop_domain=None, plan="free"
-    )
+
+    with transaction.atomic():
+        get_user_model().objects.select_for_update().get(pk=request.user.pk)
+        existing = (
+            WorkspaceMember.objects.filter(user=request.user, is_active=True)
+            .select_related("workspace")
+            .first()
+        )
+        if existing:
+            # cast: without the django mypy plugin, FK attribute access
+            # types as Any.
+            return cast(Workspace, existing.workspace)
+        workspace = _create_workspace_records(
+            request.user, name=name, shop_domain=None, plan="free"
+        )
+
     request.session.pop(SLACK_TEAM_NAME_SESSION_KEY, None)
     request.session.pop("selected_plan", None)
     analytics.track_event(

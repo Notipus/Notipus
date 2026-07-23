@@ -17,7 +17,7 @@ from webhooks.services.rate_limiter import rate_limiter
 
 from .. import analytics
 from ..models import Plan
-from ..permissions import get_workspace_for_user
+from ..permissions import get_workspace_for_user, get_workspace_member
 from .integrations.base import require_admin_role
 
 logger = logging.getLogger(__name__)
@@ -33,16 +33,21 @@ def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
 
     New signups get a free workspace auto-provisioned by the dashboard,
     so plan decisions for existing workspaces belong to the upgrade
-    page — anyone who lands here with a workspace is redirected there.
+    page — owners and admins who land here are redirected there, and
+    plain members go to the dashboard (upgrade_plan would bounce them
+    anyway).
 
     Args:
         request: The HTTP request object.
 
     Returns:
-        Plan selection page, redirect on successful selection, or
-        redirect to the upgrade page for workspace owners.
+        Plan selection page, redirect on successful selection, or a
+        role-appropriate redirect for users with a workspace.
     """
     if _get_user_workspace(request.user):
+        member = get_workspace_member(request.user)
+        if member and member.role not in ("owner", "admin"):
+            return redirect("core:dashboard")
         return redirect("core:upgrade_plan")
 
     if request.method == "POST":
