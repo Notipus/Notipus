@@ -120,9 +120,10 @@ class DashboardService:
         """Build the dashboard setup checklist state.
 
         The checklist never renders at zero, honestly: reaching the
-        dashboard requires an account, a plan, and a workspace, so
-        those three steps are genuinely complete and counted — no
-        fabricated head start.
+        dashboard requires an account and a workspace, so those two
+        steps are genuinely complete and counted — no fabricated head
+        start. Plan choice is not a step: workspaces start on the free
+        plan and upgrading is a later decision, not setup.
 
         Args:
             has_slack: Whether a Slack destination is connected.
@@ -136,7 +137,6 @@ class DashboardService:
         """
         steps = [
             {"key": "account", "label": "Create your account", "done": True},
-            {"key": "plan", "label": "Choose your plan", "done": True},
             {"key": "workspace", "label": "Create your workspace", "done": True},
             {"key": "slack", "label": "Connect Slack", "done": has_slack},
             {
