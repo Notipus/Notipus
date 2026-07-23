@@ -48,6 +48,9 @@ jobs:
   docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -55,12 +58,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # PRs only build (smoke test); master pushes the image that deploy ships
       - name: Build Docker image
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: false
-          tags: notipus:test
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          tags: |
+            ghcr.io/notipus/notipus:${{ github.sha }}
+            ghcr.io/notipus/notipus:latest
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -71,10 +87,10 @@ jobs:
     # Only deploy on push to master (not PRs)
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     concurrency: deploy-group
+    permissions:
+      contents: read
+      packages: read
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
       - name: Set up flyctl
         uses: superfly/flyctl-actions/setup-flyctl@master
 
@@ -83,7 +99,25 @@ jobs:
         env:
           FLY_CONFIG: ${{ secrets.FLY_CONFIG }}
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fly machines can only pull private images from registry.fly.io, so
+      # mirror the CI-built GHCR image there instead of rebuilding on Fly
+      - name: Mirror image to Fly registry
+        run: |
+          flyctl auth docker
+          docker pull ghcr.io/notipus/notipus:${{ github.sha }}
+          docker tag ghcr.io/notipus/notipus:${{ github.sha }} registry.fly.io/notipus:${{ github.sha }}
+          docker push registry.fly.io/notipus:${{ github.sha }}
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
       - name: Deploy to Fly.io
-        run: flyctl deploy --remote-only --build-arg GIT_SHA=${{ github.sha }}
+        run: flyctl deploy --image registry.fly.io/notipus:${{ github.sha }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
