@@ -8,7 +8,11 @@ so users are not asked to retype (or improvise) their organization name.
 from unittest.mock import Mock, patch
 
 import pytest
-from core.views.auth import SLACK_TEAM_NAME_CLAIM, SLACK_TEAM_NAME_SESSION_KEY
+from core.views.auth import (
+    SLACK_TEAM_NAME_CLAIM,
+    SLACK_TEAM_NAME_SESSION_KEY,
+    WORKSPACE_NAME_MAX_LENGTH,
+)
 from django.contrib.auth.models import User
 from django.test import Client
 from django.urls import reverse
@@ -71,6 +75,39 @@ class TestSlackTeamNameCapture:
     def test_missing_team_name_leaves_session_unset(self, client: Client) -> None:
         """No session entry is written when Slack omits the claim."""
         self._callback(client, _mock_userinfo())
+
+        assert SLACK_TEAM_NAME_SESSION_KEY not in client.session
+
+    def test_team_name_is_trimmed(self, client: Client) -> None:
+        """Surrounding whitespace is stripped before storing."""
+        self._callback(
+            client, _mock_userinfo(**{SLACK_TEAM_NAME_CLAIM: "  Acme Inc  "})
+        )
+
+        assert client.session[SLACK_TEAM_NAME_SESSION_KEY] == "Acme Inc"
+
+    def test_team_name_is_truncated_to_field_length(self, client: Client) -> None:
+        """Overlong names are capped at the Workspace.name max length."""
+        self._callback(
+            client,
+            _mock_userinfo(**{SLACK_TEAM_NAME_CLAIM: "x" * 500}),
+        )
+
+        stored = client.session[SLACK_TEAM_NAME_SESSION_KEY]
+        assert stored == "x" * WORKSPACE_NAME_MAX_LENGTH
+
+    def test_non_string_team_name_ignored(self, client: Client) -> None:
+        """A malformed (non-string) claim is not stored."""
+        self._callback(
+            client,
+            _mock_userinfo(**{SLACK_TEAM_NAME_CLAIM: ["not", "a", "string"]}),  # type: ignore[arg-type]
+        )
+
+        assert SLACK_TEAM_NAME_SESSION_KEY not in client.session
+
+    def test_whitespace_only_team_name_ignored(self, client: Client) -> None:
+        """A claim that trims to empty is not stored."""
+        self._callback(client, _mock_userinfo(**{SLACK_TEAM_NAME_CLAIM: "   "}))
 
         assert SLACK_TEAM_NAME_SESSION_KEY not in client.session
 

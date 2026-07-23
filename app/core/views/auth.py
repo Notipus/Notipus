@@ -5,17 +5,18 @@ This module handles user authentication via Slack OpenID Connect.
 
 import logging
 import secrets
-from typing import Any
+from typing import Any, cast
 
 import requests
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.models import User
+from django.db import models
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect
 
 from .. import analytics
-from ..models import UserProfile
+from ..models import UserProfile, Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,13 @@ SLACK_TEAM_NAME_SESSION_KEY = "slack_team_name"
 
 # Slack's OpenID Connect userInfo response namespaces its custom claims.
 SLACK_TEAM_NAME_CLAIM = "https://slack.com/team_name"
+
+# The captured team name prefills Workspace.name, so cap it to that
+# field's length ("or 200" only pacifies max_length's Optional typing).
+WORKSPACE_NAME_MAX_LENGTH: int = (
+    cast("models.CharField[Any, Any]", Workspace._meta.get_field("name")).max_length
+    or 200
+)
 
 
 def home(request: HttpRequest) -> HttpResponse:
@@ -208,10 +216,14 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
 
     # Remember the Slack team name so onboarding can prefill the workspace
     # name instead of asking the user to retype it. Set after login():
-    # logging in as a different user flushes the session.
+    # logging in as a different user flushes the session. Normalize
+    # defensively - the claim is external input destined for
+    # Workspace.name.
     team_name = user_info.get(SLACK_TEAM_NAME_CLAIM)
-    if team_name:
-        request.session[SLACK_TEAM_NAME_SESSION_KEY] = team_name
+    if isinstance(team_name, str):
+        team_name = team_name.strip()[:WORKSPACE_NAME_MAX_LENGTH]
+        if team_name:
+            request.session[SLACK_TEAM_NAME_SESSION_KEY] = team_name
 
     return redirect("core:dashboard")
 
