@@ -691,6 +691,102 @@ class DashboardServiceTest(TestCase):
         self.assertFalse(result["has_chargify"])
         self.assertFalse(result["has_stripe"])
 
+    def test_setup_progress_starts_at_half_for_bare_workspace(self) -> None:
+        """A workspace with no integrations shows 3 of 6 steps done.
+
+        Account, plan, and workspace are genuinely complete by the time
+        the dashboard renders — the checklist counts them instead of
+        starting at zero, and never counts anything else unearned.
+        """
+        from core.services.dashboard import DashboardService
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        self.assertEqual(progress["done_count"], 3)
+        self.assertEqual(progress["total"], 6)
+        self.assertEqual(progress["percent"], 50)
+        self.assertFalse(progress["complete"])
+        done_keys = {s["key"] for s in progress["steps"] if s["done"]}
+        self.assertEqual(done_keys, {"account", "plan", "workspace"})
+
+    def test_setup_progress_counts_slack_and_source(self) -> None:
+        """Connecting Slack and a source completes those steps only.
+
+        The first-event step stays open until a webhook is verified.
+        """
+        from core.services.dashboard import DashboardService
+
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="slack_notifications",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="stripe_customer",
+            is_active=True,
+        )
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        self.assertEqual(progress["done_count"], 5)
+        self.assertFalse(progress["complete"])
+        open_keys = {s["key"] for s in progress["steps"] if not s["done"]}
+        self.assertEqual(open_keys, {"first_event"})
+
+    def test_setup_progress_completes_on_first_verified_webhook(self) -> None:
+        """A verified webhook on a source integration completes setup."""
+        from core.services.dashboard import DashboardService
+        from django.utils import timezone
+
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="slack_notifications",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="chargify",
+            is_active=True,
+            webhook_verified_at=timezone.now(),
+        )
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        self.assertEqual(progress["done_count"], 6)
+        self.assertEqual(progress["percent"], 100)
+        self.assertTrue(progress["complete"])
+
+    def test_setup_progress_ignores_non_source_integrations(self) -> None:
+        """Enrichment and inactive integrations earn no source credit.
+
+        Hunter.io is not an event source, and an inactive source must
+        not count as connected.
+        """
+        from core.services.dashboard import DashboardService
+        from django.utils import timezone
+
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="hunter_enrichment",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="shopify",
+            is_active=False,
+            webhook_verified_at=timezone.now(),
+        )
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        open_keys = {s["key"] for s in progress["steps"] if not s["done"]}
+        self.assertEqual(open_keys, {"slack", "source", "first_event"})
+
     def test_get_trial_info_active_trial(self) -> None:
         """Test trial info for active trial."""
         from core.services.dashboard import DashboardService

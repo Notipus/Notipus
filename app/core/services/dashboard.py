@@ -8,7 +8,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 from datetime import timezone as dt_timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from core.models import Integration, Plan, UserProfile, Workspace, WorkspaceMember
 from django.contrib.auth.models import User
@@ -87,16 +87,80 @@ class DashboardService:
             workspace=workspace, is_active=True
         )
 
+        has_slack = integrations.filter(integration_type="slack_notifications").exists()
+        sources = integrations.filter(
+            integration_type__in=self.SOURCE_INTEGRATION_TYPES
+        )
         return {
             "integrations": integrations,
-            "has_slack": integrations.filter(
-                integration_type="slack_notifications"
-            ).exists(),
+            "has_slack": has_slack,
             "has_shopify": integrations.filter(integration_type="shopify").exists(),
             "has_chargify": integrations.filter(integration_type="chargify").exists(),
             "has_stripe": integrations.filter(
                 integration_type="stripe_customer"
             ).exists(),
+            "setup_progress": self._build_setup_progress(
+                has_slack=has_slack,
+                has_source=sources.exists(),
+                has_first_event=sources.filter(
+                    webhook_verified_at__isnull=False
+                ).exists(),
+            ),
+        }
+
+    # Integration types that send events into Notipus; the Slack
+    # destination and enrichment integrations are not sources.
+    SOURCE_INTEGRATION_TYPES: ClassVar[tuple[str, ...]] = (
+        "stripe_customer",
+        "shopify",
+        "chargify",
+    )
+
+    @staticmethod
+    def _build_setup_progress(
+        *, has_slack: bool, has_source: bool, has_first_event: bool
+    ) -> dict[str, Any]:
+        """Build the dashboard setup checklist state.
+
+        The checklist never renders at zero, honestly: reaching the
+        dashboard requires an account, a plan, and a workspace, so
+        those three steps are genuinely complete and counted — no
+        fabricated head start.
+
+        Args:
+            has_slack: Whether a Slack destination is connected.
+            has_source: Whether any event source is connected.
+            has_first_event: Whether any source has received a
+                verified webhook.
+
+        Returns:
+            Dict with the step list (key, label, done), done_count,
+            total, percent, and complete.
+        """
+        steps = [
+            {"key": "account", "label": "Create your account", "done": True},
+            {"key": "plan", "label": "Choose your plan", "done": True},
+            {"key": "workspace", "label": "Create your workspace", "done": True},
+            {"key": "slack", "label": "Connect Slack", "done": has_slack},
+            {
+                "key": "source",
+                "label": "Connect an event source",
+                "done": has_source,
+            },
+            {
+                "key": "first_event",
+                "label": "Receive your first event",
+                "done": has_first_event,
+            },
+        ]
+        done_count = sum(1 for step in steps if step["done"])
+        total = len(steps)
+        return {
+            "steps": steps,
+            "done_count": done_count,
+            "total": total,
+            "percent": round(done_count * 100 / total),
+            "complete": done_count == total,
         }
 
     def _get_recent_activity(self, workspace: Workspace) -> list[dict[str, Any]]:
