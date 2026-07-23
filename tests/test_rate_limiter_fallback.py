@@ -12,6 +12,7 @@ These tests cover two deliberate robustness properties:
 """
 
 import logging
+from decimal import Decimal
 from unittest.mock import Mock, patch
 
 import pytest
@@ -291,13 +292,24 @@ class TestEnforceDenyReason:
         assert "rate limit exceeded" not in message
 
     def test_actual_quota_breach_raises_exceeded_message(self) -> None:
-        """A real quota breach still raises the standard exceeded message."""
-        limiter = RateLimiter()
-        org = _make_org(plan="free")  # free plan limit is 20
+        """Reaching the hard cap raises the standard quota-breach message.
 
-        with patch("webhooks.services.rate_limiter.cache") as mock_cache:
-            mock_cache.get.return_value = 20  # at/over the limit, cache healthy
+        The plan limit itself is soft; only the grace cap (limit times
+        the per-plan Plan.grace_multiplier) rejects requests. The
+        multiplier is pinned so this stays a DB-free unit test.
+        """
+        limiter = RateLimiter()
+        org = _make_org(plan="free")  # free plan limit is 20, hard cap 40
+
+        with (
+            patch("webhooks.services.rate_limiter.cache") as mock_cache,
+            patch(
+                "core.services.usage_alerts.grace_multiplier_for",
+                return_value=Decimal("2.00"),
+            ),
+        ):
+            mock_cache.get.return_value = 40  # at the hard cap, cache healthy
             with pytest.raises(RateLimitException) as exc_info:
                 limiter.enforce_rate_limit(org)
 
-        assert "rate limit exceeded" in str(exc_info.value).lower()
+        assert "hard limit reached" in str(exc_info.value).lower()
