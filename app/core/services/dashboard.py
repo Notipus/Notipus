@@ -87,16 +87,77 @@ class DashboardService:
             workspace=workspace, is_active=True
         )
 
+        # One query for every flag: unique_together on (workspace,
+        # integration_type) makes this lossless. Values are the raw
+        # webhook_verified_at timestamps — None means connected but not
+        # yet verified.
+        verified_at_by_type: dict[str, Any] = dict(
+            integrations.values_list("integration_type", "webhook_verified_at")
+        )
+        has_slack = "slack_notifications" in verified_at_by_type
+        connected_sources = [
+            t for t in Integration.SOURCE_INTEGRATION_TYPES if t in verified_at_by_type
+        ]
         return {
             "integrations": integrations,
-            "has_slack": integrations.filter(
-                integration_type="slack_notifications"
-            ).exists(),
-            "has_shopify": integrations.filter(integration_type="shopify").exists(),
-            "has_chargify": integrations.filter(integration_type="chargify").exists(),
-            "has_stripe": integrations.filter(
-                integration_type="stripe_customer"
-            ).exists(),
+            "has_slack": has_slack,
+            "has_shopify": "shopify" in verified_at_by_type,
+            "has_chargify": "chargify" in verified_at_by_type,
+            "has_stripe": "stripe_customer" in verified_at_by_type,
+            "setup_progress": self._build_setup_progress(
+                has_slack=has_slack,
+                has_source=bool(connected_sources),
+                has_first_event=any(
+                    verified_at_by_type[t] is not None for t in connected_sources
+                ),
+            ),
+        }
+
+    @staticmethod
+    def _build_setup_progress(
+        *, has_slack: bool, has_source: bool, has_first_event: bool
+    ) -> dict[str, Any]:
+        """Build the dashboard setup checklist state.
+
+        The checklist never renders at zero, honestly: reaching the
+        dashboard requires an account, a plan, and a workspace, so
+        those three steps are genuinely complete and counted — no
+        fabricated head start.
+
+        Args:
+            has_slack: Whether a Slack destination is connected.
+            has_source: Whether any event source is connected.
+            has_first_event: Whether any source has received a
+                verified webhook.
+
+        Returns:
+            Dict with the step list (key, label, done), done_count,
+            total, percent, and complete.
+        """
+        steps = [
+            {"key": "account", "label": "Create your account", "done": True},
+            {"key": "plan", "label": "Choose your plan", "done": True},
+            {"key": "workspace", "label": "Create your workspace", "done": True},
+            {"key": "slack", "label": "Connect Slack", "done": has_slack},
+            {
+                "key": "source",
+                "label": "Connect an event source",
+                "done": has_source,
+            },
+            {
+                "key": "first_event",
+                "label": "Receive your first event",
+                "done": has_first_event,
+            },
+        ]
+        done_count = sum(1 for step in steps if step["done"])
+        total = len(steps)
+        return {
+            "steps": steps,
+            "done_count": done_count,
+            "total": total,
+            "percent": round(done_count * 100 / total),
+            "complete": done_count == total,
         }
 
     def _get_recent_activity(self, workspace: Workspace) -> list[dict[str, Any]]:

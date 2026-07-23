@@ -21,50 +21,54 @@
 
         <!-- Main content -->
         <div class="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
-            <!-- Getting Started -->
-            {% if not has_slack and not has_shopify and not has_chargify %}
+            <!-- Getting Started: setup checklist driven by real integration state -->
+            {% if setup_progress and not setup_progress.complete %}
                 <div class="bg-gradient-to-r from-primary-50 to-blue-50 border border-primary-200 rounded-xl p-6 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <div class="h-12 w-12 bg-primary-100 rounded-xl flex items-center justify-center">
-                                <svg class="h-6 w-6 text-primary-600"
-                                     fill="currentColor"
-                                     viewBox="0 0 20 20">
-                                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd">
-                                    </path>
-                                </svg>
-                            </div>
-                        </div>
-                        <div class="ml-5">
-                            <div class="flex items-center">
-                                <h3 class="text-lg font-semibold text-primary-900 flex items-center gap-2">
-                                    Welcome to Notipus! <i class="ti ti-rocket text-primary-600"></i>
-                                </h3>
-                                <span class="ml-3 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-primary-100 text-primary-800 border border-primary-200">
-                                    Getting Started
-                                </span>
-                            </div>
-                            <div class="mt-2 text-sm text-primary-700">
-                                <p>Let's get you set up with your first integration. Connect a service to start receiving webhook notifications:</p>
-                            </div>
-                            <div class="mt-4 flex flex-wrap gap-3">
-                                <a href="{% url 'core:integrate_slack' %}"
-                                   class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 transition-all duration-200">
-                                    <i class="ti ti-brand-slack mr-2"></i>
-                                    Connect Slack
-                                </a>
-                                <a href="{% url 'core:integrate_shopify' %}"
-                                   class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 transition-all duration-200">
-                                    <i class="ti ti-shopping-cart mr-2"></i>
-                                    Connect Shopify
-                                </a>
-                                <a href="{% url 'core:integrations' %}"
-                                   class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                                    View All Integrations
-                                </a>
-                            </div>
+                    <div class="flex items-center justify-between flex-wrap gap-3">
+                        <h3 class="text-lg font-semibold text-primary-900 flex items-center gap-2">
+                            Finish your setup <i class="ti ti-rocket text-primary-600" aria-hidden="true"></i>
+                        </h3>
+                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-primary-100 text-primary-800 border border-primary-200">
+                            {{ setup_progress.done_count }} of {{ setup_progress.total }} steps done
+                        </span>
+                    </div>
+                    <div class="mt-4"
+                         role="progressbar"
+                         aria-valuenow="{{ setup_progress.percent }}"
+                         aria-valuemin="0"
+                         aria-valuemax="100"
+                         aria-label="Setup progress">
+                        <div class="w-full bg-primary-100 rounded-full h-2">
+                            <div class="bg-primary-600 h-2 rounded-full transition-all duration-500"
+                                 style="width: {{ setup_progress.percent }}%"></div>
                         </div>
                     </div>
+                    <ul class="mt-4 space-y-2">
+                        {% for step in setup_progress.steps %}
+                            <li class="flex items-start gap-3 text-sm">
+                                {% if step.done %}
+                                    <i class="ti ti-circle-check text-green-600 text-lg leading-5"
+                                       aria-hidden="true"></i>
+                                    <span class="text-primary-800">{{ step.label }}</span>
+                                {% else %}
+                                    <i class="ti ti-circle text-primary-300 text-lg leading-5"
+                                       aria-hidden="true"></i>
+                                    {% if step.key == 'slack' %}
+                                        <a href="{% url 'core:integrate_slack' %}"
+                                           class="font-medium text-primary-700 hover:text-primary-900 hover:underline">{{ step.label }}</a>
+                                        <span class="text-primary-500">— where your notifications land</span>
+                                    {% elif step.key == 'source' %}
+                                        <a href="{% url 'core:integrations' %}"
+                                           class="font-medium text-primary-700 hover:text-primary-900 hover:underline">{{ step.label }}</a>
+                                        <span class="text-primary-500">— Stripe, Shopify, or Chargify</span>
+                                    {% else %}
+                                        <span class="font-medium text-primary-700">{{ step.label }}</span>
+                                        <span class="text-primary-500">— completes automatically when your first event arrives</span>
+                                    {% endif %}
+                                {% endif %}
+                            </li>
+                        {% endfor %}
+                    </ul>
                 </div>
             {% endif %}
 
