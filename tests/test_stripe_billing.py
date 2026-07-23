@@ -1904,6 +1904,69 @@ class TestCheckoutSessionExpiry:
 
 
 @pytest.mark.django_db
+class TestUpgradePlanUsageContext:
+    """The upgrade banner states real usage, not a generic pitch."""
+
+    @patch("core.services.dashboard.rate_limiter")
+    def test_upgrade_page_carries_real_usage(
+        self, mock_rate_limiter: MagicMock
+    ) -> None:
+        """Context and copy carry the workspace's actual event counts
+        and the count at which delivery stops."""
+        from django.urls import reverse
+
+        client, _workspace = _checkout_owner_client(
+            "uma",
+            {
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "is_active": True,
+                "stripe_price_id_monthly": "price_pro_monthly",
+            },
+        )
+        mock_rate_limiter.check_rate_limit.return_value = (
+            True,
+            {"current_usage": 16, "limit": 20},
+        )
+        mock_rate_limiter.get_usage_stats.return_value = {}
+
+        response = client.get(reverse("core:upgrade_plan"))
+
+        assert response.status_code == 200
+        assert response.context["events_used"] == 16
+        assert response.context["events_limit"] == 20
+        assert response.context["pause_at"] == 40
+        assert b"used 16 of the 20 events" in response.content
+
+    @patch("core.services.dashboard.rate_limiter")
+    def test_zero_usage_keeps_generic_banner(
+        self, mock_rate_limiter: MagicMock
+    ) -> None:
+        """With no events yet there are no numbers to state."""
+        from django.urls import reverse
+
+        client, _workspace = _checkout_owner_client(
+            "uma",
+            {
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "is_active": True,
+                "stripe_price_id_monthly": "price_pro_monthly",
+            },
+        )
+        mock_rate_limiter.check_rate_limit.return_value = (
+            True,
+            {"current_usage": 0, "limit": 20},
+        )
+        mock_rate_limiter.get_usage_stats.return_value = {}
+
+        response = client.get(reverse("core:upgrade_plan"))
+
+        assert response.status_code == 200
+        assert b"Ready to unlock more features" in response.content
+
+
+@pytest.mark.django_db
 class TestYearlyPricingAnnotation:
     """Plan cards gain yearly display fields from the Plan table."""
 

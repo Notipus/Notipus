@@ -832,10 +832,31 @@ class DashboardServiceTest(TestCase):
         mock_rate_limiter.get_usage_stats.return_value = {"monthly": []}
 
         service = DashboardService()
-        result = service._get_usage_data(self.workspace)
+        result = service.get_usage_data(self.workspace)
 
         self.assertTrue(result["is_allowed"])
         self.assertEqual(result["usage_percentage"], 50.0)
+
+    @patch("core.services.dashboard.rate_limiter")
+    def test_get_usage_data_includes_pause_point(self, mock_rate_limiter) -> None:
+        """Usage data carries the count at which delivery actually stops.
+
+        The default grace multiplier is 2x the plan limit, so upgrade
+        prompts can state the real consequence instead of a vague
+        warning.
+        """
+        from core.services.dashboard import DashboardService
+
+        mock_rate_limiter.check_rate_limit.return_value = (
+            True,
+            {"current_usage": 18, "limit": 20, "remaining": 2},
+        )
+        mock_rate_limiter.get_usage_stats.return_value = {"monthly": []}
+
+        service = DashboardService()
+        result = service.get_usage_data(self.workspace)
+
+        self.assertEqual(result["pause_at"], 40)
 
     @patch("core.services.dashboard.rate_limiter")
     def test_get_usage_data_error_handling(self, mock_rate_limiter):
@@ -845,11 +866,12 @@ class DashboardServiceTest(TestCase):
         mock_rate_limiter.check_rate_limit.side_effect = Exception("Redis error")
 
         service = DashboardService()
-        result = service._get_usage_data(self.workspace)
+        result = service.get_usage_data(self.workspace)
 
         # Should return default values on error
         self.assertTrue(result["is_allowed"])
         self.assertEqual(result["usage_percentage"], 0)
+        self.assertIsNone(result["pause_at"])
 
     @patch("core.services.dashboard.DatabaseLookupService")
     def test_transform_activity_data(self, mock_db_service):

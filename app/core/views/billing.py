@@ -145,7 +145,7 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         no workspace, or redirect to the dashboard if the user is not an
         owner/admin (permission denied).
     """
-    from core.services.dashboard import BillingService
+    from core.services.dashboard import BillingService, DashboardService
 
     workspace, redirect_response = require_admin_role(request)
     if redirect_response:
@@ -171,6 +171,11 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
 
     _annotate_yearly_pricing(available_plans)
 
+    # Real usage numbers make the banner state actual stakes ("used X of
+    # Y events, delivery stops at Z") instead of a generic pitch.
+    usage_data = DashboardService().get_usage_data(workspace)
+    rate_limit_info = usage_data.get("rate_limit_info") or {}
+
     context: dict[str, Any] = {
         "workspace": workspace,
         "plans": available_plans,
@@ -178,6 +183,10 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         # The interval toggle only renders when at least one card can
         # actually be billed yearly — no dead controls.
         "has_yearly_plans": any("price_yearly" in plan for plan in available_plans),
+        "events_used": rate_limit_info.get("current_usage"),
+        "events_limit": rate_limit_info.get("limit"),
+        "usage_percentage": usage_data.get("usage_percentage", 0),
+        "pause_at": usage_data.get("pause_at"),
     }
     return render(request, "core/upgrade_plan.html.j2", context)
 

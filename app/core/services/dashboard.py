@@ -70,7 +70,7 @@ class DashboardService:
             "member": member,
             "integrations": self._get_integration_data(workspace),
             "recent_activity": self._get_recent_activity(workspace),
-            "usage_data": self._get_usage_data(workspace),
+            "usage_data": self.get_usage_data(workspace),
             "trial_info": self._get_trial_info(workspace),
         }
 
@@ -314,15 +314,21 @@ class DashboardService:
 
         return deduplicated
 
-    def _get_usage_data(self, workspace: Workspace) -> dict[str, Any]:
+    def get_usage_data(self, workspace: Workspace) -> dict[str, Any]:
         """Get rate limiting and usage statistics for the workspace.
 
         Args:
             workspace: Workspace model instance.
 
         Returns:
-            Dictionary with usage data and rate limit info.
+            Dictionary with usage data and rate limit info, including
+            pause_at — the event count at which delivery actually stops
+            (the plan limit times its grace multiplier), so upgrade
+            prompts can state the real consequence instead of a vague
+            warning.
         """
+        from core.services.usage_alerts import hard_limit
+
         try:
             # Get rate limit info and usage stats
             is_allowed, rate_limit_info = rate_limiter.check_rate_limit(workspace)
@@ -338,6 +344,7 @@ class DashboardService:
                 "rate_limit_info": rate_limit_info,
                 "usage_stats": usage_stats,
                 "usage_percentage": min(usage_percentage, 100),  # Cap at 100%
+                "pause_at": hard_limit(limit, workspace.subscription_plan),
             }
         except Exception as e:
             logger.error(f"Error getting usage data: {e!s}")
@@ -346,6 +353,7 @@ class DashboardService:
                 "rate_limit_info": {},
                 "usage_stats": {},
                 "usage_percentage": 0,
+                "pause_at": None,
             }
 
     def _get_trial_info(self, workspace: Workspace) -> dict[str, Any]:
@@ -590,7 +598,7 @@ class BillingService:
             Dictionary with billing dashboard information.
         """
         dashboard_service = DashboardService()
-        usage_data = dashboard_service._get_usage_data(workspace)
+        usage_data = dashboard_service.get_usage_data(workspace)
         trial_info = dashboard_service._get_trial_info(workspace)
 
         # Get Stripe subscription info if available

@@ -226,7 +226,12 @@
                                     <div class="ml-3">
                                         <h4 class="text-sm font-medium text-red-800">Action Required</h4>
                                         <p class="text-sm text-red-700 mt-1">
-                                            You've used {{ usage_percentage|floatformat:0 }}% of your monthly quota. Upgrade now to avoid service interruption.
+                                            You've used {{ rate_limit_info.current_usage|floatformat:0|intcomma }} of the {{ rate_limit_info.limit|floatformat:0|intcomma }} events in your plan this month.
+                                            {% if pause_at %}
+                                                Delivery stops at {{ pause_at|intcomma }} events until your count resets{% if rate_limit_info.reset_time %} on {{ rate_limit_info.reset_time|date:"M j" }}{% endif %} — upgrade to keep notifications flowing.
+                                            {% else %}
+                                                Upgrade now to keep notifications flowing.
+                                            {% endif %}
                                         </p>
                                     </div>
                                 </div>
@@ -243,7 +248,8 @@
                                     <div class="ml-3">
                                         <h4 class="text-sm font-medium text-yellow-800">Consider Upgrading</h4>
                                         <p class="text-sm text-yellow-700 mt-1">
-                                            You're at {{ usage_percentage|floatformat:0 }}% usage. Consider upgrading for peace of mind.
+                                            You've used {{ rate_limit_info.current_usage|floatformat:0|intcomma }} of the {{ rate_limit_info.limit|floatformat:0|intcomma }} events in your plan this month.
+                                            If you expect more{% if rate_limit_info.reset_time %} before your count resets on {{ rate_limit_info.reset_time|date:"M j" }}{% endif %}, upgrading now avoids any interruption.
                                         </p>
                                     </div>
                                 </div>
