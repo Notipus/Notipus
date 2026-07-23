@@ -187,11 +187,13 @@ def _annotate_yearly_pricing(plans: list[dict[str, Any]]) -> None:
 
     A card is only annotated when its Plan row proves the option is
     billable: a positive price_yearly AND a stored yearly Stripe price
-    id (checkout refuses without one, so advertising would dead-end
-    the default Yearly toggle). Savings are computed against the
-    monthly price the card actually displays, so the numbers shown
-    together can never contradict each other even if the local Plan
-    row drifts from Stripe.
+    id. Checkout can also resolve a yearly price via its Stripe lookup
+    key, but verifying a lookup key costs a Stripe call per render —
+    the stored id is the only render-time proof, so lookup-key-only
+    setups must also backfill the id to advertise yearly. Savings are
+    computed against the monthly price the card actually displays, so
+    the numbers shown together can never contradict each other even if
+    the local Plan row drifts from Stripe.
 
     Args:
         plans: Plan card dicts carrying an "id" of the internal plan
