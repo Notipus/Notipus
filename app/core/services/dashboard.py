@@ -8,7 +8,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime
 from datetime import timezone as dt_timezone
-from typing import Any, ClassVar
+from typing import Any
 
 from core.models import Integration, Plan, UserProfile, Workspace, WorkspaceMember
 from django.contrib.auth.models import User
@@ -87,34 +87,29 @@ class DashboardService:
             workspace=workspace, is_active=True
         )
 
-        has_slack = integrations.filter(integration_type="slack_notifications").exists()
-        sources = integrations.filter(
-            integration_type__in=self.SOURCE_INTEGRATION_TYPES
+        # One query for every flag: unique_together on (workspace,
+        # integration_type) makes this lossless.
+        verified_by_type: dict[str, Any] = dict(
+            integrations.values_list("integration_type", "webhook_verified_at")
         )
+        has_slack = "slack_notifications" in verified_by_type
+        connected_sources = [
+            t for t in Integration.SOURCE_INTEGRATION_TYPES if t in verified_by_type
+        ]
         return {
             "integrations": integrations,
             "has_slack": has_slack,
-            "has_shopify": integrations.filter(integration_type="shopify").exists(),
-            "has_chargify": integrations.filter(integration_type="chargify").exists(),
-            "has_stripe": integrations.filter(
-                integration_type="stripe_customer"
-            ).exists(),
+            "has_shopify": "shopify" in verified_by_type,
+            "has_chargify": "chargify" in verified_by_type,
+            "has_stripe": "stripe_customer" in verified_by_type,
             "setup_progress": self._build_setup_progress(
                 has_slack=has_slack,
-                has_source=sources.exists(),
-                has_first_event=sources.filter(
-                    webhook_verified_at__isnull=False
-                ).exists(),
+                has_source=bool(connected_sources),
+                has_first_event=any(
+                    verified_by_type[t] is not None for t in connected_sources
+                ),
             ),
         }
-
-    # Integration types that send events into Notipus; the Slack
-    # destination and enrichment integrations are not sources.
-    SOURCE_INTEGRATION_TYPES: ClassVar[tuple[str, ...]] = (
-        "stripe_customer",
-        "shopify",
-        "chargify",
-    )
 
     @staticmethod
     def _build_setup_progress(

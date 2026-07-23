@@ -389,6 +389,15 @@ class Integration(models.Model):
         ("hunter_enrichment", "Hunter.io Email Enrichment"),
     )
 
+    # The subset of INTEGRATION_TYPES that send events into Notipus.
+    # Keep in sync when adding a provider above — the dashboard setup
+    # checklist and integrations page both derive "source" state from it.
+    SOURCE_INTEGRATION_TYPES: ClassVar[tuple[str, ...]] = (
+        "stripe_customer",
+        "shopify",
+        "chargify",
+    )
+
     workspace: Any = models.ForeignKey(
         Workspace, on_delete=models.CASCADE, related_name="integrations"
     )
