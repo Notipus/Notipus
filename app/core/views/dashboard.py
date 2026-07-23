@@ -13,6 +13,7 @@ from django.shortcuts import redirect, render
 
 from .. import analytics
 from ..models import UserProfile, Workspace, WorkspaceMember
+from .auth import SLACK_TEAM_NAME_SESSION_KEY
 from .integrations.base import require_admin_role
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,9 @@ def create_workspace(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
             if "selected_plan" in request.session:
                 del request.session["selected_plan"]
 
+            # The Slack team name has served its purpose as a prefill
+            request.session.pop(SLACK_TEAM_NAME_SESSION_KEY, None)
+
             analytics.track_event(request, "workspace_created", {"plan": selected_plan})
 
             # For paid plans, redirect to Stripe checkout with trial period
@@ -186,7 +190,11 @@ def create_workspace(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
             messages.success(request, f"Workspace '{name}' created successfully!")
             return redirect("core:dashboard")
 
-    return render(request, "core/create_workspace.html.j2")
+    return render(
+        request,
+        "core/create_workspace.html.j2",
+        {"suggested_name": request.session.get(SLACK_TEAM_NAME_SESSION_KEY, "")},
+    )
 
 
 @login_required

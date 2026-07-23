@@ -25,6 +25,13 @@ SLACK_API_TIMEOUT = 30
 # Session key for the Slack OAuth login state parameter (CSRF protection)
 SLACK_AUTH_STATE_SESSION_KEY = "slack_auth_oauth_state"
 
+# Session key for the Slack team name captured at login, used to prefill
+# the workspace name during onboarding.
+SLACK_TEAM_NAME_SESSION_KEY = "slack_team_name"
+
+# Slack's OpenID Connect userInfo response namespaces its custom claims.
+SLACK_TEAM_NAME_CLAIM = "https://slack.com/team_name"
+
 
 def home(request: HttpRequest) -> HttpResponse:
     """Render the home page.
@@ -198,6 +205,13 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
     login(request, user)
     if created:
         analytics.track_event(request, "sign_up", {"method": "slack"})
+
+    # Remember the Slack team name so onboarding can prefill the workspace
+    # name instead of asking the user to retype it. Set after login():
+    # logging in as a different user flushes the session.
+    team_name = user_info.get(SLACK_TEAM_NAME_CLAIM)
+    if team_name:
+        request.session[SLACK_TEAM_NAME_SESSION_KEY] = team_name
 
     return redirect("core:dashboard")
 
