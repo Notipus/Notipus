@@ -88,25 +88,27 @@ class DashboardService:
         )
 
         # One query for every flag: unique_together on (workspace,
-        # integration_type) makes this lossless.
-        verified_by_type: dict[str, Any] = dict(
+        # integration_type) makes this lossless. Values are the raw
+        # webhook_verified_at timestamps — None means connected but not
+        # yet verified.
+        verified_at_by_type: dict[str, Any] = dict(
             integrations.values_list("integration_type", "webhook_verified_at")
         )
-        has_slack = "slack_notifications" in verified_by_type
+        has_slack = "slack_notifications" in verified_at_by_type
         connected_sources = [
-            t for t in Integration.SOURCE_INTEGRATION_TYPES if t in verified_by_type
+            t for t in Integration.SOURCE_INTEGRATION_TYPES if t in verified_at_by_type
         ]
         return {
             "integrations": integrations,
             "has_slack": has_slack,
-            "has_shopify": "shopify" in verified_by_type,
-            "has_chargify": "chargify" in verified_by_type,
-            "has_stripe": "stripe_customer" in verified_by_type,
+            "has_shopify": "shopify" in verified_at_by_type,
+            "has_chargify": "chargify" in verified_at_by_type,
+            "has_stripe": "stripe_customer" in verified_at_by_type,
             "setup_progress": self._build_setup_progress(
                 has_slack=has_slack,
                 has_source=bool(connected_sources),
                 has_first_event=any(
-                    verified_by_type[t] is not None for t in connected_sources
+                    verified_at_by_type[t] is not None for t in connected_sources
                 ),
             ),
         }

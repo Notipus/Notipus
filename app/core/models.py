@@ -391,7 +391,9 @@ class Integration(models.Model):
 
     # The subset of INTEGRATION_TYPES that send events into Notipus.
     # Keep in sync when adding a provider above — the dashboard setup
-    # checklist and integrations page both derive "source" state from it.
+    # checklist derives "source" state from it. (The integrations page
+    # overview keeps its own richer display list in
+    # IntegrationService.get_integration_overview.)
     SOURCE_INTEGRATION_TYPES: ClassVar[tuple[str, ...]] = (
         "stripe_customer",
         "shopify",

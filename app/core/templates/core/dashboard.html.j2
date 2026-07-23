@@ -26,7 +26,7 @@
                 <div class="bg-gradient-to-r from-primary-50 to-blue-50 border border-primary-200 rounded-xl p-6 mb-8">
                     <div class="flex items-center justify-between flex-wrap gap-3">
                         <h3 class="text-lg font-semibold text-primary-900 flex items-center gap-2">
-                            Finish your setup <i class="ti ti-rocket text-primary-600"></i>
+                            Finish your setup <i class="ti ti-rocket text-primary-600" aria-hidden="true"></i>
                         </h3>
                         <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-primary-100 text-primary-800 border border-primary-200">
                             {{ setup_progress.done_count }} of {{ setup_progress.total }} steps done
@@ -47,10 +47,12 @@
                         {% for step in setup_progress.steps %}
                             <li class="flex items-start gap-3 text-sm">
                                 {% if step.done %}
-                                    <i class="ti ti-circle-check text-green-600 text-lg leading-5"></i>
+                                    <i class="ti ti-circle-check text-green-600 text-lg leading-5"
+                                       aria-hidden="true"></i>
                                     <span class="text-primary-800">{{ step.label }}</span>
                                 {% else %}
-                                    <i class="ti ti-circle text-primary-300 text-lg leading-5"></i>
+                                    <i class="ti ti-circle text-primary-300 text-lg leading-5"
+                                       aria-hidden="true"></i>
                                     {% if step.key == 'slack' %}
                                         <a href="{% url 'core:integrate_slack' %}"
                                            class="font-medium text-primary-700 hover:text-primary-900 hover:underline">{{ step.label }}</a>
