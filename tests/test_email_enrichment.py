@@ -159,6 +159,43 @@ class TestHunterPluginNormalization:
         assert result["position"] == ""
         assert result["seniority"] == ""
 
+    def test_normalize_nested_social_objects(self, hunter_plugin: HunterPlugin) -> None:
+        """Test that nested twitter/github objects yield the handle string.
+
+        The live Hunter.io People API returns social fields as nested
+        objects, not plain strings (seen in prod: the dict repr overflowed
+        the varchar(100) handle columns and aborted every Person insert).
+        """
+        data = {
+            "twitter": {"handle": "johndoe", "followers": 42, "id": 1},
+            "github": {"handle": "jdoe", "followers": None},
+        }
+        result = hunter_plugin._normalize_response(data, "john@example.com")
+
+        assert result["twitter_handle"] == "johndoe"
+        assert result["github_handle"] == "jdoe"
+
+    def test_normalize_nested_social_objects_with_null_handles(
+        self, hunter_plugin: HunterPlugin
+    ) -> None:
+        """Test that all-null nested social objects normalize to empty strings."""
+        data = {
+            "twitter": {"handle": None, "id": None, "bio": None},
+            "github": {"handle": None, "id": None},
+        }
+        result = hunter_plugin._normalize_response(data, "info@fcthun.ch")
+
+        assert result["twitter_handle"] == ""
+        assert result["github_handle"] == ""
+
+    def test_extract_handle_rejects_non_string_scalars(
+        self, hunter_plugin: HunterPlugin
+    ) -> None:
+        """Test that non-string, non-dict social values are dropped."""
+        assert hunter_plugin._extract_handle(12345) == ""
+        assert hunter_plugin._extract_handle(["johndoe"]) == ""
+        assert hunter_plugin._extract_handle(None) == ""
+
     def test_build_linkedin_url_from_handle(self, hunter_plugin: HunterPlugin) -> None:
         """Test building LinkedIn URL from handle."""
         url = hunter_plugin._build_linkedin_url("johndoe")

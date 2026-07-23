@@ -96,6 +96,29 @@ class TestEnrichmentFieldLimits:
         assert person.github_handle == ""
         assert person.company_domain == ""
 
+    def test_non_string_values_are_dropped_not_fatal(
+        self, enrichment_service: EmailEnrichmentService, workspace: Workspace
+    ) -> None:
+        """A non-string value is dropped instead of aborting the insert.
+
+        Seen in prod: nested twitter/github objects slipped through
+        normalization, and their dict repr overflowed the varchar(100)
+        handle columns, so no Person was ever cached.
+        """
+        api_data = {
+            "first_name": "John",
+            "twitter_handle": {"handle": None, "id": None, "bio": None},
+            "github_handle": {"handle": None, "followers": None},
+            "_raw": {},
+        }
+
+        person = _enrich(enrichment_service, workspace, api_data)
+
+        assert person is not None
+        assert person.first_name == "John"
+        assert person.twitter_handle == ""
+        assert person.github_handle == ""
+
     def test_values_within_limits_are_stored_unchanged(
         self, enrichment_service: EmailEnrichmentService, workspace: Workspace
     ) -> None:

@@ -247,14 +247,16 @@ class EmailEnrichmentService:
         logger.debug(f"{action} person record for {email}")
         return person
 
-    def _fit_to_column(self, field_name: str, value: str) -> str:
+    def _fit_to_column(self, field_name: str, value: Any) -> str:
         """Fit an enrichment value into its Person column.
 
         Hunter.io occasionally returns values longer than our columns,
         which would abort the whole insert with a DataError. Display-text
         fields are truncated to the column width; link/identifier fields
         are dropped instead, since a clipped URL or handle would point at
-        the wrong place.
+        the wrong place. Non-string values (e.g. a nested object that
+        slipped through normalization) are dropped outright: their repr
+        is garbage data, and storing it would show guessed values.
 
         Args:
             field_name: Name of the Person model field.
@@ -263,6 +265,13 @@ class EmailEnrichmentService:
         Returns:
             A value guaranteed to fit the column.
         """
+        if not isinstance(value, str):
+            logger.warning(
+                f"Dropping non-string {field_name} from Hunter.io "
+                f"({type(value).__name__})"
+            )
+            return ""
+
         max_length = Person._meta.get_field(field_name).max_length
         if not max_length or len(value) <= max_length:
             return value
