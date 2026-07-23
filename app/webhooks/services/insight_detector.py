@@ -31,7 +31,9 @@ Per-provider signal sources (update this list when adding a detector):
   Stripe = none (anniversary silent);
   Chargify and Shopify = customer.created_at.
 * trial metadata:
-  Stripe = parser-derived;
+  Stripe = parser-derived (subscription_created with status "trialing"
+  and trial_will_end both carry the full subscription object, so
+  trial_end and the post-trial plan price are proven fields);
   Chargify = parser-derived (signup_success with state "trialing");
   Shopify = n/a.
 * failure attempt count:
@@ -156,6 +158,7 @@ class InsightDetector:
     ICONS = {
         "first_payment": "new",
         "trial_started": "rocket",
+        "trial_ending": "clock",
         "trial_converted": "celebration",
         "ltv_milestone": "celebration",
         "anniversary": "celebration",
@@ -191,6 +194,7 @@ class InsightDetector:
         detectors = [
             self._detect_initial_payment_failure,
             self._detect_trial_started,
+            self._detect_trial_ending,
             self._detect_trial_converted,
             self._detect_first_payment,
             self._detect_ltv_milestone,
@@ -352,6 +356,50 @@ class InsightDetector:
             icon=self.ICONS["trial_started"],
             text="New trial - Welcome aboard!",
         )
+
+    def _detect_trial_ending(
+        self, event_data: dict[str, Any], customer_data: dict[str, Any]
+    ) -> InsightInfo | None:
+        """Surface when the trial ends and the price it converts to.
+
+        Stripe's customer.subscription.trial_will_end payload is a full
+        subscription object, so trial_end and the plan price are proven
+        fields; the insight degrades to whichever parts are present and
+        stays silent when both are missing rather than guessing.
+
+        Args:
+            event_data: Event data dictionary.
+            customer_data: Customer data dictionary (unused but required
+                for interface).
+
+        Returns:
+            InsightInfo for the ending trial or None.
+        """
+        _ = customer_data  # unused
+        if event_data.get("type", "") != "trial_ending":
+            return None
+
+        metadata = event_data.get("metadata") or {}
+        end_date = self._format_short_date(metadata.get("trial_end"))
+
+        money = None
+        # "is not None" so a $0 post-trial plan (free tier) still renders
+        plan_amount = metadata.get("plan_amount")
+        if plan_amount is not None:
+            currency = event_data.get("currency") or "USD"
+            suffix = interval_suffix(metadata.get("billing_period"))
+            money = f"{format_money(_to_float(plan_amount), currency)}{suffix}"
+
+        if end_date and money:
+            text = f"Trial ends {end_date}, then {money}"
+        elif end_date:
+            text = f"Trial ends {end_date}"
+        elif money:
+            text = f"Converts to {money} at trial end"
+        else:
+            return None
+
+        return InsightInfo(icon=self.ICONS["trial_ending"], text=text)
 
     def _detect_initial_payment_failure(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
