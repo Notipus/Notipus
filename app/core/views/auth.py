@@ -36,8 +36,7 @@ SLACK_TEAM_NAME_CLAIM = "https://slack.com/team_name"
 # The captured team name prefills Workspace.name, so cap it to that
 # field's length ("or 200" only pacifies max_length's Optional typing).
 WORKSPACE_NAME_MAX_LENGTH: int = (
-    cast("models.CharField[Any, Any]", Workspace._meta.get_field("name")).max_length
-    or 200
+    cast(models.CharField, Workspace._meta.get_field("name")).max_length or 200
 )
 
 
