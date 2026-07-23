@@ -105,16 +105,7 @@ def maybe_send_usage_alerts(
             already fetched instead of re-querying the plan row.
     """
     try:
-        warn_at = warning_count(limit)
-        if new_usage == warn_at and warn_at <= limit:
-            _send_warning_alert(workspace, new_usage, limit)
-        elif new_usage > limit:
-            if hard_at is None:
-                hard_at = hard_limit(limit, workspace.subscription_plan)
-            if new_usage == limit + 1:
-                _send_exceeded_alert(workspace, limit, hard_at)
-            elif new_usage == hard_at and hard_at > limit:
-                _send_paused_alert(workspace, limit, hard_at)
+        _dispatch_crossing_alert(workspace, new_usage, limit, hard_at)
     except Exception:
         logger.exception(
             "Failed to send usage alert for workspace %s at usage %s/%s",
@@ -122,6 +113,32 @@ def maybe_send_usage_alerts(
             new_usage,
             limit,
         )
+
+
+def _dispatch_crossing_alert(
+    workspace: Any, new_usage: int, limit: int, hard_at: int | None
+) -> None:
+    """Send the alert matching the threshold ``new_usage`` landed on, if any."""
+    warn_at = warning_count(limit)
+    if new_usage > limit:
+        if hard_at is None:
+            hard_at = hard_limit(limit, workspace.subscription_plan)
+        if new_usage == limit + 1:
+            _send_exceeded_alert(workspace, limit, hard_at)
+        elif new_usage == hard_at:
+            _send_paused_alert(workspace, limit, hard_at)
+    elif new_usage == limit:
+        if hard_at is None:
+            hard_at = hard_limit(limit, workspace.subscription_plan)
+        if hard_at == limit:
+            # No grace window configured: the cap coincides with the
+            # plan limit, so this final allowed event is the paused
+            # crossing and would otherwise go unannounced.
+            _send_paused_alert(workspace, limit, hard_at)
+        elif new_usage == warn_at:
+            _send_warning_alert(workspace, new_usage, limit)
+    elif new_usage == warn_at:
+        _send_warning_alert(workspace, new_usage, limit)
 
 
 def _admin_emails(workspace: Any) -> list[str]:

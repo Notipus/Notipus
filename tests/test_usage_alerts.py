@@ -155,6 +155,28 @@ class TestUsageAlertEmails:
         assert "paused" in message.subject.lower()
         assert sorted(message.to) == ["admin@example.com", "owner@example.com"]
 
+    def test_paused_email_at_limit_when_no_grace_window(
+        self, workspace: Workspace
+    ) -> None:
+        """With no grace window, landing on the limit sends the paused email.
+
+        When grace_multiplier <= 1 the cap coincides with the plan
+        limit, so the final allowed event is the paused crossing —
+        rejection must not start unannounced.
+        """
+        Plan.objects.update_or_create(
+            name="free",
+            defaults={
+                "display_name": "Free",
+                "price_monthly": 0,
+                "grace_multiplier": Decimal("1.00"),
+            },
+        )
+        maybe_send_usage_alerts(workspace, new_usage=20, limit=20)
+
+        assert len(mail.outbox) == 1
+        assert "paused" in mail.outbox[0].subject.lower()
+
     def test_send_failure_does_not_raise(self, workspace: Workspace) -> None:
         """A broken mail backend must never break webhook processing."""
         with patch(

@@ -579,10 +579,10 @@ class RateLimiter:
             RateLimitException: If the hard cap is reached, or on a cache
                 outage with RATE_LIMIT_FAIL_CLOSED enabled.
         """
-        is_allowed, rate_limit_info = self.check_rate_limit(organization)
+        within_plan_limit, rate_limit_info = self.check_rate_limit(organization)
         hard_cap: int | None = None
 
-        if not is_allowed:
+        if not within_plan_limit:
             if rate_limit_info.get("reason") == "cache_unavailable":
                 # The denial is a fail-closed reaction to a cache outage, not
                 # an actual quota breach. Raise a truthful message so the
