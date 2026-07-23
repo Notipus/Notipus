@@ -580,6 +580,7 @@ class RateLimiter:
                 outage with RATE_LIMIT_FAIL_CLOSED enabled.
         """
         is_allowed, rate_limit_info = self.check_rate_limit(organization)
+        hard_cap: int | None = None
 
         if not is_allowed:
             if rate_limit_info.get("reason") == "cache_unavailable":
@@ -621,7 +622,12 @@ class RateLimiter:
             # cache is unhealthy rather than risk spurious or missed emails.
             from core.services.usage_alerts import maybe_send_usage_alerts
 
-            maybe_send_usage_alerts(organization, new_usage, rate_limit_info["limit"])
+            maybe_send_usage_alerts(
+                organization,
+                new_usage,
+                rate_limit_info["limit"],
+                hard_at=hard_cap,
+            )
 
         return rate_limit_info
 

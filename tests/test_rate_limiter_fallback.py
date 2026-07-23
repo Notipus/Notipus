@@ -294,7 +294,7 @@ class TestEnforceDenyReason:
         """Reaching the hard cap raises the standard quota-breach message.
 
         The plan limit itself is soft; only the grace cap (limit times
-        RATE_LIMIT_HARD_MULTIPLIER) rejects requests.
+        the per-plan Plan.grace_multiplier) rejects requests.
         """
         limiter = RateLimiter()
         org = _make_org(plan="free")  # free plan limit is 20, hard cap 40

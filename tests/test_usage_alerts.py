@@ -160,6 +160,7 @@ class TestSoftLimitEnforcement:
     def test_over_limit_is_allowed_within_grace(self) -> None:
         """Usage past the plan limit does not raise; it is flagged instead."""
         limiter = RateLimiter()
+        org = self._org()
 
         with (
             patch("webhooks.services.rate_limiter.cache") as mock_cache,
@@ -167,12 +168,14 @@ class TestSoftLimitEnforcement:
         ):
             mock_cache.get.return_value = 20  # at the soft limit
             mock_cache.incr.return_value = 21
-            info = limiter.enforce_rate_limit(self._org())
+            info = limiter.enforce_rate_limit(org)
 
         assert info["over_limit"] is True
         assert info["current_usage"] == 21
         assert info["remaining"] == 0
-        mock_alerts.assert_called_once()
+        # The over-limit branch already fetched the hard cap; the alert
+        # hook must receive it rather than re-querying the plan row.
+        mock_alerts.assert_called_once_with(org, 21, 20, hard_at=40)
 
     def test_under_limit_not_flagged(self) -> None:
         """Normal usage is not flagged as over the limit."""
@@ -212,7 +215,7 @@ class TestSoftLimitEnforcement:
             mock_cache.incr.return_value = 16
             limiter.enforce_rate_limit(org)
 
-        mock_alerts.assert_called_once_with(org, 16, 20)
+        mock_alerts.assert_called_once_with(org, 16, 20, hard_at=None)
 
     def test_alerts_skipped_on_cache_outage(self) -> None:
         """Fallback-mode counts must not drive alert emails."""

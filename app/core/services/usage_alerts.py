@@ -41,7 +41,7 @@ def warning_count(limit: int) -> int:
     return max(1, int(limit * WARNING_THRESHOLD))
 
 
-def grace_multiplier_for(plan_name: str) -> float:
+def grace_multiplier_for(plan_name: str) -> Decimal:
     """Return the soft-limit grace factor configured for a plan.
 
     Args:
@@ -64,8 +64,8 @@ def grace_multiplier_for(plan_name: str) -> float:
         logger.exception("Could not read grace multiplier for plan %s", plan_name)
         plan = None
     if plan is None:
-        return float(DEFAULT_GRACE_MULTIPLIER)
-    return float(plan.grace_multiplier)
+        return DEFAULT_GRACE_MULTIPLIER
+    return Decimal(plan.grace_multiplier)
 
 
 def hard_limit(limit: int, plan_name: str) -> int:
@@ -77,12 +77,15 @@ def hard_limit(limit: int, plan_name: str) -> int:
 
     Returns:
         Usage count at which delivery is paused, never below the plan
-        limit itself.
+        limit itself. Computed in Decimal so float rounding can never
+        shrink the configured cap.
     """
-    return max(int(limit * grace_multiplier_for(plan_name)), limit)
+    return max(int(Decimal(limit) * grace_multiplier_for(plan_name)), limit)
 
 
-def maybe_send_usage_alerts(workspace: Any, new_usage: int, limit: int) -> None:
+def maybe_send_usage_alerts(
+    workspace: Any, new_usage: int, limit: int, hard_at: int | None = None
+) -> None:
     """Send threshold-crossing alert emails for a usage increment.
 
     Safe to call on every webhook: it only sends when ``new_usage``
@@ -95,13 +98,16 @@ def maybe_send_usage_alerts(workspace: Any, new_usage: int, limit: int) -> None:
         workspace: Workspace whose usage was just incremented.
         new_usage: Usage count after the atomic increment.
         limit: Monthly event limit for the workspace's plan.
+        hard_at: Pre-computed hard cap, to reuse a value the caller
+            already fetched instead of re-querying the plan row.
     """
     try:
         warn_at = warning_count(limit)
         if new_usage == warn_at and warn_at <= limit:
             _send_warning_alert(workspace, new_usage, limit)
         elif new_usage > limit:
-            hard_at = hard_limit(limit, workspace.subscription_plan)
+            if hard_at is None:
+                hard_at = hard_limit(limit, workspace.subscription_plan)
             if new_usage == limit + 1:
                 _send_exceeded_alert(workspace, limit, hard_at)
             elif new_usage == hard_at and hard_at > limit:
@@ -158,7 +164,7 @@ def _send(subject: str, body: str, recipients: list[str]) -> None:
         )
         logger.info("Sent usage alert '%s' to %s", subject, recipients)
     except Exception as e:
-        logger.error("Failed to send usage alert '%s': %s", subject, e)
+        logger.error("Failed to send usage alert '%s': %s", subject, e, exc_info=True)
 
 
 def _send_warning_alert(workspace: Any, new_usage: int, limit: int) -> None:
