@@ -1,16 +1,19 @@
 # syntax=docker/dockerfile:1
-# Use the official Python image
-FROM python:3.14-slim
+# Build stage: Chainguard's -dev variant includes a shell and apk for build
+# tooling. Both stages must use the same tag so the venv built here runs on
+# the same interpreter version in the runtime stage.
+FROM cgr.dev/chainguard/python:latest-dev AS builder
+
+USER root
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 # Precompile dependencies to .pyc at build time so container boots skip
 # bytecode compilation (~1.1s saved per cold start)
 ENV UV_COMPILE_BYTECODE=1
-
-# Git SHA for Sentry release tracking (passed as build arg)
-ARG GIT_SHA=unknown
-ENV SENTRY_RELEASE=${GIT_SHA}
+# Build the venv against the image's interpreter so its symlinks resolve to
+# the same path in the runtime stage
+ENV UV_PYTHON=/usr/bin/python
 
 # Copy uv binary from official image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -20,9 +23,6 @@ COPY --from=oven/bun:latest /usr/local/bin/bun /usr/local/bin/
 
 # Set the working directory
 WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y libpq-dev gcc redis-tools postgresql-client && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files
 COPY pyproject.toml uv.lock /app/
@@ -54,8 +54,27 @@ RUN uv run --no-dev python manage.py collectstatic --noinput
 # Precompile application code to bytecode (deps are handled by UV_COMPILE_BYTECODE)
 RUN /app/.venv/bin/python -m compileall -q -x '(\.venv|node_modules)' /app
 
+# Drop frontend build inputs so they don't ship in the runtime image
+RUN rm -rf /app/node_modules /app/src /app/package.json /app/bun.lock /app/postcss.config.js
+
+# Runtime stage: distroless (no shell, no package manager), runs as nonroot
+FROM cgr.dev/chainguard/python:latest
+
+ENV PYTHONUNBUFFERED=1
+
+# Git SHA for Sentry release tracking (passed as build arg)
+ARG GIT_SHA=unknown
+ENV SENTRY_RELEASE=${GIT_SHA}
+
+WORKDIR /app
+COPY --from=builder /app /app
+
 # Port that the application will use
 EXPOSE 8080
+
+# The base image's entrypoint is `python`; reset it so CMD (and
+# docker-compose `command:` overrides) execute as-is
+ENTRYPOINT []
 
 # Command to start the server
 # Invoke uvicorn from the venv directly: `uv run` re-validates the lockfile and

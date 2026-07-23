@@ -10,7 +10,6 @@ dependencies = [
     "django>=5.2.16,<6.0.0",
     "requests>=2.34.2,<3.0.0",
     "uvicorn[standard]>=0.51.0",
-    "psycopg2>=2.9.12,<3.0.0",
     "stripe>=15.3.1,<16.0.0",
     "shopifyapi>=12.7.0,<13.0.0",
     "django-allauth>=65.18.0,<66.0.0",
@@ -20,6 +19,7 @@ dependencies = [
     "sentry-sdk[django]>=2.66.0",
     "disposable-email-domains>=0.0.227",
     "cryptography>=43.0.0",
+    "psycopg2-binary>=2.9.12,<3.0.0",
 ]
 
 [dependency-groups]

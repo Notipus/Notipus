@@ -2,20 +2,27 @@
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 # This file provides development-specific overrides for the multi-container setup
 
+# Mount source directories individually so the image's /app/.venv (and built
+# static assets) stay visible — a blanket ./app:/app mount would hide them.
+x-dev-volumes: &dev-volumes
+  - ./app/core:/app/core
+  - ./app/django_notipus:/app/django_notipus
+  - ./app/plugins:/app/plugins
+  - ./app/webhooks:/app/webhooks
+  - ./app/manage.py:/app/manage.py
+
 services:
   # Override migration service for development
   migration:
-    volumes:
-      - ./app:/app  # Live code reloading for migration files
+    volumes: *dev-volumes
 
   # Override Django service for development
   django:
-    # Use development server instead of gunicorn for auto-reload
-    command: ["uv", "run", "python", "manage.py", "runserver", "0.0.0.0:8000"]
+    # Use Django's dev server for auto-reload; invoke the venv's python
+    # directly — the Chainguard runtime image has no uv (or shell)
+    command: ["/app/.venv/bin/python", "manage.py", "runserver", "0.0.0.0:8000"]
     environment:
       - DEBUG=True
-    # Enable live code reloading for development
-    volumes:
-      - ./app:/app
+    volumes: *dev-volumes
     ports:
       - "8000:8000"
