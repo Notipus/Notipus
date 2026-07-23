@@ -72,6 +72,23 @@ class TestThresholds:
         assert hard_limit(20, "free") == 30
 
     @pytest.mark.django_db
+    def test_hard_limit_rounds_fractional_caps_up(self) -> None:
+        """A fractional limit x multiplier product rounds up, not down.
+
+        Truncation would cut customers off earlier than the configured
+        cap; ceiling rounding always errs in the customer's favor.
+        """
+        Plan.objects.update_or_create(
+            name="free",
+            defaults={
+                "display_name": "Free",
+                "price_monthly": 0,
+                "grace_multiplier": Decimal("1.25"),
+            },
+        )
+        assert hard_limit(2, "free") == 3  # 2 * 1.25 = 2.5 -> 3
+
+    @pytest.mark.django_db
     def test_hard_limit_defaults_without_plan_row(self) -> None:
         """A missing Plan row falls back to the default 2x grace factor."""
         assert hard_limit(20, "nonexistent") == 40

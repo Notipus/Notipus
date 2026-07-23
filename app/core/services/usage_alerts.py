@@ -12,7 +12,7 @@ observes each threshold value.
 """
 
 import logging
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 from django.conf import settings
@@ -77,10 +77,11 @@ def hard_limit(limit: int, plan_name: str) -> int:
 
     Returns:
         Usage count at which delivery is paused, never below the plan
-        limit itself. Computed in Decimal so float rounding can never
-        shrink the configured cap.
+        limit itself. Computed in Decimal with ceiling rounding so
+        neither float error nor truncation can shrink the configured cap.
     """
-    return max(int(Decimal(limit) * grace_multiplier_for(plan_name)), limit)
+    product = Decimal(limit) * grace_multiplier_for(plan_name)
+    return max(int(product.to_integral_value(rounding=ROUND_CEILING)), limit)
 
 
 def maybe_send_usage_alerts(
