@@ -7,6 +7,7 @@ This module contains tests for the Stripe billing features including:
 - Webhook handlers for checkout and billing events
 """
 
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
@@ -1728,6 +1729,46 @@ class TestCheckoutBillingInterval:
         assert response.status_code == 302
         assert response.url == "https://checkout.stripe.com/x"
 
+    @patch("core.services.stripe.StripeAPI.get_price")
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_lookup_miss_with_null_db_price_fetches_amount(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price_by_key: MagicMock,
+        mock_get_price: MagicMock,
+        interval_setup: Any,
+    ) -> None:
+        """When the yearly amount lives only behind the stored price id,
+        it is fetched so analytics and metadata carry the real value."""
+        from core.models import Plan
+        from django.urls import reverse
+
+        Plan.objects.filter(name="pro").update(price_yearly=None)
+        client = interval_setup
+        mock_get_or_create.return_value = {"id": "cus_new"}
+        mock_get_price_by_key.return_value = None
+        mock_get_price.return_value = {
+            "id": "price_pro_yearly",
+            "unit_amount": 99000,
+            "currency": "usd",
+        }
+        mock_create_session.return_value = {
+            "id": "cs_x",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(
+            reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
+        )
+
+        assert response.status_code == 302
+        mock_get_price.assert_called_once_with("price_pro_yearly")
+        metadata = mock_create_session.call_args.kwargs["metadata"]
+        assert metadata["amount"] == "990.00"
+
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
     @patch("core.services.stripe.StripeAPI.get_or_create_customer")
@@ -1888,6 +1929,29 @@ class TestYearlyPricingAnnotation:
         assert plans[0]["price_yearly"] == "990"
         assert plans[0]["price_yearly_per_month"] == "82.50"
         assert plans[0]["yearly_savings"] == "198"
+
+    def test_prices_with_cents_keep_their_cents(self) -> None:
+        """Non-whole-dollar prices must not be rounded to whole dollars."""
+        from core.models import Plan
+        from core.views.billing import _annotate_yearly_pricing
+
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": Decimal("989.50"),
+                "is_active": True,
+                "stripe_price_id_yearly": "price_pro_yearly",
+            },
+        )
+        plans: list[dict[str, Any]] = [{"id": "pro", "price": "99"}]
+
+        _annotate_yearly_pricing(plans)
+
+        assert plans[0]["price_yearly"] == "989.50"
+        # 12 x 99 - 989.50
+        assert plans[0]["yearly_savings"] == "198.50"
 
     def test_savings_use_the_displayed_monthly_price(self) -> None:
         """Savings are consistent with the price shown on the card.

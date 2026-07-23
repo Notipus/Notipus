@@ -214,7 +214,7 @@ def _annotate_yearly_pricing(plans: list[dict[str, Any]]) -> None:
             or not row.stripe_price_id_yearly
         ):
             continue
-        plan["price_yearly"] = f"{row.price_yearly:.0f}"
+        plan["price_yearly"] = _format_dollars(row.price_yearly)
         plan["price_yearly_per_month"] = f"{row.price_yearly / 12:.2f}"
         try:
             displayed_monthly = Decimal(str(plan.get("price", 0)))
@@ -222,7 +222,7 @@ def _annotate_yearly_pricing(plans: list[dict[str, Any]]) -> None:
             continue
         savings = displayed_monthly * 12 - row.price_yearly
         if savings > 0:
-            plan["yearly_savings"] = f"{savings:.0f}"
+            plan["yearly_savings"] = _format_dollars(savings)
 
 
 @login_required
@@ -429,11 +429,36 @@ def _resolve_checkout_price(
 
     if interval == "yearly":
         price_id = plan.stripe_price_id_yearly or None
-        return price_id, plan.price_yearly
+        amount = plan.price_yearly
+        if price_id and amount is None:
+            # The stored price id proves an amount even when the local
+            # row was never backfilled — best effort, one extra call
+            # only on this narrow path.
+            fetched = stripe_api.get_price(price_id)
+            if fetched:
+                amount = _price_amount_major(fetched)
+        return price_id, amount
     price_id = plan.stripe_price_id_monthly or django_settings.STRIPE_PLANS.get(
         plan_name
     )
     return price_id, plan.price_monthly
+
+
+def _format_dollars(amount: Any) -> str:
+    """Format a dollar amount without inventing or rounding away cents.
+
+    Args:
+        amount: Decimal-compatible dollar amount.
+
+    Returns:
+        Whole-dollar amounts without a fractional part ("990"),
+        anything else with its two decimal places ("299.50") — rounding
+        to whole dollars would misstate a real price.
+    """
+    dec = Decimal(str(amount))
+    if dec == dec.to_integral_value():
+        return f"{dec:.0f}"
+    return f"{dec:.2f}"
 
 
 def _checkout_session_metadata(

@@ -457,6 +457,29 @@ class StripeAPI:
             logger.error(f"Unexpected error retrieving checkout session: {e!s}")
             return None
 
+    def get_price(self, price_id: str) -> dict[str, Any] | None:
+        """Retrieve a Stripe price by id.
+
+        Args:
+            price_id: The Stripe price ID.
+
+        Returns:
+            Dict with id, unit_amount, and currency, or None on failure.
+        """
+        try:
+            price = stripe.Price.retrieve(price_id, api_key=self.api_key)
+            return {
+                "id": price.id,
+                "unit_amount": _safe_getattr(price, "unit_amount"),
+                "currency": _safe_getattr(price, "currency"),
+            }
+        except stripe.StripeError as e:
+            logger.warning(f"Stripe error retrieving price {price_id}: {e!s}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error retrieving price {price_id}: {e!s}")
+            return None
+
     def expire_open_checkout_sessions(self, customer_id: str) -> int:
         """Expire all open Checkout Sessions for a customer.
 
