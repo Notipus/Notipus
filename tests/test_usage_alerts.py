@@ -54,6 +54,14 @@ class TestThresholds:
         assert warning_count(20) == 16
         assert warning_count(10000) == 8000
 
+    def test_warning_count_rounds_up_to_at_least_80_percent(self) -> None:
+        """A fractional 80% point rounds up so the warning never fires early.
+
+        Flooring would warn at 16/21 (~76%); the ceiling puts it at
+        17/21 (~81%).
+        """
+        assert warning_count(21) == 17
+
     def test_warning_count_never_below_one(self) -> None:
         """Tiny limits still get a positive warning threshold."""
         assert warning_count(1) == 1

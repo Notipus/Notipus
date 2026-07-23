@@ -608,7 +608,8 @@ class RateLimiter:
                 )
             rate_limit_info["over_limit"] = True
 
-        # Increment usage if allowed
+        # Increment usage — reached for every allowed request, including
+        # over-limit ones inside the grace window
         new_usage = self.increment_usage(organization)
         rate_limit_info["current_usage"] = new_usage
         # Only recompute remaining when the count is trustworthy; on a cache

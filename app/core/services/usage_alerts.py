@@ -20,9 +20,9 @@ from django.core.mail import send_mail
 
 logger = logging.getLogger(__name__)
 
-# Fraction of the plan limit at which the "approaching your limit"
+# Percentage of the plan limit at which the "approaching your limit"
 # warning email fires.
-WARNING_THRESHOLD = 0.8
+WARNING_THRESHOLD_PERCENT = 80
 
 # Grace factor applied when a plan has no Plan row in the database (or
 # the row cannot be read); per-plan policy lives in Plan.grace_multiplier.
@@ -36,9 +36,11 @@ def warning_count(limit: int) -> int:
         limit: Monthly event limit for the plan.
 
     Returns:
-        Usage count that triggers the approaching-limit warning.
+        Usage count that triggers the approaching-limit warning: the
+        first count at or above the threshold percentage, computed with
+        integer ceiling division so it never fires below it.
     """
-    return max(1, int(limit * WARNING_THRESHOLD))
+    return max(1, -(-limit * WARNING_THRESHOLD_PERCENT // 100))
 
 
 def grace_multiplier_for(plan_name: str) -> Decimal:
