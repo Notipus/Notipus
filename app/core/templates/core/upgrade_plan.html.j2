@@ -1,4 +1,5 @@
 {% extends "core/base.html.j2" %}
+{% load humanize %}
 
 {% block title %}
     Upgrade Plan - Notipus
@@ -32,7 +33,13 @@
                 <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between">
                     <div class="flex-1 min-w-0">
                         <h3 class="text-lg font-semibold truncate">Current Plan: {{ current_plan|title }}</h3>
-                        <p class="text-primary-100 mt-1 text-sm sm:text-base">Ready to unlock more features and higher limits?</p>
+                        {% if events_used %}
+                            <p class="text-primary-100 mt-1 text-sm sm:text-base">
+                                You've used {{ events_used|intcomma }} of the {{ events_limit|intcomma }} events in your plan this month{% if usage_percentage >= 80 and pause_at %} — delivery stops at {{ pause_at|intcomma }}{% endif %}.
+                            </p>
+                        {% else %}
+                            <p class="text-primary-100 mt-1 text-sm sm:text-base">Ready to unlock more features and higher limits?</p>
+                        {% endif %}
                     </div>
                     <div class="flex items-center mt-4 sm:mt-0 sm:ml-4">
                         <svg class="h-6 w-6 sm:h-8 sm:w-8 text-primary-200"
