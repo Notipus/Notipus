@@ -114,3 +114,15 @@ class TestCurrencyAndInterval:
     def test_no_interval_anywhere_is_none(self) -> None:
         """No interval in any shape returns None."""
         assert subscription_recurring_interval({"plan": {"amount": 1}}) is None
+
+    def test_malformed_interval_is_none(self) -> None:
+        """A non-string interval must not be stringified into a label."""
+        assert subscription_recurring_interval({"plan": {"interval": 123}}) is None
+        sub: dict[str, Any] = {
+            "items": {"data": [{"price": {"recurring": {"interval": ["month"]}}}]}
+        }
+        assert subscription_recurring_interval(sub) is None
+
+    def test_malformed_currency_is_none(self) -> None:
+        """A non-string currency must not be stringified into a label."""
+        assert subscription_currency({"currency": 840}) is None

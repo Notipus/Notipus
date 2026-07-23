@@ -106,13 +106,18 @@ def subscription_recurring_amount_cents(sub_data: dict[str, Any]) -> int | None:
     return None
 
 
+def _string_field(obj: Any, key: str) -> str | None:
+    """Return a dict's non-empty string value for ``key``, else None."""
+    if isinstance(obj, dict):
+        value = obj.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _currency_field(obj: Any) -> str | None:
     """Return a dict's non-empty ``currency`` string, else None."""
-    if isinstance(obj, dict):
-        currency = obj.get("currency")
-        if isinstance(currency, str) and currency:
-            return currency
-    return None
+    return _string_field(obj, "currency")
 
 
 def subscription_currency(sub_data: dict[str, Any]) -> str | None:
@@ -162,11 +167,13 @@ def subscription_recurring_interval(sub_data: dict[str, Any]) -> str | None:
         sub_data: Subscription payload dictionary.
 
     Returns:
-        Billing interval string, or None if not determinable.
+        Billing interval string, or None if not determinable — a
+        malformed non-string interval is not determinable rather than
+        something to stringify into the price label.
     """
-    plan = sub_data.get("plan")
-    if isinstance(plan, dict) and plan.get("interval"):
-        return str(plan["interval"])
+    interval = _string_field(sub_data.get("plan"), "interval")
+    if interval:
+        return interval
 
     items = sub_data.get("items")
     if not isinstance(items, dict):
@@ -180,11 +187,11 @@ def subscription_recurring_interval(sub_data: dict[str, Any]) -> str | None:
             continue
         price = item.get("price")
         if isinstance(price, dict):
-            recurring = price.get("recurring")
-            if isinstance(recurring, dict) and recurring.get("interval"):
-                return str(recurring["interval"])
-        item_plan = item.get("plan")
-        if isinstance(item_plan, dict) and item_plan.get("interval"):
-            return str(item_plan["interval"])
+            interval = _string_field(price.get("recurring"), "interval")
+            if interval:
+                return interval
+        interval = _string_field(item.get("plan"), "interval")
+        if interval:
+            return interval
 
     return None
