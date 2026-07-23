@@ -71,7 +71,8 @@ SLACK_ICONS: dict[str, str] = {
     "rocket": "rocket",
     "check": "white_check_mark",
     "calendar": "calendar",
-    "clock": "clock",
+    # Slack has no bare :clock: emoji, only numbered faces and :alarm_clock:
+    "clock": "alarm_clock",
     "email": "email",
     "phone": "phone",
     "globe": "globe_with_meridians",
