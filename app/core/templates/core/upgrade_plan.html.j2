@@ -46,6 +46,31 @@
                 </div>
             </div>
 
+            {% if has_yearly_plans %}
+                <!-- Billing interval toggle: yearly first, so the lower
+                     per-month price anchors (matches the marketing site) -->
+                <div class="flex justify-center mb-8">
+                    <div class="inline-flex items-center bg-white rounded-full border border-gray-200 shadow-sm p-1"
+                         role="radiogroup"
+                         aria-label="Billing interval">
+                        <button type="button"
+                                id="interval-toggle-yearly"
+                                class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
+                                data-interval="yearly"
+                                role="radio"
+                                aria-checked="true"
+                                tabindex="0">Yearly</button>
+                        <button type="button"
+                                id="interval-toggle-monthly"
+                                class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
+                                data-interval="monthly"
+                                role="radio"
+                                aria-checked="false"
+                                tabindex="-1">Monthly</button>
+                    </div>
+                </div>
+            {% endif %}
+
             <!-- Plan Comparison Cards -->
             <div class="grid grid-cols-1 {% if plans|length == 2 %}md:grid-cols-2 max-w-4xl mx-auto{% else %}md:grid-cols-2 lg:grid-cols-3{% endif %} gap-6 lg:gap-8 mb-8">
                 {% for plan in plans %}
@@ -96,9 +121,23 @@
 
                                 <h3 class="text-xl lg:text-2xl font-bold text-gray-900 mb-2">{{ plan.name }}</h3>
 
-                                <div class="flex items-baseline justify-center mb-2">
-                                    <span class="text-4xl lg:text-5xl font-extrabold {% if plan.recommended %}text-primary-600{% else %}text-gray-900{% endif %}">${{ plan.price }}</span>
-                                    <span class="ml-2 text-base lg:text-lg font-medium text-gray-500">/{{ plan.interval }}</span>
+                                {% if plan.price_yearly %}
+                                    <div class="price-yearly" data-interval-block="yearly">
+                                        <div class="flex items-baseline justify-center mb-1">
+                                            <span class="text-4xl lg:text-5xl font-extrabold {% if plan.recommended %}text-primary-600{% else %}text-gray-900{% endif %}">${{ plan.price_yearly_per_month }}</span>
+                                            <span class="ml-2 text-base lg:text-lg font-medium text-gray-500">/month</span>
+                                        </div>
+                                        <p class="text-sm text-gray-500 mb-2">
+                                            ${{ plan.price_yearly }} billed annually{% if plan.yearly_savings %} · Save ${{ plan.yearly_savings }}{% endif %}
+                                        </p>
+                                    </div>
+                                {% endif %}
+                                <div class="{% if plan.price_yearly %}price-monthly hidden{% endif %} mb-2"
+                                     {% if plan.price_yearly %}data-interval-block="monthly"{% endif %}>
+                                    <div class="flex items-baseline justify-center">
+                                        <span class="text-4xl lg:text-5xl font-extrabold {% if plan.recommended %}text-primary-600{% else %}text-gray-900{% endif %}">${{ plan.price }}</span>
+                                        <span class="ml-2 text-base lg:text-lg font-medium text-gray-500">/{{ plan.interval }}</span>
+                                    </div>
                                 </div>
 
                                 {% if plan.recommended %}
@@ -154,8 +193,9 @@
                                         </div>
                                     </div>
                                 {% else %}
-                                    <a href="{% url 'core:checkout' plan_name=plan.id %}"
-                                       class="group/btn w-full inline-flex items-center justify-center py-4 px-6 rounded-xl text-sm font-bold tracking-wide transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 {% if plan.recommended %}bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white border-2 border-primary-600{% else %}bg-white text-primary-600 border-2 border-primary-600 hover:bg-primary-50 hover:border-primary-700{% endif %}">
+                                    <a href="{% url 'core:checkout' plan_name=plan.id %}{% if plan.price_yearly %}?interval=yearly{% endif %}"
+                                       {% if plan.price_yearly %}data-checkout-base="{% url 'core:checkout' plan_name=plan.id %}"{% endif %}
+                                       class="checkout-link group/btn w-full inline-flex items-center justify-center py-4 px-6 rounded-xl text-sm font-bold tracking-wide transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 {% if plan.recommended %}bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white border-2 border-primary-600{% else %}bg-white text-primary-600 border-2 border-primary-600 hover:bg-primary-50 hover:border-primary-700{% endif %}">
                                         {% if plan.recommended %}
                                             <svg class="mr-2 h-5 w-5 group-hover/btn:scale-110 transition-transform"
                                                  fill="none"
@@ -269,4 +309,47 @@
             </div>
         </div>
     </div>
+    <script>
+        (function() {
+            const ACTIVE = ["bg-primary-600", "text-white", "shadow"];
+            const INACTIVE = ["text-gray-600"];
+            const radios = Array.from(document.querySelectorAll(".interval-toggle"));
+            if (!radios.length) return;
+
+            function select(interval, focus) {
+                radios.forEach(function(btn) {
+                    const on = btn.dataset.interval === interval;
+                    btn.setAttribute("aria-checked", on ? "true" : "false");
+                    btn.tabIndex = on ? 0 : -1;
+                    ACTIVE.forEach(function(c) {
+                        btn.classList.toggle(c, on);
+                    });
+                    INACTIVE.forEach(function(c) {
+                        btn.classList.toggle(c, !on);
+                    });
+                    if (on && focus) btn.focus();
+                });
+                document.querySelectorAll("[data-interval-block]").forEach(function(block) {
+                    block.classList.toggle("hidden", block.dataset.intervalBlock !== interval);
+                });
+                document.querySelectorAll(".checkout-link[data-checkout-base]").forEach(function(link) {
+                    link.href = link.dataset.checkoutBase + "?interval=" + interval;
+                });
+            }
+
+            radios.forEach(function(btn, index) {
+                btn.addEventListener("click", function() {
+                    select(btn.dataset.interval, false);
+                });
+                btn.addEventListener("keydown", function(event) {
+                    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+                    event.preventDefault();
+                    const step = (event.key === "ArrowRight" || event.key === "ArrowDown") ? 1 : -1;
+                    const next = radios[(index + step + radios.length) % radios.length];
+                    select(next.dataset.interval, true);
+                });
+            });
+            select("yearly", false);
+        })();
+    </script>
 {% endblock content %}

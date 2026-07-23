@@ -457,6 +457,72 @@ class StripeAPI:
             logger.error(f"Unexpected error retrieving checkout session: {e!s}")
             return None
 
+    def get_price(self, price_id: str) -> dict[str, Any] | None:
+        """Retrieve a Stripe price by id.
+
+        Args:
+            price_id: The Stripe price ID.
+
+        Returns:
+            Dict with id, unit_amount, and currency, or None on failure.
+        """
+        try:
+            price = stripe.Price.retrieve(price_id, api_key=self.api_key)
+            return {
+                "id": price.id,
+                "unit_amount": _safe_getattr(price, "unit_amount"),
+                "currency": _safe_getattr(price, "currency"),
+            }
+        except stripe.StripeError as e:
+            logger.warning(f"Stripe error retrieving price {price_id}: {e!s}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error retrieving price {price_id}: {e!s}")
+            return None
+
+    def expire_open_checkout_sessions(self, customer_id: str) -> int:
+        """Expire all open Checkout Sessions for a customer.
+
+        Called before creating a new checkout session so a customer can
+        never hold two live sessions at once — completing a stale
+        session after paying a newer one would create a second
+        subscription (double-billing). Best-effort: failures are logged
+        and must not block the new checkout.
+
+        Args:
+            customer_id: The Stripe customer ID.
+
+        Returns:
+            Number of sessions expired.
+        """
+        expired = 0
+        try:
+            sessions = stripe.checkout.Session.list(
+                customer=customer_id, status="open", limit=100, api_key=self.api_key
+            )
+            # auto_paging_iter follows has_more so no open session can
+            # hide beyond the first page.
+            for session in sessions.auto_paging_iter():
+                session_id = _safe_getattr(session, "id")
+                if not session_id:
+                    continue
+                try:
+                    stripe.checkout.Session.expire(session_id, api_key=self.api_key)
+                    expired += 1
+                except stripe.StripeError as e:
+                    logger.warning(
+                        f"Could not expire checkout session {session_id}: {e!s}"
+                    )
+        except stripe.StripeError as e:
+            logger.warning(
+                f"Could not list open checkout sessions for {customer_id}: {e!s}"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error expiring checkout sessions: {e!s}")
+        if expired:
+            logger.info(f"Expired {expired} open checkout session(s) for {customer_id}")
+        return expired
+
     def create_portal_session(
         self,
         customer_id: str,
