@@ -12,6 +12,7 @@ These tests cover two deliberate robustness properties:
 """
 
 import logging
+from decimal import Decimal
 from unittest.mock import Mock, patch
 
 import pytest
@@ -294,12 +295,19 @@ class TestEnforceDenyReason:
         """Reaching the hard cap raises the standard quota-breach message.
 
         The plan limit itself is soft; only the grace cap (limit times
-        the per-plan Plan.grace_multiplier) rejects requests.
+        the per-plan Plan.grace_multiplier) rejects requests. The
+        multiplier is pinned so this stays a DB-free unit test.
         """
         limiter = RateLimiter()
         org = _make_org(plan="free")  # free plan limit is 20, hard cap 40
 
-        with patch("webhooks.services.rate_limiter.cache") as mock_cache:
+        with (
+            patch("webhooks.services.rate_limiter.cache") as mock_cache,
+            patch(
+                "core.services.usage_alerts.grace_multiplier_for",
+                return_value=Decimal("2.00"),
+            ),
+        ):
             mock_cache.get.return_value = 40  # at the hard cap, cache healthy
             with pytest.raises(RateLimitException) as exc_info:
                 limiter.enforce_rate_limit(org)
