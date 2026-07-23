@@ -1,4 +1,4 @@
-"""Usage alert emails for monthly event limits.
+"""Billing alert emails to workspace owners and admins.
 
 Implements the notification side of soft limit enforcement: workspace
 owners and admins get a warning email when usage approaches the plan
@@ -6,9 +6,13 @@ limit, an "exceeded" email when usage crosses it (delivery continues
 inside the grace window), and a "paused" email when the hard cap is
 reached.
 
-Each alert fires exactly once per month without any persisted state:
-the usage counter increments atomically by one, so exactly one request
-observes each threshold value.
+Each usage alert fires exactly once per month without any persisted
+state: the usage counter increments atomically by one, so exactly one
+request observes each threshold value.
+
+Also home to the trial-ending alert, sent when Stripe fires
+customer.subscription.trial_will_end (~3 days before the workspace's
+own Notipus trial converts to a paid subscription).
 """
 
 import logging
@@ -248,6 +252,92 @@ Delivery only pauses if usage reaches {hard_at} events before your count
 resets on the first day of next month.
 
 You can upgrade any time here:
+{_billing_url()}
+
+- The Notipus Team
+"""
+    _send(subject, body, _admin_emails(workspace))
+
+
+def send_trial_ending_alert(
+    workspace: Any,
+    *,
+    ends_on: str | None = None,
+    price: str | None = None,
+    will_cancel: bool = False,
+) -> None:
+    """Email workspace admins that their Notipus trial is about to end.
+
+    Only proven payload fields appear in the copy: the end date and
+    converted price are omitted when Stripe did not supply them, never
+    guessed. Never raises — alert delivery must not break billing
+    webhook processing.
+
+    Args:
+        workspace: Workspace whose trial is ending.
+        ends_on: Human-readable trial end date (e.g. "February 8, 2026"),
+            or None when the payload carried no usable trial_end.
+        price: Formatted recurring price the trial converts to (e.g.
+            "$29.00/month"), or None when not determinable.
+        will_cancel: True when the subscription is set to cancel at the
+            end of the trial instead of converting.
+    """
+    try:
+        if will_cancel:
+            _send_trial_cancel_alert(workspace, ends_on)
+        else:
+            _send_trial_convert_alert(workspace, ends_on, price)
+    except Exception:
+        logger.exception(
+            "Failed to send trial ending alert for workspace %s",
+            getattr(workspace, "uuid", "unknown"),
+        )
+
+
+def _send_trial_convert_alert(
+    workspace: Any, ends_on: str | None, price: str | None
+) -> None:
+    """Email workspace admins that the trial converts to a paid plan."""
+    when = f"on {ends_on}" if ends_on else "soon"
+    continues = "your subscription continues automatically"
+    if price:
+        continues = f"{continues} at {price}"
+    subject = f"[Notipus] {workspace.name}: your trial ends {ends_on or 'soon'}"
+    body = f"""Hi,
+
+The {workspace.subscription_plan} plan trial for your workspace
+"{workspace.name}" ends {when}. After that, {continues} — no action
+needed to keep your notifications flowing.
+
+If you'd like to change or cancel your plan, you can do that any time here:
+{_billing_url()}
+
+- The Notipus Team
+"""
+    _send(subject, body, _admin_emails(workspace))
+
+
+def _send_trial_cancel_alert(workspace: Any, ends_on: str | None) -> None:
+    """Email workspace admins that delivery stops when the trial ends.
+
+    Sent when the subscription has cancel_at_period_end set, so the
+    trial will not convert — the concrete consequence is that Notipus
+    stops delivering notifications for the workspace.
+    """
+    when = f"on {ends_on}" if ends_on else "soon"
+    subject = (
+        f"[Notipus] {workspace.name}: your trial ends {ends_on or 'soon'} "
+        f"and delivery will stop"
+    )
+    body = f"""Hi,
+
+The {workspace.subscription_plan} plan trial for your workspace
+"{workspace.name}" ends {when}, and your subscription is set to cancel
+at that point. When it does, Notipus stops delivering notifications for
+this workspace.
+
+To keep your notifications flowing, reactivate your subscription before
+the trial ends:
 {_billing_url()}
 
 - The Notipus Team

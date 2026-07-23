@@ -809,17 +809,96 @@ class TestBillingServiceWebhooks:
         BillingService.handle_checkout_completed(session_data)
 
     def test_handle_trial_ending(self) -> None:
-        """Test trial ending handler."""
+        """The handler emails admins with the proven end date and price."""
         subscription_data: dict[str, Any] = {
             "customer": "cus_test123",
             "trial_end": 1704067200,
+            "currency": "usd",
+            "cancel_at_period_end": False,
+            "plan": {"amount": 2900, "interval": "month"},
         }
 
-        with patch("core.models.Workspace.objects.filter") as mock_filter:
+        with (
+            patch("core.models.Workspace.objects.filter") as mock_filter,
+            patch("webhooks.services.billing.send_trial_ending_alert") as mock_alert,
+        ):
             mock_ws = MagicMock(name="Test Workspace")
             mock_filter.return_value.first.return_value = mock_ws
-            # Should not raise
             BillingService.handle_trial_ending(subscription_data)
+            mock_alert.assert_called_once_with(
+                mock_ws,
+                ends_on="January 1, 2024",
+                price="$29.00/month",
+                will_cancel=False,
+            )
+
+    def test_handle_trial_ending_unknown_customer_sends_nothing(self) -> None:
+        """No workspace for the customer means no alert email."""
+        subscription_data: dict[str, Any] = {
+            "customer": "cus_unknown",
+            "trial_end": 1704067200,
+        }
+
+        with (
+            patch("core.models.Workspace.objects.filter") as mock_filter,
+            patch("webhooks.services.billing.send_trial_ending_alert") as mock_alert,
+        ):
+            mock_filter.return_value.first.return_value = None
+            BillingService.handle_trial_ending(subscription_data)
+            mock_alert.assert_not_called()
+
+    def test_handle_trial_ending_omits_unproven_fields(self) -> None:
+        """Missing trial_end and plan degrade to None, never guesses."""
+        subscription_data: dict[str, Any] = {
+            "customer": "cus_test123",
+            "trial_end": None,
+            "cancel_at_period_end": True,
+        }
+
+        with (
+            patch("core.models.Workspace.objects.filter") as mock_filter,
+            patch("webhooks.services.billing.send_trial_ending_alert") as mock_alert,
+        ):
+            mock_ws = MagicMock(name="Test Workspace")
+            mock_filter.return_value.first.return_value = mock_ws
+            BillingService.handle_trial_ending(subscription_data)
+            mock_alert.assert_called_once_with(
+                mock_ws,
+                ends_on=None,
+                price=None,
+                will_cancel=True,
+            )
+
+    def test_recurring_price_label_sums_multi_item_subscription(self) -> None:
+        """Prices-API payloads sum item amounts and read their interval."""
+        subscription_data: dict[str, Any] = {
+            "currency": "usd",
+            "plan": None,
+            "items": {
+                "data": [
+                    {
+                        "price": {
+                            "unit_amount": 1500,
+                            "recurring": {"interval": "year"},
+                        },
+                        "quantity": 2,
+                    },
+                ]
+            },
+        }
+        label = BillingService._recurring_price_label(subscription_data)
+        assert label == "$30.00/year"
+
+    def test_recurring_price_label_unknown_amount_is_none(self) -> None:
+        """A payload without any amount yields no price claim."""
+        assert BillingService._recurring_price_label({"plan": None}) is None
+
+    def test_format_timestamp_date_rejects_non_timestamps(self) -> None:
+        """Only real numeric timestamps produce a date."""
+        assert BillingService._format_timestamp_date(1704067200) == "January 1, 2024"
+        assert BillingService._format_timestamp_date(None) is None
+        assert BillingService._format_timestamp_date("soon") is None
+        assert BillingService._format_timestamp_date(True) is None
 
     def test_handle_invoice_paid_ignores_one_off_invoice(self) -> None:
         """A paid invoice with no subscription never touches the workspace."""

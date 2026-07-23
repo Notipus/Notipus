@@ -24,7 +24,13 @@ import stripe
 from core import analytics
 from core.models import Workspace
 from core.services.stripe import StripeAPI
+from core.services.usage_alerts import send_trial_ending_alert
 from django.db.models import Q
+from webhooks.utils.currency import format_money, from_minor_units
+from webhooks.utils.subscriptions import (
+    subscription_recurring_amount_cents,
+    subscription_recurring_interval,
+)
 
 from .redis_client import get_raw_redis_client
 
@@ -863,8 +869,11 @@ class BillingService:
     def handle_trial_ending(subscription: dict[str, Any]) -> None:
         """Handle trial ending notification (3 days before trial ends).
 
-        This event is fired when a subscription's trial is about to end.
-        Can be used to send reminder notifications to customers.
+        Emails workspace owners and admins that the trial is about to
+        end, saying when it ends and what it converts to when those
+        fields are present in the payload. When the subscription is set
+        to cancel at trial end, the email says delivery will stop
+        instead.
 
         Args:
             subscription: Subscription data from Stripe webhook.
@@ -875,18 +884,63 @@ class BillingService:
 
         trial_end = subscription.get("trial_end")
 
-        # Find workspace and log the event
         ws = Workspace.objects.filter(stripe_customer_id=customer_id).first()
-
-        if ws:
-            logger.info(
-                f"Trial ending soon for workspace {ws.name} "
-                f"(customer: {customer_id}), trial_end: {trial_end}"
-            )
-            # TODO: Send notification email to workspace admins
-            # TODO: Trigger Slack notification if configured
-        else:
+        if not ws:
             logger.warning(f"Trial ending for unknown customer {customer_id}")
+            return
+
+        logger.info(
+            f"Trial ending soon for workspace {ws.name} "
+            f"(customer: {customer_id}), trial_end: {trial_end}"
+        )
+        send_trial_ending_alert(
+            ws,
+            ends_on=BillingService._format_timestamp_date(trial_end),
+            price=BillingService._recurring_price_label(subscription),
+            will_cancel=bool(subscription.get("cancel_at_period_end")),
+        )
+        # TODO: Trigger Slack notification if configured
+
+    @staticmethod
+    def _format_timestamp_date(ts: Any) -> str | None:
+        """Format a unix timestamp as a human-readable UTC date.
+
+        Args:
+            ts: Unix timestamp from a Stripe payload, or anything else.
+
+        Returns:
+            A date like "February 8, 2026", or None when the value is
+            not a usable timestamp — the caller omits the date rather
+            than showing a guessed one.
+        """
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+            return None
+        try:
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return f"{dt:%B} {dt.day}, {dt.year}"
+
+    @staticmethod
+    def _recurring_price_label(subscription: dict[str, Any]) -> str | None:
+        """Format the recurring price a subscription bills at.
+
+        Args:
+            subscription: Subscription payload dictionary.
+
+        Returns:
+            A label like "$29.00/month", or None when the payload does
+            not prove an amount — a zero result is also treated as
+            unknown because the extractor cannot distinguish a genuine
+            $0 plan from missing data.
+        """
+        cents = subscription_recurring_amount_cents(subscription)
+        if not cents:
+            return None
+        currency = str(subscription.get("currency") or "USD")
+        money = format_money(from_minor_units(cents, currency), currency)
+        interval = subscription_recurring_interval(subscription)
+        return f"{money}/{interval}" if interval else money
 
     @staticmethod
     def handle_invoice_paid(invoice: dict[str, Any]) -> None:
