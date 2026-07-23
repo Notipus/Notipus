@@ -238,13 +238,33 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
             "seniority": employment.get("seniority") or data.get("seniority") or "",
             "company_domain": employment.get("domain") or "",
             "linkedin_url": self._build_linkedin_url(data.get("linkedin")),
-            "twitter_handle": data.get("twitter") or "",
-            "github_handle": data.get("github") or "",
+            "twitter_handle": self._extract_handle(data.get("twitter")),
+            "github_handle": self._extract_handle(data.get("github")),
             "location": self._build_location_string(data),
             "_raw": data,
         }
 
         return result
+
+    def _extract_handle(self, value: Any) -> str:
+        """Extract a scalar social handle from a Hunter.io response value.
+
+        Hunter.io returns social fields as nested objects
+        (e.g. ``{"handle": "johndoe", "followers": 42, ...}``), with
+        ``handle`` set to null when unknown. Older/mocked shapes use a
+        plain string. Anything else is unusable for a handle column.
+
+        Args:
+            value: The raw ``twitter``/``github`` value from the response.
+
+        Returns:
+            The handle string, or empty string if not present.
+        """
+        if isinstance(value, dict):
+            value = value.get("handle")
+        if isinstance(value, str):
+            return value
+        return ""
 
     def _build_linkedin_url(self, linkedin_handle: str | None) -> str:
         """Build full LinkedIn URL from handle.
