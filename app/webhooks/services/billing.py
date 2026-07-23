@@ -28,6 +28,7 @@ from core.services.usage_alerts import send_trial_ending_alert
 from django.db.models import Q
 from webhooks.utils.currency import format_money, from_minor_units
 from webhooks.utils.subscriptions import (
+    subscription_currency,
     subscription_recurring_amount_cents,
     subscription_recurring_interval,
 )
@@ -930,14 +931,18 @@ class BillingService:
 
         Returns:
             A label like "$29.00/month", or None when the payload does
-            not prove an amount — a zero result is also treated as
-            unknown because the extractor cannot distinguish a genuine
-            $0 plan from missing data.
+            not prove both an amount and a currency — a zero amount is
+            also treated as unknown because the extractor cannot
+            distinguish a genuine $0 plan from missing data, and
+            without a currency the minor-unit exponent and symbol
+            would be guesses.
         """
         cents = subscription_recurring_amount_cents(subscription)
         if not cents:
             return None
-        currency = str(subscription.get("currency") or "USD")
+        currency = subscription_currency(subscription)
+        if not currency:
+            return None
         money = format_money(from_minor_units(cents, currency), currency)
         interval = subscription_recurring_interval(subscription)
         return f"{money}/{interval}" if interval else money

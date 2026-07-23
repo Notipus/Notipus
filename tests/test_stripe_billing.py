@@ -870,15 +870,16 @@ class TestBillingServiceWebhooks:
             )
 
     def test_recurring_price_label_sums_multi_item_subscription(self) -> None:
-        """Prices-API payloads sum item amounts and read their interval."""
+        """Prices-API payloads sum item amounts and read the item's
+        currency and interval when the top level carries neither."""
         subscription_data: dict[str, Any] = {
-            "currency": "usd",
             "plan": None,
             "items": {
                 "data": [
                     {
                         "price": {
                             "unit_amount": 1500,
+                            "currency": "usd",
                             "recurring": {"interval": "year"},
                         },
                         "quantity": 2,
@@ -892,6 +893,17 @@ class TestBillingServiceWebhooks:
     def test_recurring_price_label_unknown_amount_is_none(self) -> None:
         """A payload without any amount yields no price claim."""
         assert BillingService._recurring_price_label({"plan": None}) is None
+
+    def test_recurring_price_label_unknown_currency_is_none(self) -> None:
+        """An amount without a currency anywhere yields no price claim.
+
+        Defaulting to USD would guess both the symbol and the
+        minor-unit exponent (a JPY amount is not divided by 100).
+        """
+        subscription_data: dict[str, Any] = {
+            "plan": {"amount": 2900, "interval": "month"},
+        }
+        assert BillingService._recurring_price_label(subscription_data) is None
 
     def test_format_timestamp_date_rejects_non_timestamps(self) -> None:
         """Only real numeric timestamps produce a date."""

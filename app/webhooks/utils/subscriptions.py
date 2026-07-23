@@ -88,6 +88,51 @@ def subscription_recurring_amount_cents(sub_data: dict[str, Any]) -> int | None:
     return None
 
 
+def _currency_field(obj: Any) -> str | None:
+    """Return a dict's non-empty ``currency`` string, else None."""
+    if isinstance(obj, dict):
+        currency = obj.get("currency")
+        if isinstance(currency, str) and currency:
+            return currency
+    return None
+
+
+def subscription_currency(sub_data: dict[str, Any]) -> str | None:
+    """Extract the ISO currency code for a subscription.
+
+    Reads the top-level ``currency`` first, then the legacy top-level
+    ``plan.currency``, then the first item's ``price.currency`` or
+    ``plan.currency``.
+
+    Args:
+        sub_data: Subscription payload dictionary.
+
+    Returns:
+        Currency code string, or None if the payload does not carry one.
+    """
+    currency = _currency_field(sub_data) or _currency_field(sub_data.get("plan"))
+    if currency:
+        return currency
+
+    items = sub_data.get("items")
+    if not isinstance(items, dict):
+        return None
+    items_data = items.get("data")
+    if not isinstance(items_data, list):
+        return None
+
+    for item in items_data:
+        if not isinstance(item, dict):
+            continue
+        currency = _currency_field(item.get("price")) or _currency_field(
+            item.get("plan")
+        )
+        if currency:
+            return currency
+
+    return None
+
+
 def subscription_recurring_interval(sub_data: dict[str, Any]) -> str | None:
     """Extract the billing interval ("month", "year", ...) for a subscription.
 
