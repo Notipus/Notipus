@@ -4,8 +4,7 @@ Implements the notification side of soft limit enforcement: workspace
 owners and admins get a warning email when usage approaches the plan
 limit, an "exceeded" email when usage crosses it (delivery continues
 inside the grace window), and a "paused" email when the hard cap is
-reached. The operator is copied on the exceeded and paused alerts so
-they can reach out about upgrading.
+reached.
 
 Each alert fires exactly once per month without any persisted state:
 the usage counter increments atomically by one, so exactly one request
@@ -162,12 +161,6 @@ def _send(subject: str, body: str, recipients: list[str]) -> None:
         logger.error("Failed to send usage alert '%s': %s", subject, e)
 
 
-def _operator_recipients() -> list[str]:
-    """Return the operator alert address, if one is configured."""
-    operator_email = getattr(settings, "USAGE_ALERT_OPERATOR_EMAIL", "")
-    return [operator_email] if operator_email else []
-
-
 def _send_warning_alert(workspace: Any, new_usage: int, limit: int) -> None:
     """Email workspace admins that usage is approaching the plan limit."""
     subject = f"[Notipus] {workspace.name}: {new_usage} of {limit} monthly events used"
@@ -188,17 +181,16 @@ Your event count resets on the first day of next month.
 
 
 def _send_exceeded_alert(workspace: Any, limit: int, hard_at: int) -> None:
-    """Email admins and the operator that the plan limit was exceeded."""
+    """Email workspace admins that the plan limit was exceeded."""
     subject = f"[Notipus] {workspace.name} has exceeded its monthly event limit"
     body = f"""Hi,
 
 Your workspace "{workspace.name}" has gone past the {limit} events included
 in your {workspace.subscription_plan} plan this month.
 
-Nothing has been cut off — your notifications are still being delivered,
-and we'll reach out to discuss which plan fits your volume. Delivery only
-pauses if usage reaches {hard_at} events before your count resets on the
-first day of next month.
+Nothing has been cut off — your notifications are still being delivered.
+Delivery only pauses if usage reaches {hard_at} events before your count
+resets on the first day of next month.
 
 You can upgrade any time here:
 {_billing_url()}
@@ -206,19 +198,10 @@ You can upgrade any time here:
 - The Notipus Team
 """
     _send(subject, body, _admin_emails(workspace))
-    _send(
-        f"[Notipus operator] {workspace.name} exceeded its event limit "
-        f"({limit}, plan: {workspace.subscription_plan})",
-        f"Workspace {workspace.name} ({workspace.uuid}) exceeded its monthly "
-        f"event limit of {limit} on the {workspace.subscription_plan} plan. "
-        f"Delivery continues until {hard_at} events. Reach out to discuss "
-        "upgrading.",
-        _operator_recipients(),
-    )
 
 
 def _send_paused_alert(workspace: Any, limit: int, hard_at: int) -> None:
-    """Email admins and the operator that delivery is paused at the hard cap."""
+    """Email workspace admins that delivery is paused at the hard cap."""
     subject = f"[Notipus] {workspace.name}: notification delivery paused"
     body = f"""Hi,
 
@@ -231,11 +214,3 @@ first day of next month, or immediately after you upgrade:
 - The Notipus Team
 """
     _send(subject, body, _admin_emails(workspace))
-    _send(
-        f"[Notipus operator] {workspace.name} hit the hard cap "
-        f"({hard_at} events, plan: {workspace.subscription_plan})",
-        f"Workspace {workspace.name} ({workspace.uuid}) reached the hard cap "
-        f"of {hard_at} events (plan limit {limit}) and delivery is now "
-        "paused until the monthly reset or an upgrade.",
-        _operator_recipients(),
-    )

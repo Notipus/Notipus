@@ -2,8 +2,8 @@
 
 Covers the FAQ-promised behavior: admins are warned by email when
 approaching the monthly event limit, delivery continues past the limit
-(with an exceeded email and an operator copy), and a hard per-plan
-grace cap pauses delivery only after those warnings have fired.
+(with an exceeded email), and a hard per-plan grace cap pauses delivery
+only after those warnings have fired.
 """
 
 from decimal import Decimal
@@ -18,7 +18,6 @@ from core.services.usage_alerts import (
 )
 from django.contrib.auth.models import User
 from django.core import mail
-from django.test import override_settings
 from webhooks.services.rate_limiter import RateLimiter, RateLimitException
 
 
@@ -112,33 +111,24 @@ class TestUsageAlertEmails:
 
         assert mail.outbox == []
 
-    @override_settings(USAGE_ALERT_OPERATOR_EMAIL="ops@notipus.com")
     def test_exceeded_email_at_limit_plus_one(self, workspace: Workspace) -> None:
-        """The first event over the limit emails admins and the operator."""
-        maybe_send_usage_alerts(workspace, new_usage=21, limit=20)
-
-        assert len(mail.outbox) == 2
-        admin_message, operator_message = mail.outbox
-        assert "exceeded" in admin_message.subject.lower()
-        assert "still being delivered" in admin_message.body.lower()
-        assert operator_message.to == ["ops@notipus.com"]
-        assert "reach out" in operator_message.body.lower()
-
-    def test_exceeded_without_operator_configured(self, workspace: Workspace) -> None:
-        """No operator address means only the admin email is sent."""
+        """The first event over the limit emails the workspace admins."""
         maybe_send_usage_alerts(workspace, new_usage=21, limit=20)
 
         assert len(mail.outbox) == 1
+        message = mail.outbox[0]
+        assert "exceeded" in message.subject.lower()
+        assert "still being delivered" in message.body.lower()
+        assert sorted(message.to) == ["admin@example.com", "owner@example.com"]
 
-    @override_settings(USAGE_ALERT_OPERATOR_EMAIL="ops@notipus.com")
     def test_paused_email_at_hard_cap(self, workspace: Workspace) -> None:
-        """Reaching the grace cap emails admins and the operator."""
+        """Reaching the grace cap emails the workspace admins."""
         maybe_send_usage_alerts(workspace, new_usage=40, limit=20)
 
-        assert len(mail.outbox) == 2
-        admin_message, operator_message = mail.outbox
-        assert "paused" in admin_message.subject.lower()
-        assert operator_message.to == ["ops@notipus.com"]
+        assert len(mail.outbox) == 1
+        message = mail.outbox[0]
+        assert "paused" in message.subject.lower()
+        assert sorted(message.to) == ["admin@example.com", "owner@example.com"]
 
     def test_send_failure_does_not_raise(self, workspace: Workspace) -> None:
         """A broken mail backend must never break webhook processing."""
