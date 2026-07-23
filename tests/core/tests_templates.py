@@ -220,9 +220,21 @@ class BillingTemplateTests(TestCase):
         response = self.client.get(reverse("core:billing_dashboard"))
         assert response.status_code == 200
 
-    def test_select_plan_renders(self) -> None:
-        """Test select plan page renders."""
+    def test_select_plan_redirects_workspace_owner_to_upgrade(self) -> None:
+        """Users with a workspace change plans on the upgrade page."""
         self.client.force_login(self.user)
+        response = self.client.get(reverse("core:select_plan"))
+        assert response.status_code == 302
+        assert response.url == reverse("core:upgrade_plan")
+
+    def test_select_plan_renders_for_workspace_less_user(self) -> None:
+        """The plan page still renders for a user without a workspace."""
+        lone_user = User.objects.create_user(
+            username="planless",
+            email="planless@example.com",
+            password="testpass123",
+        )
+        self.client.force_login(lone_user)
         response = self.client.get(reverse("core:select_plan"))
         assert response.status_code == 200
 

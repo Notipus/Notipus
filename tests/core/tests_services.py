@@ -691,24 +691,26 @@ class DashboardServiceTest(TestCase):
         self.assertFalse(result["has_chargify"])
         self.assertFalse(result["has_stripe"])
 
-    def test_setup_progress_starts_at_half_for_bare_workspace(self) -> None:
-        """A workspace with no integrations shows 3 of 6 steps done.
+    def test_setup_progress_starts_partially_done_for_bare_workspace(self) -> None:
+        """A workspace with no integrations shows 2 of 5 steps done.
 
-        Account, plan, and workspace are genuinely complete by the time
-        the dashboard renders — the checklist counts them instead of
+        Account and workspace are genuinely complete by the time the
+        dashboard renders — the checklist counts them instead of
         starting at zero, and never counts anything else unearned.
+        Plan choice is not a setup step: workspaces start on the free
+        plan and upgrading is a later decision.
         """
         from core.services.dashboard import DashboardService
 
         service = DashboardService()
         progress = service._get_integration_data(self.workspace)["setup_progress"]
 
-        self.assertEqual(progress["done_count"], 3)
-        self.assertEqual(progress["total"], 6)
-        self.assertEqual(progress["percent"], 50)
+        self.assertEqual(progress["done_count"], 2)
+        self.assertEqual(progress["total"], 5)
+        self.assertEqual(progress["percent"], 40)
         self.assertFalse(progress["complete"])
         done_keys = {s["key"] for s in progress["steps"] if s["done"]}
-        self.assertEqual(done_keys, {"account", "plan", "workspace"})
+        self.assertEqual(done_keys, {"account", "workspace"})
 
     def test_setup_progress_counts_slack_and_source(self) -> None:
         """Connecting Slack and a source completes those steps only.
@@ -731,7 +733,7 @@ class DashboardServiceTest(TestCase):
         service = DashboardService()
         progress = service._get_integration_data(self.workspace)["setup_progress"]
 
-        self.assertEqual(progress["done_count"], 5)
+        self.assertEqual(progress["done_count"], 4)
         self.assertFalse(progress["complete"])
         open_keys = {s["key"] for s in progress["steps"] if not s["done"]}
         self.assertEqual(open_keys, {"first_event"})
@@ -756,7 +758,7 @@ class DashboardServiceTest(TestCase):
         service = DashboardService()
         progress = service._get_integration_data(self.workspace)["setup_progress"]
 
-        self.assertEqual(progress["done_count"], 6)
+        self.assertEqual(progress["done_count"], 5)
         self.assertEqual(progress["percent"], 100)
         self.assertTrue(progress["complete"])
 

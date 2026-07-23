@@ -29,14 +29,22 @@ _get_user_workspace = get_workspace_for_user
 
 @login_required
 def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
-    """Plan selection page.
+    """Plan selection page for users who do not have a workspace yet.
+
+    New signups get a free workspace auto-provisioned by the dashboard,
+    so plan decisions for existing workspaces belong to the upgrade
+    page — anyone who lands here with a workspace is redirected there.
 
     Args:
         request: The HTTP request object.
 
     Returns:
-        Plan selection page or redirect on successful selection.
+        Plan selection page, redirect on successful selection, or
+        redirect to the upgrade page for workspace owners.
     """
+    if _get_user_workspace(request.user):
+        return redirect("core:upgrade_plan")
+
     if request.method == "POST":
         selected_plan = request.POST.get("plan")
         # Validate against available plans
