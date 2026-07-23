@@ -12,8 +12,8 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
 
 from .. import analytics
+from ..constants import SLACK_TEAM_NAME_SESSION_KEY
 from ..models import UserProfile, Workspace, WorkspaceMember
-from .auth import SLACK_TEAM_NAME_SESSION_KEY
 from .integrations.base import require_admin_role
 
 logger = logging.getLogger(__name__)

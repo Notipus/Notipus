@@ -16,6 +16,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect
 
 from .. import analytics
+from ..constants import SLACK_TEAM_NAME_CLAIM, SLACK_TEAM_NAME_SESSION_KEY
 from ..models import UserProfile, Workspace
 
 logger = logging.getLogger(__name__)
@@ -25,13 +26,6 @@ SLACK_API_TIMEOUT = 30
 
 # Session key for the Slack OAuth login state parameter (CSRF protection)
 SLACK_AUTH_STATE_SESSION_KEY = "slack_auth_oauth_state"
-
-# Session key for the Slack team name captured at login, used to prefill
-# the workspace name during onboarding.
-SLACK_TEAM_NAME_SESSION_KEY = "slack_team_name"
-
-# Slack's OpenID Connect userInfo response namespaces its custom claims.
-SLACK_TEAM_NAME_CLAIM = "https://slack.com/team_name"
 
 # The captured team name prefills Workspace.name, so cap it to that
 # field's length ("or 200" only pacifies max_length's Optional typing).

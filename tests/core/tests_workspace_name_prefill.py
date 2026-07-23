@@ -8,11 +8,8 @@ so users are not asked to retype (or improvise) their organization name.
 from unittest.mock import Mock, patch
 
 import pytest
-from core.views.auth import (
-    SLACK_TEAM_NAME_CLAIM,
-    SLACK_TEAM_NAME_SESSION_KEY,
-    WORKSPACE_NAME_MAX_LENGTH,
-)
+from core.constants import SLACK_TEAM_NAME_CLAIM, SLACK_TEAM_NAME_SESSION_KEY
+from core.views.auth import WORKSPACE_NAME_MAX_LENGTH
 from django.contrib.auth.models import User
 from django.test import Client
 from django.urls import reverse
@@ -110,6 +107,39 @@ class TestSlackTeamNameCapture:
         self._callback(client, _mock_userinfo(**{SLACK_TEAM_NAME_CLAIM: "   "}))
 
         assert SLACK_TEAM_NAME_SESSION_KEY not in client.session
+
+    def test_team_name_survives_login_session_flush(self, client: Client) -> None:
+        """The team name is stored after login() and survives its flush.
+
+        Django's ``login()`` flushes the session when a different user
+        was previously logged in; the capture must happen after that or
+        the value would be lost. Simulate the flush explicitly.
+        """
+        session = client.session
+        session["slack_auth_oauth_state"] = "shared"
+        session.save()
+
+        with (
+            patch(
+                "core.views.auth.login",
+                side_effect=lambda request, user, **kwargs: request.session.flush(),
+            ),
+            patch(
+                "core.views.auth._get_slack_token",
+                return_value={"ok": True, "access_token": "tok"},
+            ),
+            patch(
+                "core.views.auth._get_slack_user_info",
+                return_value=_mock_userinfo(**{SLACK_TEAM_NAME_CLAIM: "Acme Inc"}),
+            ),
+        ):
+            response = client.get(
+                reverse("core:slack_auth_callback"),
+                {"code": "abc", "state": "shared"},
+            )
+
+        assert response.status_code == 302
+        assert client.session[SLACK_TEAM_NAME_SESSION_KEY] == "Acme Inc"
 
 
 @pytest.mark.django_db
