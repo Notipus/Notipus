@@ -777,7 +777,11 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
             ):
                 session_metadata = checkout_session.get("metadata", {})
                 plan_name = session_metadata.get("plan_name")
+                # Normalize: metadata is caller-supplied at retrieval
+                # time, and analytics cardinality must stay bounded.
                 purchased_interval = session_metadata.get("interval")
+                if purchased_interval not in ("monthly", "yearly"):
+                    purchased_interval = None
                 purchased_amount = _parse_metadata_amount(
                     session_metadata.get("amount")
                 )

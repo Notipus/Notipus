@@ -364,6 +364,35 @@ class TestFunnelEvents:
         assert event["params"]["value"] == 990.0
         assert event["params"]["interval"] == "yearly"
 
+    def test_corrupted_interval_metadata_reports_monthly(
+        self, ga4: MagicMock, logged_in_client: Client, user: User, db: None
+    ) -> None:
+        """An unexpected interval value is normalized, keeping analytics
+        cardinality bounded and the fallback on the monthly price."""
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "is_active": True,
+            },
+        )
+        workspace = Workspace.objects.create(name="Acme", stripe_customer_id="cus_123")
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
+
+        with patch("core.services.stripe.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.retrieve_checkout_session.return_value = {
+                "customer": "cus_123",
+                "metadata": {"plan_name": "pro", "interval": "weekly"},
+            }
+            logged_in_client.get(
+                reverse("core:checkout_success"), {"session_id": "cs_test_w"}
+            )
+
+        (event,) = _events_named(ga4, "purchase")
+        assert event["params"]["interval"] == "monthly"
+        assert event["params"]["value"] == 99.0
+
     def test_purchase_prefers_amount_resolved_at_checkout(
         self, ga4: MagicMock, logged_in_client: Client, user: User, db: None
     ) -> None:
