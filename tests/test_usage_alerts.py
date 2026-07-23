@@ -269,6 +269,30 @@ class TestSoftLimitEnforcement:
 
         mock_alerts.assert_not_called()
 
+    def test_racing_past_soft_limit_with_no_grace_rejects(self) -> None:
+        """A racer slipping past the pre-check cannot bypass a no-grace cap.
+
+        With grace_multiplier <= 1 the cap equals the limit. Two racers
+        at limit - 1 both pass the pre-check without fetching the cap;
+        the post-increment check must fetch it and still reject the one
+        that landed over the limit.
+        """
+        limiter = RateLimiter()
+
+        with (
+            patch("webhooks.services.rate_limiter.cache") as mock_cache,
+            patch.object(limiter, "get_hard_limit", return_value=20),
+            patch(
+                "core.services.usage_alerts.maybe_send_usage_alerts"
+            ) as mock_alerts,
+        ):
+            mock_cache.get.return_value = 19  # within the plan limit
+            mock_cache.incr.return_value = 21  # a racer got there first
+            with pytest.raises(RateLimitException):
+                limiter.enforce_rate_limit(self._org())
+
+        mock_alerts.assert_not_called()
+
     def test_increment_landing_exactly_on_hard_cap_is_allowed(self) -> None:
         """The request that lands exactly on the cap still delivers.
 

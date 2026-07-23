@@ -94,8 +94,8 @@ def maybe_send_usage_alerts(
     Safe to call on every webhook: it only sends when ``new_usage``
     lands exactly on a threshold, and it never raises — alert delivery
     must not break webhook processing. The per-plan hard cap is only
-    looked up once usage is over the limit, so the common under-limit
-    path adds no database query.
+    looked up once usage reaches the plan limit, so the common
+    under-limit path adds no database query.
 
     Args:
         workspace: Workspace whose usage was just incremented.

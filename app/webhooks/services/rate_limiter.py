@@ -618,12 +618,16 @@ class RateLimiter:
         if rate_limit_info.get("cache_healthy", True):
             rate_limit_info["remaining"] = max(0, rate_limit_info["limit"] - new_usage)
             rate_limit_info["over_limit"] = new_usage > rate_limit_info["limit"]
-            # The pre-check races: two requests can both observe
-            # hard_cap - 1 and both pass, letting one increment past the
-            # cap. The increment is atomic, so re-checking the
-            # post-increment count closes the race; hard_cap is only set
-            # on the over-limit path, which is the only place the race
-            # can overshoot.
+            # The pre-check races: two requests can both observe the
+            # same pre-increment count and both pass, letting one
+            # increment past the cap. The increment is atomic, so
+            # re-checking the post-increment count closes the race. A
+            # racer can even slip past the soft-limit pre-check itself
+            # (both observing limit - 1), landing over the limit with
+            # hard_cap never fetched — compute it now so the cap check
+            # cannot be bypassed.
+            if new_usage > rate_limit_info["limit"] and hard_cap is None:
+                hard_cap = self.get_hard_limit(organization)
             if hard_cap is not None and new_usage > hard_cap:
                 raise RateLimitException(
                     f"Hard limit reached for plan "
