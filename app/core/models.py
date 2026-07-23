@@ -7,6 +7,7 @@ users, integrations, billing, and authentication-related models.
 import re
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from core.fields import EncryptedJSONField, EncryptedTextField
@@ -938,6 +939,8 @@ class Plan(models.Model):
         price_monthly: Monthly price in USD.
         max_users: Maximum users allowed.
         max_integrations: Maximum integrations allowed.
+        grace_multiplier: Soft-limit grace factor; webhooks keep flowing
+            past the monthly event limit until limit * grace_multiplier.
         features: List of included features.
     """
 
@@ -955,6 +958,9 @@ class Plan(models.Model):
     max_users: models.IntegerField = models.IntegerField(default=1)
     max_integrations: models.IntegerField = models.IntegerField(default=1)
     max_monthly_notifications: models.IntegerField = models.IntegerField(default=1000)
+    grace_multiplier: models.DecimalField = models.DecimalField(
+        max_digits=4, decimal_places=2, default=Decimal("2.00")
+    )
 
     # Features
     features: models.JSONField = models.JSONField(default=list)

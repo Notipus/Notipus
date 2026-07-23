@@ -385,6 +385,11 @@ EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@notipus.com")
 
+# Deployment operator address copied on exceeded/paused usage alerts so
+# someone can reach out about upgrading; empty disables operator copies.
+# Per-plan soft-limit policy lives in the database (Plan.grace_multiplier).
+USAGE_ALERT_OPERATOR_EMAIL = os.environ.get("USAGE_ALERT_OPERATOR_EMAIL", "")
+
 # Email and verification
 ACCOUNT_EMAIL_VERIFICATION = os.environ.get("ACCOUNT_EMAIL_VERIFICATION", "optional")
 

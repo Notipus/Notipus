@@ -291,13 +291,17 @@ class TestEnforceDenyReason:
         assert "rate limit exceeded" not in message
 
     def test_actual_quota_breach_raises_exceeded_message(self) -> None:
-        """A real quota breach still raises the standard exceeded message."""
+        """Reaching the hard cap raises the standard quota-breach message.
+
+        The plan limit itself is soft; only the grace cap (limit times
+        RATE_LIMIT_HARD_MULTIPLIER) rejects requests.
+        """
         limiter = RateLimiter()
-        org = _make_org(plan="free")  # free plan limit is 20
+        org = _make_org(plan="free")  # free plan limit is 20, hard cap 40
 
         with patch("webhooks.services.rate_limiter.cache") as mock_cache:
-            mock_cache.get.return_value = 20  # at/over the limit, cache healthy
+            mock_cache.get.return_value = 40  # at the hard cap, cache healthy
             with pytest.raises(RateLimitException) as exc_info:
                 limiter.enforce_rate_limit(org)
 
-        assert "rate limit exceeded" in str(exc_info.value).lower()
+        assert "hard limit reached" in str(exc_info.value).lower()

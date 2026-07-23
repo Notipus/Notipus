@@ -206,6 +206,30 @@ class RateLimiter:
         plan = organization.subscription_plan
         return self.PLAN_LIMITS.get(plan, 20)  # Default to free plan limit
 
+    def get_hard_limit(self, organization: Any) -> int:
+        """Get the hard cap at which webhooks are actually rejected.
+
+        The plan limit is enforced softly: usage past it keeps flowing
+        (with alert emails) until this cap, so customers are never cut
+        off without warning. The cap is per-plan, configured via
+        Plan.grace_multiplier.
+
+        Args:
+            organization: Organization model instance.
+
+        Returns:
+            Usage count at which requests are rejected.
+        """
+        from core.services.usage_alerts import hard_limit
+
+        return cast(
+            int,
+            hard_limit(
+                self.get_organization_limit(organization),
+                organization.subscription_plan,
+            ),
+        )
+
     def _cache_get_with_health(self, key: str, default: int = 0) -> tuple[int, bool]:
         """Get a value from cache, reporting whether the cache path succeeded.
 
@@ -537,9 +561,13 @@ class RateLimiter:
             return 1
 
     def enforce_rate_limit(self, organization: Any) -> dict[str, Any]:
-        """Check rate limit and raise exception if exceeded.
+        """Enforce the soft/hard limit pair and increment the usage counter.
 
-        If within limits, increments usage counter.
+        The plan limit is soft: usage past it is still allowed (flagged
+        via ``over_limit`` in the returned info) until the hard cap from
+        get_hard_limit, so customers are warned by email before anything
+        is rejected. Threshold-crossing alert emails are dispatched here,
+        the single choke point where the counter increments.
 
         Args:
             organization: Organization model instance.
@@ -548,7 +576,8 @@ class RateLimiter:
             Rate limit information dictionary.
 
         Raises:
-            RateLimitException: If rate limit is exceeded.
+            RateLimitException: If the hard cap is reached, or on a cache
+                outage with RATE_LIMIT_FAIL_CLOSED enabled.
         """
         is_allowed, rate_limit_info = self.check_rate_limit(organization)
 
@@ -565,14 +594,18 @@ class RateLimiter:
                     current_usage=rate_limit_info["current_usage"],
                     reset_time=rate_limit_info["reset_time"],
                 )
-            raise RateLimitException(
-                f"Rate limit exceeded for plan '{organization.subscription_plan}'. "
-                f"Limit: {rate_limit_info['limit']}, "
-                f"Current usage: {rate_limit_info['current_usage']}",
-                limit=rate_limit_info["limit"],
-                current_usage=rate_limit_info["current_usage"],
-                reset_time=rate_limit_info["reset_time"],
-            )
+            hard_cap = self.get_hard_limit(organization)
+            if rate_limit_info["current_usage"] >= hard_cap:
+                raise RateLimitException(
+                    f"Hard limit reached for plan "
+                    f"'{organization.subscription_plan}'. "
+                    f"Limit: {rate_limit_info['limit']}, grace cap: {hard_cap}, "
+                    f"Current usage: {rate_limit_info['current_usage']}",
+                    limit=rate_limit_info["limit"],
+                    current_usage=rate_limit_info["current_usage"],
+                    reset_time=rate_limit_info["reset_time"],
+                )
+            rate_limit_info["over_limit"] = True
 
         # Increment usage if allowed
         new_usage = self.increment_usage(organization)
@@ -582,6 +615,13 @@ class RateLimiter:
         # consumers are not misled about how much quota is left.
         if rate_limit_info.get("cache_healthy", True):
             rate_limit_info["remaining"] = max(0, rate_limit_info["limit"] - new_usage)
+            rate_limit_info["over_limit"] = new_usage > rate_limit_info["limit"]
+            # Alerts key off exact threshold values, so a fallback-mode count
+            # (which can reset mid-month) must not drive them: skip when the
+            # cache is unhealthy rather than risk spurious or missed emails.
+            from core.services.usage_alerts import maybe_send_usage_alerts
+
+            maybe_send_usage_alerts(organization, new_usage, rate_limit_info["limit"])
 
         return rate_limit_info
 
