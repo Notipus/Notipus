@@ -523,6 +523,19 @@ class StripeSourcePlugin(BaseSourcePlugin):
             0 (no payment for trials).
         """
         data["_is_trial"] = True
+        self._stage_trial_fields(data)
+        return 0  # No payment for trials
+
+    def _stage_trial_fields(self, data: dict[str, Any]) -> None:
+        """Extract trial fields from a subscription payload into staging keys.
+
+        Shared by trial_started (via _flag_as_trial) and trial_ending,
+        whose payloads are both full subscription objects; the staged
+        keys feed _add_trial_metadata.
+
+        Args:
+            data: Event data dictionary (mutated with staged trial fields).
+        """
         data["_trial_end"] = data.get("trial_end")
         # Sum item amounts: top-level plan is null on multi-item subscriptions
         data["_plan_amount_cents"] = self._extract_subscription_amount(data)
@@ -532,8 +545,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
         trial_end = data.get("trial_end")
         if trial_start and trial_end:
             data["_trial_days"] = (trial_end - trial_start) // 86400
-
-        return 0  # No payment for trials
 
     def _handle_subscription_updated(self, data: dict[str, Any]) -> int:
         """Handle subscription_updated event with change detection.
@@ -704,6 +715,16 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if data.get("_is_trial"):
             self._add_trial_metadata(metadata, data)
 
+        # trial_will_end payloads are full subscription objects too, but
+        # they must not go through _flag_as_trial: its _is_trial flag
+        # would rename the event to trial_started in parse_webhook.
+        # Stage and attach the same trial metadata so the notification
+        # can say when the trial ends and what price it converts to,
+        # instead of a bare "Trial ending soon" with no context.
+        if event_type == "trial_ending":
+            self._stage_trial_fields(data)
+            self._add_trial_metadata(metadata, data)
+
         # Add change direction for subscription updates (upgrade/downgrade)
         if data.get("_change_direction"):
             metadata["change_direction"] = data["_change_direction"]
@@ -714,6 +735,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
             "subscription_updated",
             "subscription_deleted",
             "trial_started",
+            "trial_ending",
         }
         if event_type in subscription_events:
             self._add_subscription_metadata(metadata, event_type, data)

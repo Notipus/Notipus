@@ -695,6 +695,131 @@ class TestTrialConvertedDetection:
         assert result is None
 
 
+class TestTrialEndingDetection:
+    """Test the trial_ending insight (end date and post-trial price).
+
+    Stripe's trial_will_end payload is a full subscription object, so
+    trial_end and the plan price are proven fields the parser stages
+    into metadata; the insight must degrade gracefully when they are
+    missing rather than guessing.
+    """
+
+    def test_full_insight_with_date_and_price(self, detector: InsightDetector) -> None:
+        """Test end date plus post-trial price renders the full insight."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "currency": "USD",
+            "metadata": {
+                "is_trial": True,
+                "trial_end": 1770537317,  # Feb 8, 2026 UTC
+                "plan_amount": 26.60,
+                "billing_period": "monthly",
+            },
+        }
+
+        result = detector.detect(event, {})
+
+        assert result is not None
+        assert result.text == "Trial ends Feb 8, then $26.60/mo"
+        assert result.icon == "clock"
+
+    def test_date_only_when_plan_amount_missing(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test a missing plan amount degrades to the end date alone."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": {"is_trial": True, "trial_end": 1770537317},
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is not None
+        assert result.text == "Trial ends Feb 8"
+
+    def test_price_only_when_trial_end_missing(self, detector: InsightDetector) -> None:
+        """Test a missing end date degrades to the conversion price alone."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "currency": "USD",
+            "metadata": {
+                "is_trial": True,
+                "plan_amount": 26.60,
+                "billing_period": "monthly",
+            },
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is not None
+        assert result.text == "Converts to $26.60/mo at trial end"
+
+    def test_zero_plan_amount_still_renders(self, detector: InsightDetector) -> None:
+        """Test a $0 post-trial plan (free tier) is not treated as missing."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "currency": "USD",
+            "metadata": {
+                "is_trial": True,
+                "trial_end": 1770537317,
+                "plan_amount": 0.0,
+                "billing_period": "monthly",
+            },
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is not None
+        assert result.text == "Trial ends Feb 8, then $0.00/mo"
+
+    def test_silent_when_both_signals_missing(self, detector: InsightDetector) -> None:
+        """Test the detector stays silent with neither date nor price."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": {"is_trial": True},
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is None
+
+    def test_ignores_other_event_types(self, detector: InsightDetector) -> None:
+        """Test non-trial-ending events never trigger the insight."""
+        event = {
+            "type": "trial_started",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": {"trial_end": 1770537317, "plan_amount": 26.60},
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is None
+
+    def test_none_metadata_does_not_crash(self, detector: InsightDetector) -> None:
+        """Test that an explicit metadata=None is handled gracefully."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": None,
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is None
+
+
 class TestInitialPaymentFailureDetection:
     """Test surfacing of a payment_failure folded into an aggregated event."""
 

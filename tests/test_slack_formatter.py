@@ -813,6 +813,42 @@ class TestSlackDestinationPluginCustomerFooter:
 
         assert "Since Mar 2024" in text
 
+    def test_customer_footer_falls_back_to_customer_id(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the footer falls back to company_name identity.
+
+        When the payload carried neither email nor name (e.g. Stripe
+        trial_will_end before any invoice cached the address),
+        company_name holds get_display_name()'s fallback chain ending at
+        the provider customer id - the footer must show it so the
+        message still says who it is about.
+        """
+        basic_notification.customer = CustomerInfo(
+            email="",
+            name=None,
+            company_name="cus_TestCustomer123",
+        )
+        result = formatter.format(basic_notification)
+
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        footer_text = str(context_blocks[-1].get("elements", [{}])[0].get("text", ""))
+
+        assert "cus_TestCustomer123" in footer_text
+        assert ":bust_in_silhouette:" in footer_text
+
+    def test_customer_footer_id_fallback_not_used_with_email(
+        self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Test the identity fallback stays silent when an email exists."""
+        result = formatter.format(basic_notification)
+
+        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        footer_text = str(context_blocks[-1].get("elements", [{}])[0].get("text", ""))
+
+        assert "alice@acme.com" in footer_text
+        assert "Acme Inc" not in footer_text
+
     def test_customer_footer_icon_suppressed_with_person(
         self, formatter: SlackDestinationPlugin, basic_notification: RichNotification
     ) -> None:

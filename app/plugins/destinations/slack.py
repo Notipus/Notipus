@@ -842,6 +842,42 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             "elements": [{"type": "mrkdwn", "text": " · ".join(links)}],
         }
 
+    def _customer_identity_line(
+        self, customer: CustomerInfo, icon_prefix: str
+    ) -> str | None:
+        """Build the identity element of the customer footer.
+
+        Prefers the email (with compact domain-type badges, e.g.
+        ":bust_in_silhouette: jane@stanford.edu · :mortar_board:
+        Education"), then the name. Last resort is company_name, which
+        carries get_display_name()'s fallback chain ending at the
+        provider customer id (e.g. "cus_...") - an ugly-but-proven
+        identifier still beats a notification that names nobody (Stripe
+        trial_will_end before any invoice has cached the email).
+
+        Args:
+            customer: CustomerInfo object.
+            icon_prefix: Person-icon prefix, or empty string when a
+                person section already shows it.
+
+        Returns:
+            Identity string, or None when nothing identifies the
+            customer.
+        """
+        if customer.email:
+            email_parts = [f"{icon_prefix}{safe_mrkdwn(customer.email)}"]
+            email_parts.extend(
+                EMAIL_TAG_BADGES[tag]
+                for tag in customer.email_tags
+                if tag in EMAIL_TAG_BADGES
+            )
+            return " · ".join(email_parts)
+        if customer.name:
+            return f"{icon_prefix}{safe_mrkdwn(customer.name)}"
+        if customer.company_name:
+            return f"{icon_prefix}{safe_mrkdwn(customer.company_name)}"
+        return None
+
     def _format_customer_footer(
         self, customer: CustomerInfo, include_icon: bool = True
     ) -> dict[str, Any] | None:
@@ -859,20 +895,9 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         elements: list[str] = []
         icon_prefix = ":bust_in_silhouette: " if include_icon else ""
 
-        # Email, with compact domain-type badges (e.g.
-        # ":bust_in_silhouette: jane@stanford.edu · :mortar_board: Education")
-        if customer.email:
-            email_parts = [f"{icon_prefix}{safe_mrkdwn(customer.email)}"]
-            email_parts.extend(
-                EMAIL_TAG_BADGES[tag]
-                for tag in customer.email_tags
-                if tag in EMAIL_TAG_BADGES
-            )
-            elements.append(" · ".join(email_parts))
-
-        # Name if no email
-        if not customer.email and customer.name:
-            elements.append(f"{icon_prefix}{safe_mrkdwn(customer.name)}")
+        identity = self._customer_identity_line(customer, icon_prefix)
+        if identity:
+            elements.append(identity)
 
         # Tenure (no emoji for cleaner look)
         if customer.tenure_display:

@@ -428,6 +428,159 @@ class TestTrialSignupIntegration:
 
 
 @pytest.mark.django_db
+class TestTrialEndingIntegration:
+    """Integration test: trial_will_end webhook flow.
+
+    trial_will_end fires ~3 days before a trial ends and its payload is
+    a full subscription object, but it carries no customer email. The
+    notification must still say when the trial ends, what it converts
+    to, and who it is about (customer id fallback) - not a bare
+    "Trial ending soon" with an empty body.
+    """
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    @pytest.fixture
+    def event_processor(self) -> EventProcessor:
+        """Create an event processor instance."""
+        return EventProcessor()
+
+    @pytest.fixture
+    def trial_will_end_payload(self) -> dict[str, Any]:
+        """Realistic customer.subscription.trial_will_end webhook payload."""
+        return {
+            "id": "evt_3ABC123DEF456GHI789",
+            "object": "event",
+            "api_version": "2025-12-15.clover",
+            "created": 1770278117,
+            "type": "customer.subscription.trial_will_end",
+            "data": {
+                "object": {
+                    "id": "sub_1ABC123DEF456GHI",
+                    "object": "subscription",
+                    "customer": "cus_TestCustomer123",
+                    "status": "trialing",
+                    "currency": "usd",
+                    "created": 1769327717,
+                    "current_period_start": 1769327717,
+                    "current_period_end": 1770537317,
+                    "trial_start": 1769327717,
+                    "trial_end": 1770537317,
+                    "cancel_at_period_end": False,
+                    "canceled_at": None,
+                    "plan": {
+                        "id": "price_1ABC123",
+                        "object": "plan",
+                        "amount": 2660,
+                        "currency": "usd",
+                        "interval": "month",
+                        "product": "prod_TestProduct",
+                    },
+                },
+            },
+        }
+
+    def test_trial_ending_event_carries_trial_metadata(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        trial_will_end_payload: dict[str, Any],
+    ) -> None:
+        """Test trial_will_end parses with trial end date and plan price."""
+        mock_event = Mock()
+        mock_event.type = trial_will_end_payload["type"]
+        mock_event.data.object = trial_will_end_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        assert event_type == "trial_ending"
+
+        amount = stripe_plugin._handle_stripe_billing(event_type, data)
+        assert amount == Decimal("0.00")
+        # trial_ending must NOT set _is_trial: parse_webhook renames
+        # _is_trial events to trial_started.
+        assert data.get("_is_trial") is None
+
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type=event_type,
+            customer_id=data["customer"],
+            data=data,
+            amount=amount,
+        )
+
+        assert event_data["type"] == "trial_ending"
+        metadata = event_data["metadata"]
+        assert metadata["is_trial"] is True
+        assert metadata["trial_end"] == 1770537317
+        assert metadata["trial_days"] == 14
+        assert metadata["plan_amount"] == 26.60
+        assert metadata["billing_period"] == "monthly"
+        assert metadata["subscription_id"] == "sub_1ABC123DEF456GHI"
+
+    def test_trial_ending_notification_names_customer_without_email(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        event_processor: EventProcessor,
+        trial_will_end_payload: dict[str, Any],
+    ) -> None:
+        """Test the notification carries insight and identity, not a bare title.
+
+        Simulates the email cache miss (no invoice cached the address):
+        the message must still show the trial end date, the post-trial
+        price, and the customer id as last-resort identity.
+        """
+        import json
+
+        mock_event = Mock()
+        mock_event.type = trial_will_end_payload["type"]
+        mock_event.data.object = trial_will_end_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        amount = stripe_plugin._handle_stripe_billing(event_type, data)
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type, data["customer"], data, amount
+        )
+
+        # Email cache miss: only the customer id identifies the customer
+        customer_data = {
+            "email": "",
+            "first_name": "",
+            "last_name": "",
+            "company_name": "",
+            "customer_id": "cus_TestCustomer123",
+        }
+
+        notification = event_processor.build_rich_notification(
+            event_data, customer_data
+        )
+        assert isinstance(notification, RichNotification)
+        assert notification.headline == "Trial ending soon"
+        assert notification.insight is not None
+        assert notification.insight.text == "Trial ends Feb 8, then $26.60/mo"
+
+        slack_message = event_processor.process_event_rich(
+            event_data, customer_data, target="slack"
+        )
+        rendered = json.dumps(slack_message)
+        # Identity fallback: the customer id must appear in a context
+        # (identity) block, not merely inside the action button URL
+        blocks = slack_message["attachments"][0]["blocks"]
+        context_texts = [
+            element["text"]
+            for block in blocks
+            if block["type"] == "context"
+            for element in block["elements"]
+            if element.get("type") == "mrkdwn"
+        ]
+        assert any("cus_TestCustomer123" in text for text in context_texts)
+        # The insight line made it into the rendered message
+        assert "Trial ends Feb 8, then $26.60/mo" in rendered
+
+
+@pytest.mark.django_db
 class TestTrialConversionIntegration:
     """Integration test: Trial conversion to paid subscription.
 
