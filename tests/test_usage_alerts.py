@@ -7,6 +7,7 @@ only after those warnings have fired.
 """
 
 from decimal import Decimal
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -257,11 +258,23 @@ class TestUsageAlertEmails:
 
 
 class TestSoftLimitEnforcement:
-    """The rate limiter allows a grace window before rejecting."""
+    """The rate limiter allows a grace window before rejecting.
+
+    These are pure unit tests: the grace multiplier is pinned so the
+    over-limit paths do not depend on the DB (or its failure fallback).
+    """
 
     def _org(self) -> Mock:
         """Build a minimal organization stub on the free plan (limit 20)."""
         return Mock(uuid="org-abc", subscription_plan="free", name="Acme")
+
+    @staticmethod
+    def _pin_grace() -> Any:
+        """Pin the grace multiplier at the default 2x without DB access."""
+        return patch(
+            "core.services.usage_alerts.grace_multiplier_for",
+            return_value=Decimal("2.00"),
+        )
 
     def test_over_limit_is_allowed_within_grace(self) -> None:
         """Usage past the plan limit does not raise; it is flagged instead."""
@@ -271,6 +284,7 @@ class TestSoftLimitEnforcement:
         with (
             patch("webhooks.services.rate_limiter.cache") as mock_cache,
             patch("core.services.usage_alerts.maybe_send_usage_alerts") as mock_alerts,
+            self._pin_grace(),
         ):
             mock_cache.get.return_value = 20  # at the soft limit
             mock_cache.incr.return_value = 21
@@ -301,8 +315,11 @@ class TestSoftLimitEnforcement:
         """Usage at the grace cap raises RateLimitException."""
         limiter = RateLimiter()
 
-        with patch("webhooks.services.rate_limiter.cache") as mock_cache:
-            mock_cache.get.return_value = 40  # free limit 20 * default 2x
+        with (
+            patch("webhooks.services.rate_limiter.cache") as mock_cache,
+            self._pin_grace(),
+        ):
+            mock_cache.get.return_value = 40  # free limit 20 * pinned 2x
             with pytest.raises(RateLimitException) as exc_info:
                 limiter.enforce_rate_limit(self._org())
 
@@ -320,6 +337,7 @@ class TestSoftLimitEnforcement:
         with (
             patch("webhooks.services.rate_limiter.cache") as mock_cache,
             patch("core.services.usage_alerts.maybe_send_usage_alerts") as mock_alerts,
+            self._pin_grace(),
         ):
             mock_cache.get.return_value = 39  # hard cap (40) not yet reached
             mock_cache.incr.return_value = 41  # a racer got there first
@@ -362,6 +380,7 @@ class TestSoftLimitEnforcement:
         with (
             patch("webhooks.services.rate_limiter.cache") as mock_cache,
             patch("core.services.usage_alerts.maybe_send_usage_alerts") as mock_alerts,
+            self._pin_grace(),
         ):
             mock_cache.get.return_value = 39
             mock_cache.incr.return_value = 40
