@@ -177,6 +177,27 @@ class TestUsageAlertEmails:
         assert len(mail.outbox) == 1
         assert "paused" in mail.outbox[0].subject.lower()
 
+    def test_paused_wins_when_cap_is_limit_plus_one(
+        self, workspace: Workspace
+    ) -> None:
+        """A cap of limit + 1 sends the paused email, not the exceeded one.
+
+        Both crossings coincide there; "exceeded, still delivering"
+        would be false since the very next request is rejected.
+        """
+        Plan.objects.update_or_create(
+            name="free",
+            defaults={
+                "display_name": "Free",
+                "price_monthly": 0,
+                "grace_multiplier": Decimal("1.05"),  # 20 * 1.05 = 21
+            },
+        )
+        maybe_send_usage_alerts(workspace, new_usage=21, limit=20)
+
+        assert len(mail.outbox) == 1
+        assert "paused" in mail.outbox[0].subject.lower()
+
     def test_send_failure_does_not_raise(self, workspace: Workspace) -> None:
         """A broken mail backend must never break webhook processing."""
         with patch(

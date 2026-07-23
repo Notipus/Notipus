@@ -123,10 +123,13 @@ def _dispatch_crossing_alert(
     if new_usage > limit:
         if hard_at is None:
             hard_at = hard_limit(limit, workspace.subscription_plan)
-        if new_usage == limit + 1:
-            _send_exceeded_alert(workspace, limit, hard_at)
-        elif new_usage == hard_at:
+        # The cap crossing wins when both coincide (hard cap of
+        # limit + 1): the pause is the actionable news, and an
+        # "exceeded, still delivering" email would be false.
+        if new_usage == hard_at:
             _send_paused_alert(workspace, limit, hard_at)
+        elif new_usage == limit + 1:
+            _send_exceeded_alert(workspace, limit, hard_at)
     elif new_usage == limit:
         if hard_at is None:
             hard_at = hard_limit(limit, workspace.subscription_plan)
