@@ -6,6 +6,10 @@ every record twice (seen in prod as duplicated, interleaved tracebacks
 in the Fly logs).
 """
 
+import logging
+import logging.config
+
+import pytest
 from django_notipus.settings import LOGGING
 
 
@@ -33,7 +37,49 @@ def test_disallowed_host_logger_is_silenced() -> None:
 
     Scanners probing unallowed hostnames (e.g. *.fly.dev) would otherwise
     log a full traceback per hit; the 400 response is outcome enough.
+    The null handler is load-bearing: an empty handler list does NOT
+    silence the logger, it routes records to logging.lastResort (stderr).
     """
     config = LOGGING["loggers"]["django.security.DisallowedHost"]
-    assert config["handlers"] == []
+    assert config["handlers"] == ["null"]
     assert config["propagate"] is False
+
+
+def test_disallowed_host_records_do_not_reach_stderr(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """A DisallowedHost record must produce no output at all.
+
+    Regression test: with handlers=[] the record found no handler
+    anywhere and fell through to logging.lastResort, which wrote the
+    message and full traceback to stderr on every scanner hit (seen in
+    prod July 23, 2026 despite the logger being 'silenced').
+
+    Applies only the production entries for this logger (not the full
+    LOGGING dict) so the test cannot clobber the test-run logging config.
+    Root handlers are irrelevant to the lastResort fallback because the
+    logger does not propagate, so this scoped config exercises the same
+    code path as production.
+    """
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "handlers": {"null": dict(LOGGING["handlers"]["null"])},
+            "loggers": {
+                "django.security.DisallowedHost": dict(
+                    LOGGING["loggers"]["django.security.DisallowedHost"]
+                ),
+            },
+        }
+    )
+    logger = logging.getLogger("django.security.DisallowedHost")
+
+    try:
+        raise ValueError("scanner probe")
+    except ValueError:
+        logger.exception("Invalid HTTP_HOST header: 'notipus.fly.dev'.")
+
+    out, err = capfd.readouterr()
+    assert out == ""
+    assert err == ""
