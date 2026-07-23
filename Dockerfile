@@ -1,8 +1,12 @@
 # syntax=docker/dockerfile:1
+# Single source of truth for the Chainguard Python tag: the builder and
+# runtime stages must track the same release so the venv built in the
+# builder runs on the same interpreter version at runtime.
+ARG PYTHON_TAG=latest
+
 # Build stage: Chainguard's -dev variant includes a shell and apk for build
-# tooling. Both stages must use the same tag so the venv built here runs on
-# the same interpreter version in the runtime stage.
-FROM cgr.dev/chainguard/python:latest-dev AS builder
+# tooling.
+FROM cgr.dev/chainguard/python:${PYTHON_TAG}-dev AS builder
 
 USER root
 
@@ -58,7 +62,7 @@ RUN /app/.venv/bin/python -m compileall -q -x '(\.venv|node_modules)' /app
 RUN rm -rf /app/node_modules /app/src /app/package.json /app/bun.lock /app/postcss.config.js
 
 # Runtime stage: distroless (no shell, no package manager), runs as nonroot
-FROM cgr.dev/chainguard/python:latest
+FROM cgr.dev/chainguard/python:${PYTHON_TAG}
 
 ENV PYTHONUNBUFFERED=1
 
