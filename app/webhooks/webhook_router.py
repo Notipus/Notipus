@@ -184,7 +184,14 @@ def _handle_rate_limiting(
     try:
         rate_limit_info = rate_limiter.enforce_rate_limit(workspace)
         if rate_limit_info.get("over_limit"):
-            logger.warning(
+            # WARNING only on the crossing; over-limit traffic can be
+            # sustained and per-request WARNINGs would drown the log.
+            log = (
+                logger.warning
+                if rate_limit_info["current_usage"] == rate_limit_info["limit"] + 1
+                else logger.info
+            )
+            log(
                 f"Workspace {workspace.uuid} is over its plan limit "
                 f"({rate_limit_info['current_usage']}/{rate_limit_info['limit']}); "
                 f"delivering within the grace window"

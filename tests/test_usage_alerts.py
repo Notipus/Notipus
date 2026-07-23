@@ -18,7 +18,15 @@ from core.services.usage_alerts import (
 )
 from django.contrib.auth.models import User
 from django.core import mail
+from django.core.cache import cache
+from django.test import override_settings
 from webhooks.services.rate_limiter import RateLimiter, RateLimitException
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache() -> None:
+    """Isolate the grace-multiplier cache between tests."""
+    cache.clear()
 
 
 @pytest.fixture
@@ -100,6 +108,38 @@ class TestThresholds:
     def test_hard_limit_defaults_without_plan_row(self) -> None:
         """A missing Plan row falls back to the default 2x grace factor."""
         assert hard_limit(20, "nonexistent") == 40
+
+    @pytest.mark.django_db
+    @override_settings(
+        CACHES={
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                "LOCATION": "grace-multiplier-test",
+            }
+        }
+    )
+    def test_grace_multiplier_is_cached(self) -> None:
+        """The multiplier is served from cache until the TTL expires.
+
+        A DB edit inside the TTL is not picked up; clearing the cache
+        (standing in for expiry) makes it visible. Uses a real locmem
+        cache since test settings default to DummyCache.
+        """
+        Plan.objects.update_or_create(
+            name="free",
+            defaults={
+                "display_name": "Free",
+                "price_monthly": 0,
+                "grace_multiplier": Decimal("1.50"),
+            },
+        )
+        assert hard_limit(20, "free") == 30
+
+        Plan.objects.filter(name="free").update(grace_multiplier=Decimal("3.00"))
+        assert hard_limit(20, "free") == 30  # still cached
+
+        cache.clear()
+        assert hard_limit(20, "free") == 60
 
     @pytest.mark.django_db
     def test_hard_limit_never_below_plan_limit(self) -> None:

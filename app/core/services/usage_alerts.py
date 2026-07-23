@@ -16,9 +16,15 @@ from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.mail import send_mail
 
 logger = logging.getLogger(__name__)
+
+# How long a plan's grace multiplier may be served from cache. Bounds
+# the Plan-table load during sustained over-limit traffic while letting
+# database edits take effect within minutes.
+GRACE_MULTIPLIER_CACHE_TTL = 300
 
 # Percentage of the plan limit at which the "approaching your limit"
 # warning email fires.
@@ -52,9 +58,21 @@ def grace_multiplier_for(plan_name: str) -> Decimal:
     Returns:
         The plan's grace_multiplier, or the default when the plan row is
         missing or unreadable — rate limiting must degrade gracefully
-        rather than fail on a database problem.
+        rather than fail on a database problem. Served from a short-TTL
+        cache so sustained over-limit traffic does not hammer the Plan
+        table.
     """
     from core.models import Plan
+
+    cache_key = f"plan_grace_multiplier:{plan_name}"
+    try:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Decimal(cached)
+    except Exception:
+        # A cache outage must not block the DB read; the rate limiter
+        # already logs cache failures loudly.
+        pass
 
     try:
         plan = (
@@ -64,10 +82,18 @@ def grace_multiplier_for(plan_name: str) -> Decimal:
         )
     except Exception:
         logger.exception("Could not read grace multiplier for plan %s", plan_name)
-        plan = None
-    if plan is None:
+        # Do not cache: the DB failure is transient and the fallback
+        # must not outlive it.
         return DEFAULT_GRACE_MULTIPLIER
-    return Decimal(plan.grace_multiplier)
+
+    multiplier = (
+        DEFAULT_GRACE_MULTIPLIER if plan is None else Decimal(plan.grace_multiplier)
+    )
+    try:
+        cache.set(cache_key, str(multiplier), GRACE_MULTIPLIER_CACHE_TTL)
+    except Exception:
+        pass
+    return multiplier
 
 
 def hard_limit(limit: int, plan_name: str) -> int:
