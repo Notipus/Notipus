@@ -21,6 +21,10 @@ from plugins.sources.base import (
     mask_sensitive_headers,
 )
 from webhooks.utils.currency import from_minor_units
+from webhooks.utils.subscriptions import (
+    subscription_recurring_amount_cents,
+    sum_item_amounts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -229,57 +233,6 @@ class StripeSourcePlugin(BaseSourcePlugin):
             # Don't fail webhook processing if we can't get idempotency key
             return None
 
-    def _extract_item_amount(self, item: dict[str, Any]) -> int | None:
-        """Extract the per-unit amount in cents from a subscription item.
-
-        Supports both the old API shape (``item.plan.amount``) and the
-        newer prices API shape (``item.price.unit_amount``).
-
-        Args:
-            item: A single subscription item dict from items.data[].
-
-        Returns:
-            Per-unit amount in cents, or None if not determinable.
-        """
-        plan = item.get("plan")
-        if isinstance(plan, dict) and plan.get("amount") is not None:
-            return int(plan["amount"])
-
-        price = item.get("price")
-        if isinstance(price, dict) and price.get("unit_amount") is not None:
-            return int(price["unit_amount"])
-
-        return None
-
-    def _sum_item_amounts(self, items_data: Any) -> int | None:
-        """Sum ``amount * quantity`` across subscription items.
-
-        Args:
-            items_data: The items.data[] list from a subscription payload
-                (or from _previous_attributes.items).
-
-        Returns:
-            Total amount in cents, or None if no item amount is determinable.
-        """
-        if not isinstance(items_data, list):
-            return None
-
-        total = 0
-        found = False
-        for item in items_data:
-            if not isinstance(item, dict):
-                continue
-            unit_amount = self._extract_item_amount(item)
-            if unit_amount is None:
-                continue
-            quantity = item.get("quantity")
-            if not isinstance(quantity, int) or quantity < 1:
-                quantity = 1
-            total += unit_amount * quantity
-            found = True
-
-        return total if found else None
-
     def _extract_subscription_amount(self, sub_data: dict[str, Any]) -> int:
         """Extract the total recurring amount in cents for a subscription.
 
@@ -294,17 +247,8 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             Total amount in cents, or 0 if not determinable.
         """
-        items = sub_data.get("items")
-        if isinstance(items, dict):
-            items_total = self._sum_item_amounts(items.get("data"))
-            if items_total is not None:
-                return items_total
-
-        plan = sub_data.get("plan")
-        if isinstance(plan, dict) and plan.get("amount") is not None:
-            return int(plan["amount"])
-
-        return 0
+        amount = subscription_recurring_amount_cents(sub_data)
+        return amount if amount is not None else 0
 
     def _get_previous_plan_amount(self, data: dict[str, Any]) -> int | None:
         """Extract previous plan amount from subscription update data.
@@ -330,7 +274,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         # Check items for multi-item subscriptions
         prev_items = prev_attrs.get("items", {})
         if isinstance(prev_items, dict):
-            return self._sum_item_amounts(prev_items.get("data"))
+            # cast: mypy cannot resolve cross-package imports in this
+            # layout (see the disabled django plugin note in pyproject),
+            # so the util's int | None return arrives as Any.
+            return cast("int | None", sum_item_amounts(prev_items.get("data")))
 
         return None
 

@@ -15,6 +15,7 @@ from core.models import Plan, Workspace, WorkspaceMember
 from core.services.usage_alerts import (
     hard_limit,
     maybe_send_usage_alerts,
+    send_trial_ending_alert,
     warning_count,
 )
 from django.contrib.auth.models import User
@@ -253,6 +254,74 @@ class TestUsageAlertEmails:
             subscription_status="active",
         )
         maybe_send_usage_alerts(lonely, new_usage=16, limit=20)
+
+        assert mail.outbox == []
+
+
+class TestTrialEndingAlert:
+    """Trial-ending emails state the proven end date, price, and outcome."""
+
+    def test_converting_trial_names_date_and_price(self, workspace: Workspace) -> None:
+        """A converting trial says when it ends and what it costs after."""
+        send_trial_ending_alert(
+            workspace,
+            ends_on="February 8, 2026",
+            price="$29.00/month",
+            will_cancel=False,
+        )
+
+        assert len(mail.outbox) == 1
+        message = mail.outbox[0]
+        assert "trial ends February 8, 2026" in message.subject
+        assert sorted(message.to) == ["admin@example.com", "owner@example.com"]
+        assert "continues automatically at $29.00/month" in message.body
+        assert "no action" in message.body.lower()
+
+    def test_cancelling_trial_says_delivery_stops(self, workspace: Workspace) -> None:
+        """A trial set to cancel names the concrete loss: delivery stops."""
+        send_trial_ending_alert(
+            workspace,
+            ends_on="February 8, 2026",
+            price="$29.00/month",
+            will_cancel=True,
+        )
+
+        assert len(mail.outbox) == 1
+        message = mail.outbox[0]
+        assert "delivery will stop" in message.subject
+        assert "stops delivering notifications" in message.body
+        assert "reactivate" in message.body.lower()
+
+    def test_missing_fields_degrade_to_soon_without_price(
+        self, workspace: Workspace
+    ) -> None:
+        """Unproven date and price are omitted, never guessed."""
+        send_trial_ending_alert(workspace, ends_on=None, price=None)
+
+        assert len(mail.outbox) == 1
+        message = mail.outbox[0]
+        assert "trial ends soon" in message.subject
+        assert "$" not in message.body
+        assert "ends soon" in message.body
+        assert "continues automatically —" in message.body
+
+    def test_send_failure_does_not_raise(self, workspace: Workspace) -> None:
+        """A broken mail backend must never break billing webhooks."""
+        with patch(
+            "core.services.usage_alerts.send_mail",
+            side_effect=Exception("smtp down"),
+        ):
+            send_trial_ending_alert(workspace, ends_on="February 8, 2026")
+
+    def test_recipient_lookup_failure_does_not_raise(
+        self, workspace: Workspace
+    ) -> None:
+        """Even a failing recipient query is swallowed and logged."""
+        with patch(
+            "core.services.usage_alerts._admin_emails",
+            side_effect=Exception("db down"),
+        ):
+            send_trial_ending_alert(workspace, ends_on="February 8, 2026")
 
         assert mail.outbox == []
 
