@@ -933,14 +933,13 @@ class BillingService:
 
         Returns:
             A label like "$29.00/month", or None when the payload does
-            not prove both an amount and a currency — a zero amount is
-            also treated as unknown because the extractor cannot
-            distinguish a genuine $0 plan from missing data, and
-            without a currency the minor-unit exponent and symbol
-            would be guesses.
+            not prove both an amount and a currency — without a
+            currency the minor-unit exponent and symbol would be
+            guesses. A proven zero renders as "$0.00" like the Slack
+            trial insights do.
         """
         cents = subscription_recurring_amount_cents(subscription)
-        if not cents:
+        if cents is None:
             return None
         currency = subscription_currency(subscription)
         if not currency:

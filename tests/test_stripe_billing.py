@@ -911,6 +911,14 @@ class TestBillingServiceWebhooks:
         """A payload without any amount yields no price claim."""
         assert BillingService._recurring_price_label({"plan": None}) is None
 
+    def test_recurring_price_label_renders_proven_zero(self) -> None:
+        """An explicit 0 amount is a proven $0 plan, not missing data."""
+        subscription_data: dict[str, Any] = {
+            "plan": {"amount": 0, "interval": "month", "currency": "usd"},
+        }
+        label = BillingService._recurring_price_label(subscription_data)
+        assert label == "$0.00/month"
+
     def test_recurring_price_label_unknown_currency_is_none(self) -> None:
         """An amount without a currency anywhere yields no price claim.
 
