@@ -475,9 +475,11 @@ class StripeAPI:
         expired = 0
         try:
             sessions = stripe.checkout.Session.list(
-                customer=customer_id, status="open", limit=10, api_key=self.api_key
+                customer=customer_id, status="open", limit=100, api_key=self.api_key
             )
-            for session in _safe_getattr(sessions, "data", None) or []:
+            # auto_paging_iter follows has_more so no open session can
+            # hide beyond the first page.
+            for session in sessions.auto_paging_iter():
                 session_id = _safe_getattr(session, "id")
                 if not session_id:
                     continue

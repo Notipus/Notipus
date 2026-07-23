@@ -1836,16 +1836,17 @@ class TestCheckoutSessionExpiry:
     def test_expire_open_checkout_sessions_expires_each(
         self, mock_session_cls: MagicMock
     ) -> None:
-        """Every open session is expired and counted."""
-        mock_session_cls.list.return_value = Mock(
-            data=[Mock(id="cs_1"), Mock(id="cs_2")]
-        )
+        """Every open session is expired and counted, across pages."""
+        mock_session_cls.list.return_value.auto_paging_iter.return_value = [
+            Mock(id="cs_1"),
+            Mock(id="cs_2"),
+        ]
         api = StripeAPI()
 
         assert api.expire_open_checkout_sessions("cus_x") == 2
 
         mock_session_cls.list.assert_called_once_with(
-            customer="cus_x", status="open", limit=10, api_key=api.api_key
+            customer="cus_x", status="open", limit=100, api_key=api.api_key
         )
         assert mock_session_cls.expire.call_count == 2
 

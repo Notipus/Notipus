@@ -436,6 +436,56 @@ def _resolve_checkout_price(
     return price_id, plan.price_monthly
 
 
+def _checkout_session_metadata(
+    workspace: Any, plan_name: str, interval: str, checkout_amount: Decimal | None
+) -> dict[str, str]:
+    """Build the checkout session metadata.
+
+    checkout_success reads interval and amount back from it to report
+    the value actually purchased instead of assuming monthly or
+    re-deriving from Plan rows that may have drifted. Stripe metadata
+    values are strings; the amount is omitted when unknown so the
+    reader falls back rather than parsing a placeholder.
+
+    Args:
+        workspace: The purchasing workspace.
+        plan_name: Internal plan name.
+        interval: Validated billing interval.
+        checkout_amount: Major-unit amount the session will charge, if
+            known.
+
+    Returns:
+        Metadata dict for create_checkout_session.
+    """
+    metadata = {
+        "workspace_id": str(workspace.pk),
+        "plan_name": plan_name,
+        "interval": interval,
+    }
+    if checkout_amount is not None:
+        metadata["amount"] = str(checkout_amount)
+    return metadata
+
+
+def _parse_metadata_amount(raw: Any) -> float | None:
+    """Parse a checkout-session metadata amount, or None when unusable.
+
+    Args:
+        raw: The metadata "amount" string stored at checkout time (all
+            Stripe metadata values are strings), or None/garbage.
+
+    Returns:
+        The amount as a float, or None so the caller falls back to the
+        Plan row rather than reporting a corrupted value.
+    """
+    if raw is None:
+        return None
+    try:
+        return float(Decimal(str(raw)))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
 def _missing_price_redirect(
     request: HttpRequest, plan_name: str, interval: str
 ) -> HttpResponseRedirect:
@@ -559,6 +609,10 @@ def checkout(
         if not price_id:
             return _missing_price_redirect(request, plan_name, interval)
 
+        session_metadata = _checkout_session_metadata(
+            workspace, plan_name, interval, checkout_amount
+        )
+
         # Create Stripe Checkout Session.
         # Idempotency key collapses duplicate checkout-initiation requests
         # (double-click, browser back, retry) to one session within Stripe's
@@ -566,13 +620,7 @@ def checkout(
         checkout_session = stripe_api.create_checkout_session(
             customer_id=customer["id"],
             price_id=price_id,
-            metadata={
-                "workspace_id": str(workspace.pk),
-                "plan_name": plan_name,
-                # checkout_success reads this back to report the value
-                # actually purchased instead of assuming monthly.
-                "interval": interval,
-            },
+            metadata=session_metadata,
             # No time-based component: any date bucket (local or UTC)
             # has a midnight edge where retries minutes apart fall on
             # different sides and stop deduping. Stripe's idempotency
@@ -685,6 +733,7 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
 
     plan_name = None
     purchased_interval = None
+    purchased_amount = None
 
     if session_id:
         # Retrieve plan name from Stripe Checkout Session metadata,
@@ -704,6 +753,9 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
                 session_metadata = checkout_session.get("metadata", {})
                 plan_name = session_metadata.get("plan_name")
                 purchased_interval = session_metadata.get("interval")
+                purchased_amount = _parse_metadata_amount(
+                    session_metadata.get("amount")
+                )
         except Exception as e:
             logger.warning(f"Error retrieving Stripe session: {e}")
 
@@ -719,11 +771,13 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     if not request.session.get(purchase_tracked_key):
         request.session[purchase_tracked_key] = True
         plan = Plan.objects.filter(name=plan_name, is_active=True).first()
-        # Report the interval that was actually purchased — a $990/year
-        # checkout must not be counted as $99. price_yearly is nullable,
-        # so an unknown yearly amount reports 0 rather than a guess.
-        purchase_value = 0.0
-        if plan:
+        # Report what was actually purchased — a $990/year checkout must
+        # not be counted as $99. The amount resolved at checkout time
+        # (stored in session metadata) wins; the Plan row is the
+        # fallback, and an unknown yearly amount reports 0 rather than
+        # a guess (price_yearly is nullable).
+        purchase_value = purchased_amount
+        if purchase_value is None and plan:
             if purchased_interval == "yearly":
                 purchase_value = float(plan.price_yearly or 0)
             else:
@@ -735,7 +789,7 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
                 "plan": plan_name,
                 "transaction_id": session_id,
                 "currency": "USD",
-                "value": purchase_value,
+                "value": purchase_value if purchase_value is not None else 0.0,
                 "interval": purchased_interval or "monthly",
                 "items": [{"item_id": plan_name}],
             },

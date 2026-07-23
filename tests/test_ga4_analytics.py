@@ -364,6 +364,44 @@ class TestFunnelEvents:
         assert event["params"]["value"] == 990.0
         assert event["params"]["interval"] == "yearly"
 
+    def test_purchase_prefers_amount_resolved_at_checkout(
+        self, ga4: MagicMock, logged_in_client: Client, user: User, db: None
+    ) -> None:
+        """The amount stored in session metadata at checkout time wins.
+
+        A yearly price that lives only in Stripe leaves the Plan row's
+        price_yearly NULL — the metadata amount still reports the real
+        purchased value instead of 0.
+        """
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": None,
+                "is_active": True,
+            },
+        )
+        workspace = Workspace.objects.create(name="Acme", stripe_customer_id="cus_123")
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
+
+        with patch("core.services.stripe.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.retrieve_checkout_session.return_value = {
+                "customer": "cus_123",
+                "metadata": {
+                    "plan_name": "pro",
+                    "interval": "yearly",
+                    "amount": "990.00",
+                },
+            }
+            response = logged_in_client.get(
+                reverse("core:checkout_success"), {"session_id": "cs_test_amt"}
+            )
+
+        assert response.status_code == 200
+        (event,) = _events_named(ga4, "purchase")
+        assert event["params"]["value"] == 990.0
+
 
 class TestBillingSyncEvents:
     """Server-side events from the Stripe webhook sync path."""
