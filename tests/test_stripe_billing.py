@@ -1540,6 +1540,214 @@ class TestStripeAPIArchive:
 
 
 @pytest.mark.django_db
+class TestCheckoutBillingInterval:
+    """The checkout() view charges the interval the user picked.
+
+    The interval query parameter selects the Stripe price (yearly or
+    monthly); anything unrecognized falls back to monthly, and a plan
+    with no configured yearly price errors instead of silently billing
+    monthly.
+    """
+
+    @pytest.fixture
+    def interval_setup(self) -> Any:
+        """Logged-in owner + pro plan with both billing intervals."""
+        from core.models import Plan, Workspace, WorkspaceMember
+        from django.contrib.auth.models import User
+        from django.test import Client
+
+        user = User.objects.create_user(username="ann", password="x")
+        workspace = Workspace.objects.create(
+            name="Ann Workspace",
+            subscription_plan="free",
+            subscription_status="active",
+        )
+        WorkspaceMember.objects.create(
+            user=user, workspace=workspace, role="owner", is_active=True
+        )
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": 990,
+                "is_active": True,
+                "stripe_price_id_monthly": "price_pro_monthly",
+                "stripe_price_id_yearly": "price_pro_yearly",
+            },
+        )
+        client = Client()
+        client.force_login(user)
+        return client
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_yearly_interval_uses_yearly_price(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        interval_setup: Any,
+    ) -> None:
+        """?interval=yearly looks up the yearly price and keys the
+        idempotency window per interval."""
+        from django.urls import reverse
+
+        client = interval_setup
+        mock_get_or_create.return_value = {"id": "cus_new"}
+        mock_get_price.return_value = {"id": "price_pro_yearly"}
+        mock_create_session.return_value = {
+            "id": "cs_x",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(
+            reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
+        )
+
+        assert response.status_code == 302
+        mock_get_price.assert_called_once_with("pro_yearly")
+        kwargs = mock_create_session.call_args.kwargs
+        assert kwargs["price_id"] == "price_pro_yearly"
+        assert kwargs["idempotency_key"].endswith("-pro-yearly")
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_invalid_interval_falls_back_to_monthly(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        interval_setup: Any,
+    ) -> None:
+        """An unrecognized interval value bills monthly, never errors."""
+        from django.urls import reverse
+
+        client = interval_setup
+        mock_get_or_create.return_value = {"id": "cus_new"}
+        mock_get_price.return_value = {"id": "price_pro_monthly"}
+        mock_create_session.return_value = {
+            "id": "cs_x",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(
+            reverse("core:checkout", args=["pro"]), {"interval": "weekly"}
+        )
+
+        assert response.status_code == 302
+        mock_get_price.assert_called_once_with("pro_monthly")
+        kwargs = mock_create_session.call_args.kwargs
+        assert kwargs["idempotency_key"].endswith("-pro-monthly")
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_yearly_lookup_miss_falls_back_to_plan_price_id(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        interval_setup: Any,
+    ) -> None:
+        """Without a Stripe lookup key, the Plan row's yearly price id
+        is used — never the monthly one or the env mapping."""
+        from django.urls import reverse
+
+        client = interval_setup
+        mock_get_or_create.return_value = {"id": "cus_new"}
+        mock_get_price.return_value = None
+        mock_create_session.return_value = {
+            "id": "cs_x",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(
+            reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
+        )
+
+        assert response.status_code == 302
+        assert mock_create_session.call_args.kwargs["price_id"] == "price_pro_yearly"
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_yearly_without_configured_price_errors_cleanly(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        interval_setup: Any,
+    ) -> None:
+        """A plan with no yearly price anywhere redirects with an error
+        instead of silently charging monthly."""
+        from core.models import Plan
+        from django.urls import reverse
+
+        Plan.objects.filter(name="pro").update(stripe_price_id_yearly="")
+        client = interval_setup
+        mock_get_or_create.return_value = {"id": "cus_new"}
+        mock_get_price.return_value = None
+
+        response = client.get(
+            reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
+        )
+
+        assert response.status_code == 302
+        assert response.url == reverse("core:upgrade_plan")
+        mock_create_session.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestYearlyPricingAnnotation:
+    """Plan cards gain yearly display fields from the Plan table."""
+
+    def test_annotates_yearly_price_and_savings(self) -> None:
+        """$990/yr on a $99/mo plan shows $82.50/mo and $198 saved."""
+        from core.models import Plan
+        from core.views.billing import _annotate_yearly_pricing
+
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": 990,
+                "is_active": True,
+            },
+        )
+        plans: list[dict[str, Any]] = [{"id": "pro", "price": "99"}]
+
+        _annotate_yearly_pricing(plans)
+
+        assert plans[0]["price_yearly"] == "990"
+        assert plans[0]["price_yearly_per_month"] == "82.50"
+        assert plans[0]["yearly_savings"] == "198"
+
+    def test_skips_plans_without_yearly_price(self) -> None:
+        """No yearly price -> card stays monthly-only, no fake option."""
+        from core.models import Plan
+        from core.views.billing import _annotate_yearly_pricing
+
+        Plan.objects.update_or_create(
+            name="basic",
+            defaults={
+                "display_name": "Basic",
+                "price_monthly": 29,
+                "price_yearly": 0,
+                "is_active": True,
+            },
+        )
+        plans: list[dict[str, Any]] = [{"id": "basic", "price": "29"}]
+
+        _annotate_yearly_pricing(plans)
+
+        assert "price_yearly" not in plans[0]
+
+
+@pytest.mark.django_db
 class TestCheckoutViewActiveSubscriptionGuard:
     """The checkout() view must refuse to create a second subscription for
     a workspace that already has a live one in Stripe. The previous absence

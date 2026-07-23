@@ -32,13 +32,13 @@
                                 <span class="text-4xl font-extrabold text-gray-900">{{ plan.price }}</span>
                                 {% if '$' in plan.price %}<span class="text-base font-medium text-gray-500">/month</span>{% endif %}
                             </p>
+                            {% if plan.price_yearly %}
+                                <p class="mt-1 text-sm text-gray-500">or {{ plan.price_yearly }}/year — 2 months free</p>
+                            {% endif %}
 
                             <form method="post" class="mt-8">
                                 {% csrf_token %}
                                 <input type="hidden" name="plan" value="{{ plan.name }}">
-                                <input type="hidden"
-                                       name="workspace_name"
-                                       value="{{ user.username }}'s Workspace">
                                 <button type="submit"
                                         class="{% if plan.name == 'pro' %}bg-primary-500 hover:bg-primary-600 text-white border-transparent{% else %}bg-white text-primary-500 border-primary-500 hover:bg-primary-50{% endif %} block w-full border rounded-md py-2 text-sm font-semibold text-center">
                                     {% if plan.name == 'free' %}
@@ -93,7 +93,7 @@
                         <div class="bg-white rounded-lg shadow p-6">
                             <h4 class="text-lg font-medium text-gray-900 mb-2">Do you offer annual billing?</h4>
                             <p class="text-gray-600">
-                                Yes! Save 20% when you pay annually. Annual billing options are available for all paid plans.
+                                Yes! Pay annually and get 2 months free (about 17% off). Annual billing is available for all paid plans.
                             </p>
                         </div>
                     </div>

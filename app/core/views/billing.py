@@ -6,7 +6,7 @@ and checkout flows.
 
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, cast
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -72,6 +72,11 @@ def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
                 "name": plan.name,
                 "display_name": plan.display_name,
                 "price": price_display,
+                "price_yearly": (
+                    f"${plan.price_yearly:.0f}"
+                    if plan.price_monthly > 0 and plan.price_yearly > 0
+                    else None
+                ),
                 "features": plan.features,
                 "description": plan.description,
             }
@@ -169,12 +174,45 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
             except (InvalidOperation, TypeError, ValueError):
                 plan["is_downgrade"] = False
 
+    _annotate_yearly_pricing(available_plans)
+
     context: dict[str, Any] = {
         "workspace": workspace,
         "plans": available_plans,
         "current_plan": workspace.subscription_plan,
     }
     return render(request, "core/upgrade_plan.html.j2", context)
+
+
+def _annotate_yearly_pricing(plans: list[dict[str, Any]]) -> None:
+    """Attach yearly pricing display fields to plan card dicts.
+
+    Values come from the local Plan table (the canonical yearly prices)
+    so the annotation works for both the Stripe and database card
+    sources. Cards for plans without a positive yearly price are left
+    untouched — the template keeps them monthly-only rather than
+    advertising a billing option that cannot be charged.
+
+    Args:
+        plans: Plan card dicts carrying an "id" of the internal plan
+            name; mutated in place with price_yearly,
+            price_yearly_per_month, and yearly_savings strings.
+    """
+    rows = {
+        row.name: row
+        for row in Plan.objects.filter(is_active=True).only(
+            "name", "price_monthly", "price_yearly"
+        )
+    }
+    for plan in plans:
+        row = rows.get(str(plan.get("id", "")))
+        if row is None or not row.price_yearly or row.price_yearly <= 0:
+            continue
+        plan["price_yearly"] = f"{row.price_yearly:.0f}"
+        plan["price_yearly_per_month"] = f"{row.price_yearly / 12:.2f}"
+        savings = row.price_monthly * 12 - row.price_yearly
+        if savings > 0:
+            plan["yearly_savings"] = f"{savings:.0f}"
 
 
 @login_required
@@ -348,6 +386,38 @@ def _duplicate_subscription_guard(
     return None
 
 
+def _resolve_checkout_price_id(
+    stripe_api: Any, plan: Plan, plan_name: str, interval: str
+) -> str | None:
+    """Resolve the Stripe price id for a plan and billing interval.
+
+    Prefers the Stripe lookup key, then falls back to the Plan row's
+    stored price id, then (monthly only) to the environment mapping.
+
+    Args:
+        stripe_api: StripeAPI instance.
+        plan: The Plan row being purchased.
+        plan_name: Internal plan name.
+        interval: "monthly" or "yearly" (already validated).
+
+    Returns:
+        A Stripe price id, or None when the interval has no configured
+        price — the caller must error rather than bill a different
+        interval than the user picked.
+    """
+    from django.conf import settings as django_settings
+
+    price = stripe_api.get_price_by_lookup_key(f"{plan_name}_{interval}")
+    if price:
+        return cast(str, price["id"])
+    if interval == "yearly":
+        return cast(str, plan.stripe_price_id_yearly) or None
+    return cast(
+        "str | None",
+        plan.stripe_price_id_monthly or django_settings.STRIPE_PLANS.get(plan_name),
+    )
+
+
 @login_required
 def checkout(
     request: HttpRequest, plan_name: str
@@ -355,7 +425,9 @@ def checkout(
     """Create Stripe Checkout Session and redirect to Stripe-hosted checkout.
 
     Args:
-        request: The HTTP request object.
+        request: The HTTP request object. An optional ``interval`` query
+            parameter of "yearly" bills annually; anything else falls
+            back to monthly.
         plan_name: Name of the plan to checkout (basic, pro, enterprise).
 
     Returns:
@@ -364,12 +436,15 @@ def checkout(
         user is not an owner/admin (permission denied).
     """
     from core.services.stripe import StripeAPI
-    from django.conf import settings as django_settings
 
     workspace, redirect_response = require_admin_role(request)
     if redirect_response:
         return redirect_response
     assert workspace is not None
+
+    interval = request.GET.get("interval", "monthly")
+    if interval not in ("monthly", "yearly"):
+        interval = "monthly"
 
     try:
         # Validate against the Plan model (single source of truth for
@@ -409,24 +484,11 @@ def checkout(
         if guard_redirect is not None:
             return guard_redirect
 
-        # Try to get price from Stripe using lookup key (preferred method)
-        lookup_key = f"{plan_name}_monthly"
-        price = stripe_api.get_price_by_lookup_key(lookup_key)
-
-        if price:
-            price_id = price["id"]
-        else:
-            # Fall back to the Plan model's stored price ID, then to the
-            # environment variable mapping.
-            price_id = plan.stripe_price_id_monthly or django_settings.STRIPE_PLANS.get(
-                plan_name
-            )
-            if not price_id:
-                logger.error(f"No Stripe price configured for plan: {plan_name}")
-                messages.error(
-                    request, "Plan configuration error. Please contact support."
-                )
-                return redirect("core:upgrade_plan")
+        price_id = _resolve_checkout_price_id(stripe_api, plan, plan_name, interval)
+        if not price_id:
+            logger.error(f"No Stripe {interval} price configured for plan: {plan_name}")
+            messages.error(request, "Plan configuration error. Please contact support.")
+            return redirect("core:upgrade_plan")
 
         # Create Stripe Checkout Session.
         # Idempotency key collapses duplicate checkout-initiation requests
@@ -443,10 +505,10 @@ def checkout(
             # has a midnight edge where retries minutes apart fall on
             # different sides and stop deduping. Stripe's idempotency
             # keys already expire 24h after first use, so the same
-            # (workspace, plan) within 24h collapses to one session and
-            # a deliberate next-day retry creates a new one — exactly
-            # the desired behavior, without a midnight glitch.
-            idempotency_key=f"checkout-{workspace.uuid}-{plan_name}",
+            # (workspace, plan, interval) within 24h collapses to one
+            # session and a deliberate next-day retry creates a new one —
+            # exactly the desired behavior, without a midnight glitch.
+            idempotency_key=f"checkout-{workspace.uuid}-{plan_name}-{interval}",
         )
 
         if not checkout_session or not checkout_session.get("url"):
@@ -455,13 +517,17 @@ def checkout(
             )
             return redirect("core:upgrade_plan")
 
+        checkout_value = (
+            plan.price_yearly if interval == "yearly" else plan.price_monthly
+        )
         analytics.track_event(
             request,
             "begin_checkout",
             {
                 "plan": plan.name,
                 "currency": "USD",
-                "value": float(plan.price_monthly),
+                "value": float(checkout_value),
+                "interval": interval,
                 "items": [{"item_id": plan.name, "item_name": plan.display_name}],
             },
         )
