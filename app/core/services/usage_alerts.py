@@ -1,4 +1,4 @@
-"""Billing alert emails to workspace owners and admins.
+"""Usage-limit and trial-ending alert emails for workspace admins.
 
 Implements the notification side of soft limit enforcement: workspace
 owners and admins get a warning email when usage approaches the plan

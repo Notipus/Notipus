@@ -8,6 +8,20 @@ function returns None when the payload does not prove the value.
 from typing import Any
 
 
+def _amount_cents(value: Any) -> int | None:
+    """Coerce a payload amount to integer cents, or None when non-numeric.
+
+    Malformed amounts must degrade to "not determinable" rather than
+    raise out of webhook processing.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def extract_item_amount(item: dict[str, Any]) -> int | None:
     """Extract the per-unit amount in cents from a subscription item.
 
@@ -21,12 +35,16 @@ def extract_item_amount(item: dict[str, Any]) -> int | None:
         Per-unit amount in cents, or None if not determinable.
     """
     plan = item.get("plan")
-    if isinstance(plan, dict) and plan.get("amount") is not None:
-        return int(plan["amount"])
+    if isinstance(plan, dict):
+        amount = _amount_cents(plan.get("amount"))
+        if amount is not None:
+            return amount
 
     price = item.get("price")
-    if isinstance(price, dict) and price.get("unit_amount") is not None:
-        return int(price["unit_amount"])
+    if isinstance(price, dict):
+        amount = _amount_cents(price.get("unit_amount"))
+        if amount is not None:
+            return amount
 
     return None
 
@@ -82,8 +100,8 @@ def subscription_recurring_amount_cents(sub_data: dict[str, Any]) -> int | None:
             return items_total
 
     plan = sub_data.get("plan")
-    if isinstance(plan, dict) and plan.get("amount") is not None:
-        return int(plan["amount"])
+    if isinstance(plan, dict):
+        return _amount_cents(plan.get("amount"))
 
     return None
 
