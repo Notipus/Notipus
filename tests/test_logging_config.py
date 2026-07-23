@@ -54,16 +54,32 @@ def test_disallowed_host_records_do_not_reach_stderr(
     anywhere and fell through to logging.lastResort, which wrote the
     message and full traceback to stderr on every scanner hit (seen in
     prod July 23, 2026 despite the logger being 'silenced').
+
+    Applies only the production entries for this logger (not the full
+    LOGGING dict) so the test cannot clobber the test-run logging config.
+    Root handlers are irrelevant to the lastResort fallback because the
+    logger does not propagate, so this scoped config exercises the same
+    code path as production.
     """
-    logging.config.dictConfig(LOGGING)
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "handlers": {"null": dict(LOGGING["handlers"]["null"])},
+            "loggers": {
+                "django.security.DisallowedHost": dict(
+                    LOGGING["loggers"]["django.security.DisallowedHost"]
+                ),
+            },
+        }
+    )
     logger = logging.getLogger("django.security.DisallowedHost")
 
     try:
         raise ValueError("scanner probe")
-    except ValueError as exc:
-        logger.error("Invalid HTTP_HOST header: 'notipus.fly.dev'.", exc_info=exc)
+    except ValueError:
+        logger.exception("Invalid HTTP_HOST header: 'notipus.fly.dev'.")
 
     out, err = capfd.readouterr()
-    assert "Invalid HTTP_HOST" not in out
-    assert "Invalid HTTP_HOST" not in err
-    assert "Traceback" not in err
+    assert out == ""
+    assert err == ""
