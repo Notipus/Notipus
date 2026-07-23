@@ -1,12 +1,17 @@
 # syntax=docker/dockerfile:1
-# Single source of truth for the Chainguard Python tag: the builder and
-# runtime stages must track the same release so the venv built in the
-# builder runs on the same interpreter version at runtime.
-ARG PYTHON_TAG=latest
+# All base images are digest-pinned for supply-chain safety and
+# reproducibility; Dependabot (docker ecosystem) keeps the digests fresh.
+# The two Chainguard digests must move together: the builder and runtime
+# stages must track the same release so the venv built in the builder runs
+# on the same interpreter version at runtime.
+
+# Tool images, declared as stages so Dependabot can bump their digests
+FROM ghcr.io/astral-sh/uv:latest@sha256:ecd4de2f060c64bea0ff8ecb182ddf46ba3fcccdc8a60cfdbaf20d1a047d7437 AS uv
+FROM oven/bun:latest@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS bun
 
 # Build stage: Chainguard's -dev variant includes a shell and apk for build
 # tooling.
-FROM cgr.dev/chainguard/python:${PYTHON_TAG}-dev AS builder
+FROM cgr.dev/chainguard/python:latest-dev@sha256:967409cf4148210d7c1bb872ffdda42a8b73cfc738f95eae7413045d0d6c30ee AS builder
 
 USER root
 
@@ -20,10 +25,10 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_PYTHON=/usr/bin/python
 
 # Copy uv binary from official image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=uv /uv /uvx /bin/
 
 # Copy bun binary from official image
-COPY --from=oven/bun:latest /usr/local/bin/bun /usr/local/bin/
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/
 
 # Set the working directory
 WORKDIR /app
@@ -61,8 +66,9 @@ RUN /app/.venv/bin/python -m compileall -q -x '(\.venv|node_modules)' /app
 # Drop frontend build inputs so they don't ship in the runtime image
 RUN rm -rf /app/node_modules /app/src /app/package.json /app/bun.lock /app/postcss.config.js
 
-# Runtime stage: distroless (no shell, no package manager), runs as nonroot
-FROM cgr.dev/chainguard/python:${PYTHON_TAG}
+# Runtime stage: distroless (no shell, no package manager), runs as nonroot.
+# Same Chainguard release as the builder stage above — keep in lockstep.
+FROM cgr.dev/chainguard/python:latest@sha256:2c6a2e8bdeb1336cd8545d3586d1c1e5b4f7564ef00924b0447ebfbe57a549ee
 
 ENV PYTHONUNBUFFERED=1
 
