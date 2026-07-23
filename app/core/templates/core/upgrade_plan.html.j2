@@ -59,10 +59,7 @@
                                 data-interval="yearly"
                                 role="radio"
                                 aria-checked="true"
-                                tabindex="0">
-                            Yearly
-                            <span class="ml-1 text-xs font-medium">2 months free</span>
-                        </button>
+                                tabindex="0">Yearly</button>
                         <button type="button"
                                 id="interval-toggle-monthly"
                                 class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
@@ -134,18 +131,14 @@
                                             ${{ plan.price_yearly }} billed annually{% if plan.yearly_savings %} · Save ${{ plan.yearly_savings }}{% endif %}
                                         </p>
                                     </div>
-                                    <div class="price-monthly hidden mb-2" data-interval-block="monthly">
-                                        <div class="flex items-baseline justify-center">
-                                            <span class="text-4xl lg:text-5xl font-extrabold {% if plan.recommended %}text-primary-600{% else %}text-gray-900{% endif %}">${{ plan.price }}</span>
-                                            <span class="ml-2 text-base lg:text-lg font-medium text-gray-500">/{{ plan.interval }}</span>
-                                        </div>
-                                    </div>
-                                {% else %}
-                                    <div class="flex items-baseline justify-center mb-2">
+                                {% endif %}
+                                <div class="{% if plan.price_yearly %}price-monthly hidden{% endif %} mb-2"
+                                     {% if plan.price_yearly %}data-interval-block="monthly"{% endif %}>
+                                    <div class="flex items-baseline justify-center">
                                         <span class="text-4xl lg:text-5xl font-extrabold {% if plan.recommended %}text-primary-600{% else %}text-gray-900{% endif %}">${{ plan.price }}</span>
                                         <span class="ml-2 text-base lg:text-lg font-medium text-gray-500">/{{ plan.interval }}</span>
                                     </div>
-                                {% endif %}
+                                </div>
 
                                 {% if plan.recommended %}
                                     <p class="text-sm text-primary-600 font-semibold bg-primary-50 px-3 py-1 rounded-full inline-block">

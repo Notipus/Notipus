@@ -1539,6 +1539,47 @@ class TestStripeAPIArchive:
         assert result == []
 
 
+def _checkout_owner_client(
+    username: str,
+    plan_defaults: dict[str, Any],
+    **workspace_kwargs: Any,
+) -> tuple[Any, Any]:
+    """Create a logged-in workspace owner and a pro Plan for checkout tests.
+
+    Shared scaffolding for the checkout-view test classes: one user who
+    owns one free workspace, plus the "pro" Plan row configured per
+    test class (the Plan may already exist via migrations, so it is
+    update_or_create'd).
+
+    Args:
+        username: Username for the owner (also names the workspace).
+        plan_defaults: Field defaults for the "pro" Plan row.
+        **workspace_kwargs: Extra Workspace fields (e.g.
+            stripe_customer_id).
+
+    Returns:
+        (client, workspace) with the owner already logged in.
+    """
+    from core.models import Plan, Workspace, WorkspaceMember
+    from django.contrib.auth.models import User
+    from django.test import Client
+
+    user = User.objects.create_user(username=username, password="x")
+    workspace = Workspace.objects.create(
+        name=f"{username} Workspace",
+        subscription_plan="free",
+        subscription_status="active",
+        **workspace_kwargs,
+    )
+    WorkspaceMember.objects.create(
+        user=user, workspace=workspace, role="owner", is_active=True
+    )
+    Plan.objects.update_or_create(name="pro", defaults=plan_defaults)
+    client = Client()
+    client.force_login(user)
+    return client, workspace
+
+
 @pytest.mark.django_db
 class TestCheckoutBillingInterval:
     """The checkout() view charges the interval the user picked.
@@ -1552,22 +1593,9 @@ class TestCheckoutBillingInterval:
     @pytest.fixture
     def interval_setup(self) -> Any:
         """Logged-in owner + pro plan with both billing intervals."""
-        from core.models import Plan, Workspace, WorkspaceMember
-        from django.contrib.auth.models import User
-        from django.test import Client
-
-        user = User.objects.create_user(username="ann", password="x")
-        workspace = Workspace.objects.create(
-            name="Ann Workspace",
-            subscription_plan="free",
-            subscription_status="active",
-        )
-        WorkspaceMember.objects.create(
-            user=user, workspace=workspace, role="owner", is_active=True
-        )
-        Plan.objects.update_or_create(
-            name="pro",
-            defaults={
+        client, _workspace = _checkout_owner_client(
+            "ann",
+            {
                 "display_name": "Pro",
                 "price_monthly": 99,
                 "price_yearly": 990,
@@ -1576,8 +1604,6 @@ class TestCheckoutBillingInterval:
                 "stripe_price_id_yearly": "price_pro_yearly",
             },
         )
-        client = Client()
-        client.force_login(user)
         return client
 
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
@@ -1759,6 +1785,83 @@ class TestCheckoutBillingInterval:
 
 
 @pytest.mark.django_db
+class TestCheckoutSessionExpiry:
+    """A customer never holds two live checkout sessions at once."""
+
+    @patch("core.services.stripe.StripeAPI.expire_open_checkout_sessions")
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.has_live_subscription")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_existing_customer_open_sessions_expired(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_has_live: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        mock_expire: MagicMock,
+    ) -> None:
+        """Opening checkout expires the customer's stale open sessions,
+        so flipping plan or interval can't set up double-billing."""
+        from django.urls import reverse
+
+        client, _workspace = _checkout_owner_client(
+            "bob",
+            {
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": 990,
+                "is_active": True,
+                "stripe_price_id_monthly": "price_pro_monthly",
+                "stripe_price_id_yearly": "price_pro_yearly",
+            },
+            stripe_customer_id="cus_existing",
+        )
+        mock_get_or_create.return_value = {"id": "cus_existing"}
+        mock_has_live.return_value = False
+        mock_get_price.return_value = {"id": "price_pro_yearly"}
+        mock_create_session.return_value = {
+            "id": "cs_new",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(
+            reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
+        )
+
+        assert response.status_code == 302
+        mock_expire.assert_called_once_with("cus_existing")
+
+    @patch("core.services.stripe.stripe.checkout.Session")
+    def test_expire_open_checkout_sessions_expires_each(
+        self, mock_session_cls: MagicMock
+    ) -> None:
+        """Every open session is expired and counted."""
+        mock_session_cls.list.return_value = Mock(
+            data=[Mock(id="cs_1"), Mock(id="cs_2")]
+        )
+        api = StripeAPI()
+
+        assert api.expire_open_checkout_sessions("cus_x") == 2
+
+        mock_session_cls.list.assert_called_once_with(
+            customer="cus_x", status="open", limit=10, api_key=api.api_key
+        )
+        assert mock_session_cls.expire.call_count == 2
+
+    @patch("core.services.stripe.stripe.checkout.Session")
+    def test_expire_failure_never_raises(self, mock_session_cls: MagicMock) -> None:
+        """A Stripe failure logs and returns 0 — it must not block the
+        new checkout from being created."""
+        import stripe as stripe_lib
+
+        mock_session_cls.list.side_effect = stripe_lib.StripeError("boom")
+        api = StripeAPI()
+
+        assert api.expire_open_checkout_sessions("cus_x") == 0
+
+
+@pytest.mark.django_db
 class TestYearlyPricingAnnotation:
     """Plan cards gain yearly display fields from the Plan table."""
 
@@ -1774,6 +1877,7 @@ class TestYearlyPricingAnnotation:
                 "price_monthly": 99,
                 "price_yearly": 990,
                 "is_active": True,
+                "stripe_price_id_yearly": "price_pro_yearly",
             },
         )
         plans: list[dict[str, Any]] = [{"id": "pro", "price": "99"}]
@@ -1783,6 +1887,58 @@ class TestYearlyPricingAnnotation:
         assert plans[0]["price_yearly"] == "990"
         assert plans[0]["price_yearly_per_month"] == "82.50"
         assert plans[0]["yearly_savings"] == "198"
+
+    def test_savings_use_the_displayed_monthly_price(self) -> None:
+        """Savings are consistent with the price shown on the card.
+
+        When the card's monthly price came from Stripe and drifted from
+        the local Plan row, the advertised savings must match the
+        numbers actually rendered next to them.
+        """
+        from core.models import Plan
+        from core.views.billing import _annotate_yearly_pricing
+
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": 990,
+                "is_active": True,
+                "stripe_price_id_yearly": "price_pro_yearly",
+            },
+        )
+        plans: list[dict[str, Any]] = [{"id": "pro", "price": "119"}]
+
+        _annotate_yearly_pricing(plans)
+
+        # 12 x $119 - $990, not 12 x $99 - $990
+        assert plans[0]["yearly_savings"] == "438"
+
+    def test_skips_plans_without_stripe_yearly_price_id(self) -> None:
+        """A display-only yearly price is not advertised.
+
+        checkout refuses an interval with no Stripe price, so a card
+        must not send users into a checkout that always bounces.
+        """
+        from core.models import Plan
+        from core.views.billing import _annotate_yearly_pricing
+
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": 990,
+                "is_active": True,
+                "stripe_price_id_yearly": "",
+            },
+        )
+        plans: list[dict[str, Any]] = [{"id": "pro", "price": "99"}]
+
+        _annotate_yearly_pricing(plans)
+
+        assert "price_yearly" not in plans[0]
 
     def test_skips_plans_with_null_yearly_price(self) -> None:
         """A NULL price_yearly (pre-feature rows) must not raise."""
@@ -1861,34 +2017,16 @@ class TestCheckoutViewActiveSubscriptionGuard:
     @pytest.fixture
     def setup(self) -> Any:
         """Build a logged-in user + workspace + plan, return them."""
-        from core.models import Plan, Workspace, WorkspaceMember
-        from django.contrib.auth.models import User
-        from django.test import Client
-
-        user = User.objects.create_user(username="vik", password="x")
-        workspace = Workspace.objects.create(
-            name="Vik Workspace",
-            subscription_plan="free",
-            subscription_status="active",
-            stripe_customer_id="cus_existing",
-        )
-        WorkspaceMember.objects.create(
-            user=user, workspace=workspace, role="owner", is_active=True
-        )
-        # The "pro" Plan may already exist via migrations; ensure it has a
-        # Stripe price id so the view doesn't bail before the guard.
-        Plan.objects.update_or_create(
-            name="pro",
-            defaults={
+        return _checkout_owner_client(
+            "vik",
+            {
                 "display_name": "Pro",
                 "price_monthly": 99,
                 "is_active": True,
                 "stripe_price_id_monthly": "price_pro_monthly",
             },
+            stripe_customer_id="cus_existing",
         )
-        client = Client()
-        client.force_login(user)
-        return client, workspace
 
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
