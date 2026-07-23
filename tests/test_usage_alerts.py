@@ -227,6 +227,46 @@ class TestSoftLimitEnforcement:
 
         assert "hard limit" in str(exc_info.value).lower()
 
+    def test_racing_increment_past_hard_cap_rejects(self) -> None:
+        """A concurrent overshoot of the hard cap is caught post-increment.
+
+        Two racers can both observe hard_cap - 1 and pass the pre-check;
+        the atomic increment then puts one of them past the cap, which
+        must reject rather than deliver.
+        """
+        limiter = RateLimiter()
+
+        with (
+            patch("webhooks.services.rate_limiter.cache") as mock_cache,
+            patch("core.services.usage_alerts.maybe_send_usage_alerts") as mock_alerts,
+        ):
+            mock_cache.get.return_value = 39  # hard cap (40) not yet reached
+            mock_cache.incr.return_value = 41  # a racer got there first
+            with pytest.raises(RateLimitException):
+                limiter.enforce_rate_limit(self._org())
+
+        mock_alerts.assert_not_called()
+
+    def test_increment_landing_exactly_on_hard_cap_is_allowed(self) -> None:
+        """The request that lands exactly on the cap still delivers.
+
+        It is the one that observes the crossing and sends the paused
+        alert; only counts beyond the cap reject.
+        """
+        limiter = RateLimiter()
+        org = self._org()
+
+        with (
+            patch("webhooks.services.rate_limiter.cache") as mock_cache,
+            patch("core.services.usage_alerts.maybe_send_usage_alerts") as mock_alerts,
+        ):
+            mock_cache.get.return_value = 39
+            mock_cache.incr.return_value = 40
+            info = limiter.enforce_rate_limit(org)
+
+        assert info["current_usage"] == 40
+        mock_alerts.assert_called_once_with(org, 40, 20, hard_at=40)
+
     def test_alerts_receive_usage_and_limit(self) -> None:
         """The alert hook gets the post-increment count and the plan limit."""
         limiter = RateLimiter()

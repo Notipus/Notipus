@@ -618,6 +618,23 @@ class RateLimiter:
         if rate_limit_info.get("cache_healthy", True):
             rate_limit_info["remaining"] = max(0, rate_limit_info["limit"] - new_usage)
             rate_limit_info["over_limit"] = new_usage > rate_limit_info["limit"]
+            # The pre-check races: two requests can both observe
+            # hard_cap - 1 and both pass, letting one increment past the
+            # cap. The increment is atomic, so re-checking the
+            # post-increment count closes the race; hard_cap is only set
+            # on the over-limit path, which is the only place the race
+            # can overshoot.
+            if hard_cap is not None and new_usage > hard_cap:
+                raise RateLimitException(
+                    f"Hard limit reached for plan "
+                    f"'{organization.subscription_plan}'. "
+                    f"Limit: {rate_limit_info['limit']}, "
+                    f"grace cap: {hard_cap}, "
+                    f"Current usage: {new_usage}",
+                    limit=rate_limit_info["limit"],
+                    current_usage=new_usage,
+                    reset_time=rate_limit_info["reset_time"],
+                )
             # Alerts key off exact threshold values, so a fallback-mode count
             # (which can reset mid-month) must not drive them: skip when the
             # cache is unhealthy rather than risk spurious or missed emails.
