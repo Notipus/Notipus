@@ -832,6 +832,23 @@ class TestBillingServiceWebhooks:
                 will_cancel=False,
             )
 
+    def test_handle_trial_ending_truthy_non_boolean_cancel_flag(self) -> None:
+        """Only an explicit True means canceling; "false" must not."""
+        subscription_data: dict[str, Any] = {
+            "customer": "cus_test123",
+            "trial_end": 1704067200,
+            "cancel_at_period_end": "false",
+        }
+
+        with (
+            patch("core.models.Workspace.objects.filter") as mock_filter,
+            patch("webhooks.services.billing.send_trial_ending_alert") as mock_alert,
+        ):
+            mock_ws = MagicMock(name="Test Workspace")
+            mock_filter.return_value.first.return_value = mock_ws
+            BillingService.handle_trial_ending(subscription_data)
+            assert mock_alert.call_args.kwargs["will_cancel"] is False
+
     def test_handle_trial_ending_unknown_customer_sends_nothing(self) -> None:
         """No workspace for the customer means no alert email."""
         subscription_data: dict[str, Any] = {

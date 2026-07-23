@@ -898,7 +898,9 @@ class BillingService:
             ws,
             ends_on=BillingService._format_timestamp_date(trial_end),
             price=BillingService._recurring_price_label(subscription),
-            will_cancel=bool(subscription.get("cancel_at_period_end")),
+            # "is True": a malformed truthy value (e.g. the string
+            # "false") must not send the "delivery will stop" variant.
+            will_cancel=subscription.get("cancel_at_period_end") is True,
         )
         # TODO: Trigger Slack notification if configured
 
