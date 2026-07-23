@@ -177,9 +177,7 @@ class TestUsageAlertEmails:
         assert len(mail.outbox) == 1
         assert "paused" in mail.outbox[0].subject.lower()
 
-    def test_paused_wins_when_cap_is_limit_plus_one(
-        self, workspace: Workspace
-    ) -> None:
+    def test_paused_wins_when_cap_is_limit_plus_one(self, workspace: Workspace) -> None:
         """A cap of limit + 1 sends the paused email, not the exceeded one.
 
         Both crossings coincide there; "exceeded, still delivering"
@@ -303,9 +301,7 @@ class TestSoftLimitEnforcement:
         with (
             patch("webhooks.services.rate_limiter.cache") as mock_cache,
             patch.object(limiter, "get_hard_limit", return_value=20),
-            patch(
-                "core.services.usage_alerts.maybe_send_usage_alerts"
-            ) as mock_alerts,
+            patch("core.services.usage_alerts.maybe_send_usage_alerts") as mock_alerts,
         ):
             mock_cache.get.return_value = 19  # within the plan limit
             mock_cache.incr.return_value = 21  # a racer got there first
