@@ -636,6 +636,9 @@ LOGGING = {
         "console": {
             "class": "logging.StreamHandler",
         },
+        "null": {
+            "class": "logging.NullHandler",
+        },
     },
     # propagate=False everywhere: the root logger also has the console
     # handler, so propagation would emit every record twice (seen in prod
@@ -663,9 +666,12 @@ LOGGING = {
         },
         # Scanners probing unallowed hostnames (e.g. *.fly.dev) trigger a
         # DisallowedHost log per hit; the 400 response is the correct and
-        # sufficient outcome, so drop the log noise entirely.
+        # sufficient outcome, so drop the log noise entirely. The null
+        # handler (not an empty handler list) is required: a record that
+        # finds no handler anywhere falls through to logging.lastResort,
+        # which writes the message and traceback to stderr anyway.
         "django.security.DisallowedHost": {
-            "handlers": [],
+            "handlers": ["null"],
             "propagate": False,
         },
     },
