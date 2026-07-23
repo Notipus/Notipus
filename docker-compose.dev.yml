@@ -10,6 +10,10 @@ x-dev-volumes: &dev-volumes
   - ./app/plugins:/app/plugins
   - ./app/webhooks:/app/webhooks
   - ./app/manage.py:/app/manage.py
+  # Live static assets (js/, img/, and bun-generated dist/). This hides the
+  # image's built dist/ — run `bun run dev` (or `bun run build`) on the host
+  # so CSS/fonts exist locally.
+  - ./app/static:/app/static
 
 services:
   # Override migration service for development
