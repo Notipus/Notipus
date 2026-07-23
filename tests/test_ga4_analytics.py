@@ -332,6 +332,37 @@ class TestFunnelEvents:
         assert event["params"]["value"] == 29.0
         assert event["params"]["currency"] == "USD"
         assert event["params"]["plan"] == "pro"
+        assert event["params"]["interval"] == "monthly"
+
+    def test_yearly_purchase_reports_yearly_value(
+        self, ga4: MagicMock, logged_in_client: Client, user: User, db: None
+    ) -> None:
+        """A yearly checkout session reports the yearly price, not 12x less."""
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 99,
+                "price_yearly": 990,
+                "is_active": True,
+            },
+        )
+        workspace = Workspace.objects.create(name="Acme", stripe_customer_id="cus_123")
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
+
+        with patch("core.services.stripe.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.retrieve_checkout_session.return_value = {
+                "customer": "cus_123",
+                "metadata": {"plan_name": "pro", "interval": "yearly"},
+            }
+            response = logged_in_client.get(
+                reverse("core:checkout_success"), {"session_id": "cs_test_y"}
+            )
+
+        assert response.status_code == 200
+        (event,) = _events_named(ga4, "purchase")
+        assert event["params"]["value"] == 990.0
+        assert event["params"]["interval"] == "yearly"
 
 
 class TestBillingSyncEvents:

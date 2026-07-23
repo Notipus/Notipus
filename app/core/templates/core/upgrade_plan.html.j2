@@ -46,27 +46,33 @@
                 </div>
             </div>
 
-            <!-- Billing interval toggle: yearly first, so the lower
-                 per-month price anchors (matches the marketing site) -->
-            <div class="flex justify-center mb-8">
-                <div class="inline-flex items-center bg-white rounded-full border border-gray-200 shadow-sm p-1"
-                     role="group"
-                     aria-label="Billing interval">
-                    <button type="button"
-                            id="interval-toggle-yearly"
-                            class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
-                            data-interval="yearly"
-                            aria-pressed="true">
-                        Yearly
-                        <span class="ml-1 text-xs font-medium">2 months free</span>
-                    </button>
-                    <button type="button"
-                            id="interval-toggle-monthly"
-                            class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
-                            data-interval="monthly"
-                            aria-pressed="false">Monthly</button>
+            {% if has_yearly_plans %}
+                <!-- Billing interval toggle: yearly first, so the lower
+                     per-month price anchors (matches the marketing site) -->
+                <div class="flex justify-center mb-8">
+                    <div class="inline-flex items-center bg-white rounded-full border border-gray-200 shadow-sm p-1"
+                         role="radiogroup"
+                         aria-label="Billing interval">
+                        <button type="button"
+                                id="interval-toggle-yearly"
+                                class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
+                                data-interval="yearly"
+                                role="radio"
+                                aria-checked="true"
+                                tabindex="0">
+                            Yearly
+                            <span class="ml-1 text-xs font-medium">2 months free</span>
+                        </button>
+                        <button type="button"
+                                id="interval-toggle-monthly"
+                                class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
+                                data-interval="monthly"
+                                role="radio"
+                                aria-checked="false"
+                                tabindex="-1">Monthly</button>
+                    </div>
                 </div>
-            </div>
+            {% endif %}
 
             <!-- Plan Comparison Cards -->
             <div class="grid grid-cols-1 {% if plans|length == 2 %}md:grid-cols-2 max-w-4xl mx-auto{% else %}md:grid-cols-2 lg:grid-cols-3{% endif %} gap-6 lg:gap-8 mb-8">
@@ -314,19 +320,21 @@
         (function() {
             const ACTIVE = ["bg-primary-600", "text-white", "shadow"];
             const INACTIVE = ["text-gray-600"];
-            const toggles = document.querySelectorAll(".interval-toggle");
-            if (!toggles.length) return;
+            const radios = Array.from(document.querySelectorAll(".interval-toggle"));
+            if (!radios.length) return;
 
-            function setInterval_(interval) {
-                toggles.forEach(function(btn) {
+            function select(interval, focus) {
+                radios.forEach(function(btn) {
                     const on = btn.dataset.interval === interval;
-                    btn.setAttribute("aria-pressed", on ? "true" : "false");
+                    btn.setAttribute("aria-checked", on ? "true" : "false");
+                    btn.tabIndex = on ? 0 : -1;
                     ACTIVE.forEach(function(c) {
                         btn.classList.toggle(c, on);
                     });
                     INACTIVE.forEach(function(c) {
                         btn.classList.toggle(c, !on);
                     });
+                    if (on && focus) btn.focus();
                 });
                 document.querySelectorAll("[data-interval-block]").forEach(function(block) {
                     block.classList.toggle("hidden", block.dataset.intervalBlock !== interval);
@@ -336,12 +344,19 @@
                 });
             }
 
-            toggles.forEach(function(btn) {
+            radios.forEach(function(btn, index) {
                 btn.addEventListener("click", function() {
-                    setInterval_(btn.dataset.interval);
+                    select(btn.dataset.interval, false);
+                });
+                btn.addEventListener("keydown", function(event) {
+                    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+                    event.preventDefault();
+                    const step = (event.key === "ArrowRight" || event.key === "ArrowDown") ? 1 : -1;
+                    const next = radios[(index + step + radios.length) % radios.length];
+                    select(next.dataset.interval, true);
                 });
             });
-            setInterval_("yearly");
+            select("yearly", false);
         })();
     </script>
 {% endblock content %}

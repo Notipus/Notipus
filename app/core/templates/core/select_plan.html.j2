@@ -33,7 +33,9 @@
                                 {% if '$' in plan.price %}<span class="text-base font-medium text-gray-500">/month</span>{% endif %}
                             </p>
                             {% if plan.price_yearly %}
-                                <p class="mt-1 text-sm text-gray-500">or {{ plan.price_yearly }}/year — 2 months free</p>
+                                <p class="mt-1 text-sm text-gray-500">
+                                    or {{ plan.price_yearly }}/year{% if plan.yearly_savings %} — save {{ plan.yearly_savings }}{% endif %}
+                                </p>
                             {% endif %}
 
                             <form method="post" class="mt-8">

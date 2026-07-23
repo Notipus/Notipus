@@ -67,16 +67,22 @@ def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         price_display = (
             "Free" if plan.price_monthly == 0 else f"${plan.price_monthly:.0f}"
         )
+        # price_yearly is nullable — guard before comparing, and show the
+        # computed dollar savings instead of asserting a discount ratio.
+        price_yearly = None
+        yearly_savings = None
+        if plan.price_monthly > 0 and plan.price_yearly and plan.price_yearly > 0:
+            price_yearly = f"${plan.price_yearly:.0f}"
+            savings = plan.price_monthly * 12 - plan.price_yearly
+            if savings > 0:
+                yearly_savings = f"${savings:.0f}"
         plans.append(
             {
                 "name": plan.name,
                 "display_name": plan.display_name,
                 "price": price_display,
-                "price_yearly": (
-                    f"${plan.price_yearly:.0f}"
-                    if plan.price_monthly > 0 and plan.price_yearly > 0
-                    else None
-                ),
+                "price_yearly": price_yearly,
+                "yearly_savings": yearly_savings,
                 "features": plan.features,
                 "description": plan.description,
             }
@@ -180,6 +186,9 @@ def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         "workspace": workspace,
         "plans": available_plans,
         "current_plan": workspace.subscription_plan,
+        # The interval toggle only renders when at least one card can
+        # actually be billed yearly — no dead controls.
+        "has_yearly_plans": any("price_yearly" in plan for plan in available_plans),
     }
     return render(request, "core/upgrade_plan.html.j2", context)
 
@@ -487,7 +496,16 @@ def checkout(
         price_id = _resolve_checkout_price_id(stripe_api, plan, plan_name, interval)
         if not price_id:
             logger.error(f"No Stripe {interval} price configured for plan: {plan_name}")
-            messages.error(request, "Plan configuration error. Please contact support.")
+            if interval == "yearly":
+                messages.error(
+                    request,
+                    "Annual billing isn't set up for this plan yet. "
+                    "Please choose monthly billing, or contact support.",
+                )
+            else:
+                messages.error(
+                    request, "Plan configuration error. Please contact support."
+                )
             return redirect("core:upgrade_plan")
 
         # Create Stripe Checkout Session.
@@ -500,6 +518,9 @@ def checkout(
             metadata={
                 "workspace_id": str(workspace.pk),
                 "plan_name": plan_name,
+                # checkout_success reads this back to report the value
+                # actually purchased instead of assuming monthly.
+                "interval": interval,
             },
             # No time-based component: any date bucket (local or UTC)
             # has a midnight edge where retries minutes apart fall on
@@ -517,8 +538,10 @@ def checkout(
             )
             return redirect("core:upgrade_plan")
 
+        # price_yearly is nullable: when the yearly price lives only in
+        # Stripe, report 0 rather than a guessed amount.
         checkout_value = (
-            plan.price_yearly if interval == "yearly" else plan.price_monthly
+            (plan.price_yearly or 0) if interval == "yearly" else plan.price_monthly
         )
         analytics.track_event(
             request,
@@ -612,6 +635,7 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     session_id = request.GET.get("session_id")
 
     plan_name = None
+    purchased_interval = None
 
     if session_id:
         # Retrieve plan name from Stripe Checkout Session metadata,
@@ -628,7 +652,9 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
                 and workspace.stripe_customer_id
                 and checkout_session.get("customer") == workspace.stripe_customer_id
             ):
-                plan_name = checkout_session.get("metadata", {}).get("plan_name")
+                session_metadata = checkout_session.get("metadata", {})
+                plan_name = session_metadata.get("plan_name")
+                purchased_interval = session_metadata.get("interval")
         except Exception as e:
             logger.warning(f"Error retrieving Stripe session: {e}")
 
@@ -644,6 +670,15 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     if not request.session.get(purchase_tracked_key):
         request.session[purchase_tracked_key] = True
         plan = Plan.objects.filter(name=plan_name, is_active=True).first()
+        # Report the interval that was actually purchased — a $990/year
+        # checkout must not be counted as $99. price_yearly is nullable,
+        # so an unknown yearly amount reports 0 rather than a guess.
+        purchase_value = 0.0
+        if plan:
+            if purchased_interval == "yearly":
+                purchase_value = float(plan.price_yearly or 0)
+            else:
+                purchase_value = float(plan.price_monthly)
         analytics.track_event(
             request,
             "purchase",
@@ -651,7 +686,8 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
                 "plan": plan_name,
                 "transaction_id": session_id,
                 "currency": "USD",
-                "value": float(plan.price_monthly) if plan else 0.0,
+                "value": purchase_value,
+                "interval": purchased_interval or "monthly",
                 "items": [{"item_id": plan_name}],
             },
         )

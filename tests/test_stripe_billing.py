@@ -1674,6 +1674,64 @@ class TestCheckoutBillingInterval:
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
     @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_yearly_checkout_survives_null_price_yearly(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        interval_setup: Any,
+    ) -> None:
+        """A yearly price configured only in Stripe (Plan.price_yearly
+        NULL) must complete checkout, not crash after session creation."""
+        from core.models import Plan
+        from django.urls import reverse
+
+        Plan.objects.filter(name="pro").update(price_yearly=None)
+        client = interval_setup
+        mock_get_or_create.return_value = {"id": "cus_new"}
+        mock_get_price.return_value = {"id": "price_pro_yearly"}
+        mock_create_session.return_value = {
+            "id": "cs_x",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        response = client.get(
+            reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
+        )
+
+        assert response.status_code == 302
+        assert response.url == "https://checkout.stripe.com/x"
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
+    def test_checkout_metadata_carries_interval(
+        self,
+        mock_get_or_create: MagicMock,
+        mock_create_session: MagicMock,
+        mock_get_price: MagicMock,
+        interval_setup: Any,
+    ) -> None:
+        """Session metadata records the interval so checkout_success can
+        report the value actually purchased."""
+        from django.urls import reverse
+
+        client = interval_setup
+        mock_get_or_create.return_value = {"id": "cus_new"}
+        mock_get_price.return_value = {"id": "price_pro_yearly"}
+        mock_create_session.return_value = {
+            "id": "cs_x",
+            "url": "https://checkout.stripe.com/x",
+        }
+
+        client.get(reverse("core:checkout", args=["pro"]), {"interval": "yearly"})
+
+        metadata = mock_create_session.call_args.kwargs["metadata"]
+        assert metadata["interval"] == "yearly"
+
+    @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
+    @patch("core.services.stripe.StripeAPI.create_checkout_session")
+    @patch("core.services.stripe.StripeAPI.get_or_create_customer")
     def test_yearly_without_configured_price_errors_cleanly(
         self,
         mock_get_or_create: MagicMock,
@@ -1725,6 +1783,51 @@ class TestYearlyPricingAnnotation:
         assert plans[0]["price_yearly"] == "990"
         assert plans[0]["price_yearly_per_month"] == "82.50"
         assert plans[0]["yearly_savings"] == "198"
+
+    def test_skips_plans_with_null_yearly_price(self) -> None:
+        """A NULL price_yearly (pre-feature rows) must not raise."""
+        from core.models import Plan
+        from core.views.billing import _annotate_yearly_pricing
+
+        Plan.objects.update_or_create(
+            name="legacy",
+            defaults={
+                "display_name": "Legacy",
+                "price_monthly": 49,
+                "price_yearly": None,
+                "is_active": True,
+            },
+        )
+        plans: list[dict[str, Any]] = [{"id": "legacy", "price": "49"}]
+
+        _annotate_yearly_pricing(plans)
+
+        assert "price_yearly" not in plans[0]
+
+    def test_select_plan_renders_with_null_yearly_price(self) -> None:
+        """The plans page must not 500 on a paid plan with NULL
+        price_yearly — the nullable field predates annual pricing."""
+        from core.models import Plan
+        from django.contrib.auth.models import User
+        from django.test import Client
+        from django.urls import reverse
+
+        Plan.objects.update_or_create(
+            name="legacy",
+            defaults={
+                "display_name": "Legacy",
+                "price_monthly": 49,
+                "price_yearly": None,
+                "is_active": True,
+            },
+        )
+        user = User.objects.create_user(username="planless", password="x")
+        client = Client()
+        client.force_login(user)
+
+        response = client.get(reverse("core:select_plan"))
+
+        assert response.status_code == 200
 
     def test_skips_plans_without_yearly_price(self) -> None:
         """No yearly price -> card stays monthly-only, no fake option."""
