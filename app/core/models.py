@@ -110,6 +110,14 @@ class Workspace(models.Model):
         max_length=255, blank=True, default=""
     )
     payment_method_added: models.BooleanField = models.BooleanField(default=False)
+    # GA4 client id of the browser that started the Stripe checkout,
+    # captured from checkout session metadata. Lets webhook-driven
+    # billing events attribute to the purchaser's GA4 user instead of a
+    # synthetic workspace-uuid client; empty when billing never went
+    # through our checkout (e.g. Stripe-dashboard subscriptions).
+    ga4_client_id: models.CharField = models.CharField(
+        max_length=64, blank=True, default=""
+    )
 
     class Meta:
         app_label = "core"

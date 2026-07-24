@@ -885,6 +885,20 @@ class BillingService:
         if subscription_id:
             update_data["stripe_subscription_id"] = subscription_id
 
+        # Persist the purchasing browser's GA4 client id so later
+        # webhook-driven events (renewals, payment failures) attribute
+        # to the same GA4 user. Metadata is caller-influenced, so only
+        # a well-formed GA-style id is accepted.
+        ga_client_id = metadata.get("ga_client_id") or ""
+        if ga_client_id:
+            if analytics.is_valid_client_id(ga_client_id):
+                update_data["ga4_client_id"] = ga_client_id
+            else:
+                logger.warning(
+                    f"Ignoring malformed ga_client_id in checkout session "
+                    f"metadata for customer {customer_id}"
+                )
+
         with stripe_sync_lock(customer_id):
             # Find workspace by customer ID or workspace ID from metadata
             if workspace_id:

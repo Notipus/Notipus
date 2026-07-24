@@ -653,6 +653,133 @@ class TestPaymentEvents:
         assert _events_named(ga4, "payment_failed") == []
 
 
+class TestWebhookIdentityLinking:
+    """Billing webhook events attribute to the purchasing browser."""
+
+    def test_checkout_metadata_carries_client_id(
+        self, ga4: MagicMock, logged_in_client: Client, user: User, db: None
+    ) -> None:
+        """The checkout session metadata records the browser's client id."""
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 29,
+                "is_active": True,
+            },
+        )
+        workspace = Workspace.objects.create(name="Acme")
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
+        logged_in_client.cookies[analytics.CLIENT_ID_COOKIE] = "12345.67890"
+
+        with patch("core.services.stripe.StripeAPI") as mock_api_cls:
+            mock_api = mock_api_cls.return_value
+            mock_api.get_or_create_customer.return_value = {"id": "cus_1"}
+            mock_api.get_price_by_lookup_key.return_value = {
+                "id": "price_pro_monthly",
+                "unit_amount": 2900,
+                "currency": "usd",
+            }
+            mock_api.create_checkout_session.return_value = {
+                "id": "cs_1",
+                "url": "https://checkout.stripe.com/x",
+            }
+            response = logged_in_client.get(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 302
+        metadata = mock_api.create_checkout_session.call_args.kwargs["metadata"]
+        assert metadata["ga_client_id"] == "12345.67890"
+        # begin_checkout from the same request uses the same identity.
+        payload = next(
+            p for p in _payloads(ga4) if p["events"][0]["name"] == "begin_checkout"
+        )
+        assert payload["client_id"] == "12345.67890"
+
+    def test_checkout_completed_persists_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """handle_checkout_completed stores the metadata client id."""
+        from webhooks.services.billing import BillingService
+
+        workspace = Workspace.objects.create(
+            name="Acme", stripe_customer_id="cus_42", subscription_plan="free"
+        )
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_checkout_completed(
+                {
+                    "customer": "cus_42",
+                    "subscription": "sub_main",
+                    "metadata": {
+                        "workspace_id": str(workspace.pk),
+                        "plan_name": "pro",
+                        "ga_client_id": "12345.67890",
+                    },
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.ga4_client_id == "12345.67890"
+
+    def test_checkout_completed_rejects_malformed_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """Metadata is caller-influenced: garbage ids are not persisted."""
+        from webhooks.services.billing import BillingService
+
+        workspace = Workspace.objects.create(
+            name="Acme", stripe_customer_id="cus_42", subscription_plan="free"
+        )
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_checkout_completed(
+                {
+                    "customer": "cus_42",
+                    "subscription": "sub_main",
+                    "metadata": {
+                        "workspace_id": str(workspace.pk),
+                        "plan_name": "pro",
+                        "ga_client_id": "not-a-client-id",
+                    },
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.ga4_client_id == ""
+
+    def test_workspace_event_prefers_stored_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """Events for a linked workspace use the purchaser's client id."""
+        workspace = Workspace.objects.create(name="Acme", ga4_client_id="12345.67890")
+
+        analytics.track_workspace_event(workspace, "plan_change", {"new_plan": "pro"})
+
+        (payload,) = _payloads(ga4)
+        assert payload["client_id"] == "12345.67890"
+
+    def test_payment_event_uses_stored_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A renewal lands on the same GA4 user as the original checkout."""
+        from webhooks.services.billing import BillingService
+
+        workspace = _paid_workspace()
+        Workspace.objects.filter(id=workspace.id).update(ga4_client_id="12345.67890")
+        workspace.refresh_from_db()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice())
+
+        payload = next(
+            p for p in _payloads(ga4) if p["events"][0]["name"] == "payment_succeeded"
+        )
+        assert payload["client_id"] == "12345.67890"
+
+
 class TestDeliveryBackpressure:
     """The fire-and-forget queue is bounded, never unbounded."""
 

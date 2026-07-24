@@ -473,7 +473,11 @@ def _format_dollars(amount: Any) -> str:
 
 
 def _checkout_session_metadata(
-    workspace: Any, plan_name: str, interval: str, checkout_amount: Decimal | None
+    workspace: Any,
+    plan_name: str,
+    interval: str,
+    checkout_amount: Decimal | None,
+    ga_client_id: str,
 ) -> dict[str, str]:
     """Build the checkout session metadata.
 
@@ -483,12 +487,18 @@ def _checkout_session_metadata(
     values are strings; the amount is omitted when unknown so the
     reader falls back rather than parsing a placeholder.
 
+    ga_client_id rides along so handle_checkout_completed can persist
+    it on the workspace: billing webhooks that arrive months later
+    (renewals, payment failures) then attribute to the purchaser's GA4
+    user instead of a synthetic workspace-uuid client.
+
     Args:
         workspace: The purchasing workspace.
         plan_name: Internal plan name.
         interval: Validated billing interval.
         checkout_amount: Major-unit amount the session will charge, if
             known.
+        ga_client_id: GA4 client id of the purchasing browser.
 
     Returns:
         Metadata dict for create_checkout_session.
@@ -497,6 +507,7 @@ def _checkout_session_metadata(
         "workspace_id": str(workspace.pk),
         "plan_name": plan_name,
         "interval": interval,
+        "ga_client_id": ga_client_id,
     }
     if checkout_amount is not None:
         metadata["amount"] = str(checkout_amount)
@@ -646,7 +657,11 @@ def checkout(
             return _missing_price_redirect(request, plan_name, interval)
 
         session_metadata = _checkout_session_metadata(
-            workspace, plan_name, interval, checkout_amount
+            workspace,
+            plan_name,
+            interval,
+            checkout_amount,
+            analytics.client_id_for_request(request),
         )
 
         # Create Stripe Checkout Session.
