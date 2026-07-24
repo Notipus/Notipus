@@ -25,6 +25,7 @@ from core import analytics
 from core.models import Workspace
 from core.services.stripe import StripeAPI
 from core.services.usage_alerts import send_trial_ending_alert
+from django.core.cache import cache
 from django.db.models import Q
 from webhooks.utils.currency import format_money, from_minor_units
 from webhooks.utils.subscriptions import (
@@ -92,6 +93,39 @@ _SYNC_LOCK_BLOCKING_SECONDS = 10
 
 # Plan keys accepted for Workspace.subscription_plan.
 _VALID_PLAN_KEYS = frozenset(key for key, _label in Workspace.STRIPE_PLANS)
+
+
+# GA4 payment events must be deduplicated server-side: Stripe emits both
+# invoice.payment_succeeded and invoice.paid for one payment, redelivers
+# events after a 5xx, and Measurement Protocol custom events have no
+# dedup of their own (transaction_id only dedupes the ``purchase``
+# ecommerce event). The TTL just needs to outlive Stripe's ~3-day
+# webhook retry window.
+_GA4_DEDUP_TTL_SECONDS = 60 * 60 * 24 * 7
+
+
+def _first_ga4_delivery(dedup_key: str) -> bool:
+    """Return whether a GA4 billing event is being seen for the first time.
+
+    Atomic via ``cache.add`` on the Redis-backed default cache. Fails
+    open (returns True) when the cache is unavailable: a double-counted
+    analytics event beats a dropped one, and analytics must never make
+    a webhook handler 5xx.
+
+    Args:
+        dedup_key: Stable identifier for the event occurrence, e.g.
+            ``"payment_succeeded:in_123"``.
+
+    Returns:
+        True when this occurrence has not been tracked before.
+    """
+    try:
+        return bool(
+            cache.add(f"ga4_billing:{dedup_key}", 1, timeout=_GA4_DEDUP_TTL_SECONDS)
+        )
+    except Exception:
+        logger.warning(f"GA4 dedup cache unavailable for {dedup_key}", exc_info=True)
+        return True
 
 
 class StripeSyncLockTimeout(Exception):
@@ -652,11 +686,41 @@ class BillingService:
                     f"Applied {event_name} for customer {customer_id} "
                     f"(amount_paid={amount_paid})"
                 )
+                BillingService._track_payment_succeeded(workspace, invoice)
 
             # Authoritative refinement: corrects trial state for $0
             # invoices and undoes activation if the subscription has
             # since been deleted (late webhook retry).
             BillingService.sync_workspace_from_stripe(customer_id)
+
+    @staticmethod
+    def _track_payment_succeeded(workspace: Workspace, invoice: dict[str, Any]) -> None:
+        """Send the payment_succeeded GA4 event for a real payment, once.
+
+        Called only from _apply_paid_subscription_invoice's activation
+        path, so the invoice is already known to carry a non-zero payment
+        on the workspace's own subscription — renewals included, which
+        the browser-side ``purchase`` event (checkout success page) never
+        sees. Deduplicated on the invoice id because the same payment
+        arrives as both invoice.payment_succeeded and invoice.paid.
+
+        Args:
+            workspace: The workspace the invoice belongs to.
+            invoice: Invoice data from Stripe webhook.
+        """
+        invoice_id = invoice.get("id")
+        if invoice_id and not _first_ga4_delivery(f"payment_succeeded:{invoice_id}"):
+            return
+
+        currency = str(invoice.get("currency") or "usd").upper()
+        params: dict[str, Any] = {
+            "plan": workspace.subscription_plan,
+            "currency": currency,
+            "value": float(from_minor_units(invoice.get("amount_paid") or 0, currency)),
+        }
+        if invoice_id:
+            params["transaction_id"] = invoice_id
+        analytics.track_workspace_event(workspace, "payment_succeeded", params)
 
     @staticmethod
     def handle_payment_success(invoice: dict[str, Any]) -> None:
@@ -742,6 +806,38 @@ class BillingService:
             logger.warning(
                 f"Updated payment status to past_due for customer {customer_id}"
             )
+            BillingService._track_payment_failed(workspace, invoice)
+
+    @staticmethod
+    def _track_payment_failed(workspace: Workspace, invoice: dict[str, Any]) -> None:
+        """Send the payment_failed GA4 event for a failed invoice attempt.
+
+        Each dunning attempt is a distinct real event, so the dedup key
+        includes attempt_count: webhook redeliveries of one attempt
+        collapse, while attempt 1 and attempt 2 both count.
+
+        Args:
+            workspace: The workspace the invoice belongs to.
+            invoice: Invoice data from Stripe webhook.
+        """
+        invoice_id = invoice.get("id")
+        attempt_count = invoice.get("attempt_count")
+        if invoice_id and not _first_ga4_delivery(
+            f"payment_failed:{invoice_id}:{attempt_count}"
+        ):
+            return
+
+        currency = str(invoice.get("currency") or "usd").upper()
+        params: dict[str, Any] = {
+            "plan": workspace.subscription_plan,
+            "currency": currency,
+            "value": float(from_minor_units(invoice.get("amount_due") or 0, currency)),
+        }
+        if invoice_id:
+            params["transaction_id"] = invoice_id
+        if attempt_count is not None:
+            params["attempt_count"] = attempt_count
+        analytics.track_workspace_event(workspace, "payment_failed", params)
 
     @staticmethod
     def handle_checkout_completed(session: dict[str, Any]) -> None:
@@ -788,6 +884,20 @@ class BillingService:
 
         if subscription_id:
             update_data["stripe_subscription_id"] = subscription_id
+
+        # Persist the purchasing browser's GA4 client id so later
+        # webhook-driven events (renewals, payment failures) attribute
+        # to the same GA4 user. Metadata is caller-influenced, so only
+        # a well-formed GA-style id is accepted.
+        ga_client_id = metadata.get("ga_client_id") or ""
+        if ga_client_id:
+            if analytics.is_valid_client_id(ga_client_id):
+                update_data["ga4_client_id"] = ga_client_id
+            else:
+                logger.warning(
+                    f"Ignoring malformed ga_client_id in checkout session "
+                    f"metadata for customer {customer_id}"
+                )
 
         with stripe_sync_lock(customer_id):
             # Find workspace by customer ID or workspace ID from metadata

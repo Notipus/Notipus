@@ -526,6 +526,260 @@ class TestBillingSyncEvents:
         assert _events_named(ga4, "subscription_cancelled") == []
 
 
+def _paid_workspace() -> Workspace:
+    """Create a workspace with a recorded Stripe subscription."""
+    return Workspace.objects.create(
+        name="Acme",
+        stripe_customer_id="cus_42",
+        subscription_plan="pro",
+        stripe_subscription_id="sub_main",
+    )
+
+
+def _invoice(**overrides: Any) -> dict[str, Any]:
+    """Build a Stripe invoice payload for the test workspace."""
+    payload: dict[str, Any] = {
+        "id": "in_1",
+        "customer": "cus_42",
+        "subscription": "sub_main",
+        "amount_paid": 2900,
+        "amount_due": 2900,
+        "currency": "usd",
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestPaymentEvents:
+    """Server-side payment events from the Stripe invoice webhooks."""
+
+    def test_payment_succeeded_tracked_on_paid_invoice(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A real payment on the workspace's subscription sends the event."""
+        from webhooks.services.billing import BillingService
+
+        workspace = _paid_workspace()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice())
+
+        (event,) = _events_named(ga4, "payment_succeeded")
+        assert event["params"]["plan"] == "pro"
+        assert event["params"]["currency"] == "USD"
+        assert event["params"]["value"] == 29.0
+        assert event["params"]["transaction_id"] == "in_1"
+        payload = next(
+            p for p in _payloads(ga4) if p["events"][0]["name"] == "payment_succeeded"
+        )
+        assert payload["client_id"] == str(workspace.uuid)
+
+    @override_settings(
+        CACHES={
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                "LOCATION": "ga4-payment-dedup-test",
+            }
+        }
+    )
+    def test_payment_succeeded_deduped_across_stripe_events(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """invoice.payment_succeeded + invoice.paid count one payment once."""
+        from django.core.cache import cache
+        from webhooks.services.billing import BillingService
+
+        cache.clear()
+        _paid_workspace()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice())
+            BillingService.handle_invoice_paid(_invoice())
+
+        assert len(_events_named(ga4, "payment_succeeded")) == 1
+
+    def test_zero_amount_trial_invoice_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """The $0 invoice at trial start must not count as a payment."""
+        from webhooks.services.billing import BillingService
+
+        _paid_workspace()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice(amount_paid=0))
+
+        assert _events_named(ga4, "payment_succeeded") == []
+
+    def test_other_subscription_invoice_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A paid invoice for an add-on subscription must not emit the event."""
+        from webhooks.services.billing import BillingService
+
+        _paid_workspace()
+        BillingService.handle_payment_success(_invoice(subscription="sub_addon"))
+
+        assert _events_named(ga4, "payment_succeeded") == []
+
+    def test_payment_failed_tracked(self, ga4: MagicMock, db: None) -> None:
+        """A failed payment on the workspace's subscription sends the event."""
+        from webhooks.services.billing import BillingService
+
+        workspace = _paid_workspace()
+        BillingService.handle_payment_failed(_invoice(attempt_count=2))
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "past_due"
+        (event,) = _events_named(ga4, "payment_failed")
+        assert event["params"]["plan"] == "pro"
+        assert event["params"]["currency"] == "USD"
+        assert event["params"]["value"] == 29.0
+        assert event["params"]["transaction_id"] == "in_1"
+        assert event["params"]["attempt_count"] == 2
+
+    def test_payment_failed_for_other_subscription_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A failed one-off/add-on invoice must not emit the event."""
+        from webhooks.services.billing import BillingService
+
+        _paid_workspace()
+        BillingService.handle_payment_failed(_invoice(subscription="sub_addon"))
+
+        assert _events_named(ga4, "payment_failed") == []
+
+
+class TestWebhookIdentityLinking:
+    """Billing webhook events attribute to the purchasing browser."""
+
+    def test_checkout_metadata_carries_client_id(
+        self, ga4: MagicMock, logged_in_client: Client, user: User, db: None
+    ) -> None:
+        """The checkout session metadata records the browser's client id."""
+        Plan.objects.update_or_create(
+            name="pro",
+            defaults={
+                "display_name": "Pro",
+                "price_monthly": 29,
+                "is_active": True,
+            },
+        )
+        workspace = Workspace.objects.create(name="Acme")
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
+        logged_in_client.cookies[analytics.CLIENT_ID_COOKIE] = "12345.67890"
+
+        with patch("core.services.stripe.StripeAPI") as mock_api_cls:
+            mock_api = mock_api_cls.return_value
+            mock_api.get_or_create_customer.return_value = {"id": "cus_1"}
+            mock_api.get_price_by_lookup_key.return_value = {
+                "id": "price_pro_monthly",
+                "unit_amount": 2900,
+                "currency": "usd",
+            }
+            mock_api.create_checkout_session.return_value = {
+                "id": "cs_1",
+                "url": "https://checkout.stripe.com/x",
+            }
+            response = logged_in_client.get(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 302
+        metadata = mock_api.create_checkout_session.call_args.kwargs["metadata"]
+        assert metadata["ga_client_id"] == "12345.67890"
+        # begin_checkout from the same request uses the same identity.
+        payload = next(
+            p for p in _payloads(ga4) if p["events"][0]["name"] == "begin_checkout"
+        )
+        assert payload["client_id"] == "12345.67890"
+
+    def test_checkout_completed_persists_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """handle_checkout_completed stores the metadata client id."""
+        from webhooks.services.billing import BillingService
+
+        workspace = Workspace.objects.create(
+            name="Acme", stripe_customer_id="cus_42", subscription_plan="free"
+        )
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_checkout_completed(
+                {
+                    "customer": "cus_42",
+                    "subscription": "sub_main",
+                    "metadata": {
+                        "workspace_id": str(workspace.pk),
+                        "plan_name": "pro",
+                        "ga_client_id": "12345.67890",
+                    },
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.ga4_client_id == "12345.67890"
+
+    def test_checkout_completed_rejects_malformed_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """Metadata is caller-influenced: garbage ids are not persisted."""
+        from webhooks.services.billing import BillingService
+
+        workspace = Workspace.objects.create(
+            name="Acme", stripe_customer_id="cus_42", subscription_plan="free"
+        )
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_checkout_completed(
+                {
+                    "customer": "cus_42",
+                    "subscription": "sub_main",
+                    "metadata": {
+                        "workspace_id": str(workspace.pk),
+                        "plan_name": "pro",
+                        "ga_client_id": "not-a-client-id",
+                    },
+                }
+            )
+
+        workspace.refresh_from_db()
+        assert workspace.ga4_client_id == ""
+
+    def test_workspace_event_prefers_stored_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """Events for a linked workspace use the purchaser's client id."""
+        workspace = Workspace.objects.create(name="Acme", ga4_client_id="12345.67890")
+
+        analytics.track_workspace_event(workspace, "plan_change", {"new_plan": "pro"})
+
+        (payload,) = _payloads(ga4)
+        assert payload["client_id"] == "12345.67890"
+
+    def test_payment_event_uses_stored_client_id(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A renewal lands on the same GA4 user as the original checkout."""
+        from webhooks.services.billing import BillingService
+
+        workspace = _paid_workspace()
+        Workspace.objects.filter(id=workspace.id).update(ga4_client_id="12345.67890")
+        workspace.refresh_from_db()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice())
+
+        payload = next(
+            p for p in _payloads(ga4) if p["events"][0]["name"] == "payment_succeeded"
+        )
+        assert payload["client_id"] == "12345.67890"
+
+
 class TestDeliveryBackpressure:
     """The fire-and-forget queue is bounded, never unbounded."""
 

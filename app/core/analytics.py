@@ -211,6 +211,37 @@ def _client_id_for_request(request: HttpRequest) -> str:
     return client_id
 
 
+def client_id_for_request(request: HttpRequest) -> str:
+    """Return the GA4 client id this request's events are attributed to.
+
+    Public entry point for callers that need to hand the id to another
+    system (e.g. Stripe checkout metadata, so billing webhooks months
+    later can attribute to the same GA4 user).
+
+    Args:
+        request: The current HTTP request.
+
+    Returns:
+        The GA4 client id.
+    """
+    return _client_id_for_request(request)
+
+
+def is_valid_client_id(value: str) -> bool:
+    """Return whether a string is a well-formed GA-style client id.
+
+    Used to validate client ids that round-trip through external
+    systems (Stripe metadata is caller-influenced) before persisting.
+
+    Args:
+        value: Candidate client id.
+
+    Returns:
+        True for the ``<random>.<epoch>`` two-integer shape.
+    """
+    return bool(_CLIENT_ID_RE.match(value))
+
+
 def _session_id_for_request(request: HttpRequest) -> str | None:
     """Return the GA4 session id, creating one in the Django session.
 
@@ -399,9 +430,13 @@ def track_workspace_event(
 ) -> None:
     """Send a GA4 event with no browser context (webhook handlers).
 
-    Uses the workspace UUID as a stable client id so all server-driven
-    billing events for a workspace correlate, even though they can't be
-    stitched to a specific member's browsing session.
+    Prefers the workspace's stored ``ga4_client_id`` — the browser that
+    started the Stripe checkout, captured via session metadata — so
+    server-driven billing events (renewals, payment failures) land on
+    the same GA4 user as the acquisition journey. Falls back to the
+    workspace UUID as a stable synthetic client id when billing never
+    went through our checkout (e.g. subscriptions created from the
+    Stripe dashboard); those events still correlate with each other.
 
     Args:
         workspace: The Workspace the event belongs to.
@@ -411,9 +446,10 @@ def track_workspace_event(
     if not is_configured():
         return
 
+    client_id = getattr(workspace, "ga4_client_id", "") or str(workspace.uuid)
     _submit(
         {
-            "client_id": str(workspace.uuid),
+            "client_id": client_id,
             "events": [{"name": name, "params": _build_event_params(params, None)}],
         }
     )
