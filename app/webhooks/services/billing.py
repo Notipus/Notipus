@@ -123,8 +123,8 @@ def _first_ga4_delivery(dedup_key: str) -> bool:
         return bool(
             cache.add(f"ga4_billing:{dedup_key}", 1, timeout=_GA4_DEDUP_TTL_SECONDS)
         )
-    except Exception as e:
-        logger.warning(f"GA4 dedup cache unavailable for {dedup_key}: {e!s}")
+    except Exception:
+        logger.warning(f"GA4 dedup cache unavailable for {dedup_key}", exc_info=True)
         return True
 
 
