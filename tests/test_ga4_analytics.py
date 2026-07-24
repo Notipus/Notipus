@@ -526,6 +526,133 @@ class TestBillingSyncEvents:
         assert _events_named(ga4, "subscription_cancelled") == []
 
 
+def _paid_workspace() -> Workspace:
+    """Create a workspace with a recorded Stripe subscription."""
+    return Workspace.objects.create(
+        name="Acme",
+        stripe_customer_id="cus_42",
+        subscription_plan="pro",
+        stripe_subscription_id="sub_main",
+    )
+
+
+def _invoice(**overrides: Any) -> dict[str, Any]:
+    """Build a Stripe invoice payload for the test workspace."""
+    payload: dict[str, Any] = {
+        "id": "in_1",
+        "customer": "cus_42",
+        "subscription": "sub_main",
+        "amount_paid": 2900,
+        "amount_due": 2900,
+        "currency": "usd",
+    }
+    payload.update(overrides)
+    return payload
+
+
+class TestPaymentEvents:
+    """Server-side payment events from the Stripe invoice webhooks."""
+
+    def test_payment_succeeded_tracked_on_paid_invoice(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A real payment on the workspace's subscription sends the event."""
+        from webhooks.services.billing import BillingService
+
+        workspace = _paid_workspace()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice())
+
+        (event,) = _events_named(ga4, "payment_succeeded")
+        assert event["params"]["plan"] == "pro"
+        assert event["params"]["currency"] == "USD"
+        assert event["params"]["value"] == 29.0
+        assert event["params"]["transaction_id"] == "in_1"
+        payload = next(
+            p for p in _payloads(ga4) if p["events"][0]["name"] == "payment_succeeded"
+        )
+        assert payload["client_id"] == str(workspace.uuid)
+
+    @override_settings(
+        CACHES={
+            "default": {
+                "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                "LOCATION": "ga4-payment-dedup-test",
+            }
+        }
+    )
+    def test_payment_succeeded_deduped_across_stripe_events(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """invoice.payment_succeeded + invoice.paid count one payment once."""
+        from django.core.cache import cache
+        from webhooks.services.billing import BillingService
+
+        cache.clear()
+        _paid_workspace()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice())
+            BillingService.handle_invoice_paid(_invoice())
+
+        assert len(_events_named(ga4, "payment_succeeded")) == 1
+
+    def test_zero_amount_trial_invoice_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """The $0 invoice at trial start must not count as a payment."""
+        from webhooks.services.billing import BillingService
+
+        _paid_workspace()
+
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = []
+            BillingService.handle_payment_success(_invoice(amount_paid=0))
+
+        assert _events_named(ga4, "payment_succeeded") == []
+
+    def test_other_subscription_invoice_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A paid invoice for an add-on subscription must not emit the event."""
+        from webhooks.services.billing import BillingService
+
+        _paid_workspace()
+        BillingService.handle_payment_success(_invoice(subscription="sub_addon"))
+
+        assert _events_named(ga4, "payment_succeeded") == []
+
+    def test_payment_failed_tracked(self, ga4: MagicMock, db: None) -> None:
+        """A failed payment on the workspace's subscription sends the event."""
+        from webhooks.services.billing import BillingService
+
+        workspace = _paid_workspace()
+        BillingService.handle_payment_failed(_invoice(attempt_count=2))
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "past_due"
+        (event,) = _events_named(ga4, "payment_failed")
+        assert event["params"]["plan"] == "pro"
+        assert event["params"]["currency"] == "USD"
+        assert event["params"]["value"] == 29.0
+        assert event["params"]["transaction_id"] == "in_1"
+        assert event["params"]["attempt_count"] == 2
+
+    def test_payment_failed_for_other_subscription_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A failed one-off/add-on invoice must not emit the event."""
+        from webhooks.services.billing import BillingService
+
+        _paid_workspace()
+        BillingService.handle_payment_failed(_invoice(subscription="sub_addon"))
+
+        assert _events_named(ga4, "payment_failed") == []
+
+
 class TestDeliveryBackpressure:
     """The fire-and-forget queue is bounded, never unbounded."""
 
