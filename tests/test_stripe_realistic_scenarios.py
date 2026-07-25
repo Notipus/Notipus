@@ -1652,3 +1652,86 @@ class TestPaymentFailureNotFiltered:
         # Headlines are event-focused (no company name)
         assert "failed" in notification.headline.lower()
         assert "$99.00" in notification.headline
+
+
+class TestGuestCheckoutIdentity:
+    """Integration test: guest checkout (payment mode, no Customer object).
+
+    checkout.session.completed for a guest checkout has customer=None and
+    the buyer's identity only in the nested customer_details object. Seen
+    in prod: these events produced anonymous notifications and were
+    dropped from the dashboard activity feed entirely.
+    """
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    @pytest.fixture
+    def guest_checkout_session(self) -> dict[str, Any]:
+        """checkout.session.completed object for a guest checkout."""
+        return {
+            "id": "cs_test_a1b2c3",
+            "object": "checkout.session",
+            "customer": None,
+            "customer_email": None,
+            "customer_details": {
+                "email": "guest@example.com",
+                "name": "Guest Buyer",
+            },
+            "amount_total": 4900,
+            "currency": "usd",
+            "mode": "payment",
+            "status": "complete",
+            "created": 1769327717,
+        }
+
+    def test_customer_details_hoisted_to_flat_fields(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        guest_checkout_session: dict[str, Any],
+    ) -> None:
+        """The nested customer_details identity lands in the flat fields."""
+        stripe_plugin._hoist_checkout_customer_details(guest_checkout_session)
+
+        assert guest_checkout_session["customer_email"] == "guest@example.com"
+        assert guest_checkout_session["customer_name"] == "Guest Buyer"
+
+    def test_explicit_flat_fields_are_not_overwritten(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """A customer_email set at session creation wins over the echo."""
+        data = {
+            "customer_email": "explicit@example.com",
+            "customer_details": {"email": "details@example.com", "name": "N"},
+        }
+
+        stripe_plugin._hoist_checkout_customer_details(data)
+
+        assert data["customer_email"] == "explicit@example.com"
+
+    def test_non_dict_and_null_customer_details_are_ignored(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Events without a usable customer_details object are untouched."""
+        for details in (None, "str", 42, ["list"]):
+            data = {"customer_details": details}
+            stripe_plugin._hoist_checkout_customer_details(data)
+            assert "customer_email" not in data
+            assert "customer_name" not in data
+
+    def test_get_customer_data_returns_guest_identity(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        guest_checkout_session: dict[str, Any],
+    ) -> None:
+        """After the hoist, the customer lookup yields the buyer identity."""
+        stripe_plugin._hoist_checkout_customer_details(guest_checkout_session)
+        stripe_plugin._current_webhook_data = guest_checkout_session
+
+        customer_data = stripe_plugin.get_customer_data("")
+
+        assert customer_data["email"] == "guest@example.com"
+        assert customer_data["first_name"] == "Guest"
+        assert customer_data["last_name"] == "Buyer"

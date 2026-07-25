@@ -1170,6 +1170,12 @@ class StripeSourcePlugin(BaseSourcePlugin):
             else:
                 data_dict = dict(data)
 
+            # Checkout sessions carry buyer identity in customer_details —
+            # even guest checkouts with no Customer object. Hoist it to the
+            # flat fields get_customer_data reads, so those notifications
+            # and dashboard records are not anonymous.
+            self._hoist_checkout_customer_details(data_dict)
+
             # Get customer ID - some events may not require one
             # (checkout sessions use metadata for organization lookup)
             customer_id = str(data_dict.get("customer", "") or "")
@@ -1207,6 +1213,34 @@ class StripeSourcePlugin(BaseSourcePlugin):
 
         except (KeyError, ValueError, AttributeError) as e:
             raise InvalidDataError("Missing required fields") from e
+
+    def _hoist_checkout_customer_details(self, data_dict: dict[str, Any]) -> None:
+        """Copy checkout-session customer_details into the flat fields.
+
+        checkout.session.completed payloads put the buyer's email and name
+        in a nested ``customer_details`` object, and for guest checkouts
+        (payment mode, no Customer created) that nested object is the ONLY
+        identity in the payload. get_customer_data reads the flat
+        ``customer_email``/``customer_name`` keys, so without this hoist a
+        guest checkout produces an anonymous notification.
+
+        Existing flat values win: they are set explicitly at session
+        creation and customer_details merely echoes them.
+
+        Args:
+            data_dict: The event object dict, mutated in place.
+        """
+        details = data_dict.get("customer_details")
+        if not isinstance(details, dict):
+            return
+
+        email = details.get("email")
+        if not data_dict.get("customer_email") and isinstance(email, str):
+            data_dict["customer_email"] = email
+
+        name = details.get("name")
+        if not data_dict.get("customer_name") and isinstance(name, str):
+            data_dict["customer_name"] = name
 
     def get_customer_data(self, customer_id: str) -> dict[str, Any]:
         """Get customer data from stored webhook payload.
