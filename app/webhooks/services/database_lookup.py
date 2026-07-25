@@ -390,6 +390,31 @@ class DatabaseLookupService:
 
         cache.set(activity_key, json.dumps(current_activity), timeout=self.ttl_seconds)
 
+    def _customer_display_key(
+        self, event_data: dict[str, Any], notification: RichNotification
+    ) -> str:
+        """Customer identifier for the dashboard record.
+
+        Guest checkouts (checkout.session.completed in payment mode) have
+        no Stripe Customer object; fall back to the payload-proven email
+        from the notification instead of dropping the event from the
+        activity feed.
+
+        Args:
+            event_data: The event data dictionary.
+            notification: The built RichNotification.
+
+        Returns:
+            The customer id, the customer email, or empty string if the
+            event carries no identity at all.
+        """
+        customer_id = event_data.get("customer_id")
+        if customer_id:
+            return str(customer_id)
+        if notification.customer and notification.customer.email:
+            return str(notification.customer.email)
+        return ""
+
     def store_enriched_record(
         self,
         event_data: dict[str, Any],
@@ -421,7 +446,7 @@ class DatabaseLookupService:
                 or event_data.get("transaction_id")
                 or event_data.get("id")
             )
-            customer_id = event_data.get("customer_id")
+            customer_id = self._customer_display_key(event_data, notification)
             if not customer_id:
                 logger.warning(
                     f"Missing customer_id in event: {event_data.get('type')}"

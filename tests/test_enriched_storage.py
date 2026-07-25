@@ -191,15 +191,41 @@ class TestStoreEnrichedRecord:
         mock_cache.set.assert_not_called()
 
     @patch("webhooks.services.database_lookup.cache")
-    def test_store_enriched_record_missing_customer_id(
+    def test_store_enriched_record_missing_customer_id_uses_email(
         self,
         mock_cache: MagicMock,
         db_service: DatabaseLookupService,
         workspace_id: str,
         sample_notification: RichNotification,
     ) -> None:
-        """Test storage fails gracefully when customer_id is missing."""
+        """Missing customer_id falls back to the notification's email.
+
+        Guest checkouts (checkout.session.completed in payment mode) have
+        no Stripe Customer object; the payload-proven email keys the
+        dashboard record instead of the event being dropped.
+        """
+        mock_cache.get.return_value = []
+        event_data = {"type": "checkout_completed", "provider": "stripe"}
+
+        result = db_service.store_enriched_record(
+            event_data, sample_notification, workspace_id=workspace_id
+        )
+
+        assert result is True
+        stored = decrypt_cache_value(mock_cache.set.call_args_list[0][0][1])
+        assert stored["customer_id"] == "billing@acme.com"
+
+    @patch("webhooks.services.database_lookup.cache")
+    def test_store_enriched_record_no_identity_at_all(
+        self,
+        mock_cache: MagicMock,
+        db_service: DatabaseLookupService,
+        workspace_id: str,
+        sample_notification: RichNotification,
+    ) -> None:
+        """Test storage fails gracefully when there is no identity at all."""
         event_data = {"type": "payment_success", "provider": "stripe"}
+        sample_notification.customer = None
 
         result = db_service.store_enriched_record(
             event_data, sample_notification, workspace_id=workspace_id
