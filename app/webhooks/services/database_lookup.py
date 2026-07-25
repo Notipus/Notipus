@@ -449,7 +449,8 @@ class DatabaseLookupService:
             customer_id = self._customer_display_key(event_data, notification)
             if not customer_id:
                 logger.warning(
-                    f"Missing customer_id in event: {event_data.get('type')}"
+                    f"No customer identity (id or email) in event: "
+                    f"{event_data.get('type')}"
                 )
                 return False
 
