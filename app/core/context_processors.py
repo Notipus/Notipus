@@ -2,9 +2,30 @@
 
 from typing import Any
 
+from django.conf import settings
 from django.http import HttpRequest
 
 from .models import WorkspaceMember
+
+
+def analytics(request: HttpRequest) -> dict[str, Any]:
+    """Expose the client-side GA4 measurement id to templates.
+
+    Populated only when GA4_CLIENT_SIDE is enabled and a measurement id
+    is configured, so the gtag.js snippet in base.html.j2 renders solely
+    when client-side tracking is turned on. The server-side Measurement
+    Protocol path (core.analytics) is independent of this.
+
+    Args:
+        request: The current HTTP request.
+
+    Returns:
+        Dict with ``ga4_measurement_id`` when client-side GA4 is on,
+        otherwise empty.
+    """
+    if settings.GA4_CLIENT_SIDE and settings.GA4_MEASUREMENT_ID:
+        return {"ga4_measurement_id": settings.GA4_MEASUREMENT_ID}
+    return {}
 
 
 def workspace_role(request: HttpRequest) -> dict[str, Any]:

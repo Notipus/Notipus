@@ -343,6 +343,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.workspace_role",
+                "core.context_processors.analytics",
             ],
             # Security: Only enable template debug in development
             "debug": DEBUG,
@@ -717,6 +718,14 @@ GA4_API_SECRET = os.environ.get("GA4_API_SECRET", "")
 # back to SECRET_KEY when unset; set it explicitly in production so a
 # SECRET_KEY rotation doesn't reset user continuity in GA4.
 GA4_USER_ID_SALT = os.environ.get("GA4_USER_ID_SALT", "")
+# When true, render the gtag.js snippet client-side (see
+# core/templates/core/base.html.j2 and core.context_processors.analytics)
+# and stop emitting server-side page_view from GA4Middleware, so page
+# views are measured in the browser — where Google applies the bot/spam
+# filtering and real engagement signals the Measurement Protocol lacks.
+# Server events with no browser (Stripe webhooks) and the funnel events
+# (sign_up, login) still go via the Measurement Protocol. Needs GA4_ID.
+GA4_CLIENT_SIDE = os.environ.get("GA4_CLIENT_SIDE", "").lower() in ("1", "true", "yes")
 
 # Stripe configuration for Notipus billing (our revenue)
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "sk_test_dev_key")

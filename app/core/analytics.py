@@ -16,8 +16,10 @@ Requires two settings (both empty disables tracking entirely):
 Identity model: anonymous visitors get a first-party ``np_ga_cid``
 cookie holding a GA-style client id (minted by :class:`GA4Middleware`);
 if a ``_ga`` cookie from gtag.js ever exists it wins, so a client-side
-snippet can be added later and sessions will stitch together. Logged-in
-users additionally send ``user_id``. Events with no request context
+snippet stitches into the same sessions (enable ``GA4_CLIENT_SIDE`` to
+render that snippet and hand page-view tracking to the browser;
+server-side ``page_view`` is then suppressed to avoid double counting).
+Logged-in users additionally send ``user_id``. Events with no request context
 (Stripe webhooks) use the workspace UUID as a stable client id via
 :func:`track_workspace_event`.
 
@@ -518,6 +520,10 @@ class GA4Middleware:
     @staticmethod
     def _should_track_page_view(request: HttpRequest, response: HttpResponse) -> bool:
         """Return whether this request/response pair is a real page view."""
+        if settings.GA4_CLIENT_SIDE:
+            # gtag.js owns page views in this mode; sending them
+            # server-side too would double-count every real page load.
+            return False
         if request.method != "GET":
             return False
         if not 200 <= response.status_code < 300:

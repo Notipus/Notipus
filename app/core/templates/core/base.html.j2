@@ -16,6 +16,22 @@
         <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}">
         <link rel="apple-touch-icon" href="{% static 'img/favicon.png' %}">
         <link rel="stylesheet" type="text/css" href="{% static 'dist/main.css' %}">
+        {% if ga4_measurement_id %}
+            {# Google Analytics 4, client-side. When GA4_CLIENT_SIDE is on, #}
+            {# core.analytics stops sending page_view server-side so views #}
+            {# are counted here only. #}
+            <script async
+                    src="https://www.googletagmanager.com/gtag/js?id={{ ga4_measurement_id }}"></script>
+            <script>
+                window.dataLayer = window.dataLayer || [];
+
+                function gtag() {
+                    dataLayer.push(arguments);
+                }
+                gtag('js', new Date());
+                gtag('config', '{{ ga4_measurement_id }}');
+            </script>
+        {% endif %}
         {% block extra_head %}
         {% endblock extra_head %}
     </head>
