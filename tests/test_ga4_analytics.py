@@ -214,13 +214,38 @@ class TestTrackEvent:
 class TestMiddleware:
     """GA4Middleware: cookie minting and server-side page views."""
 
-    def test_page_view_tracked_and_cookie_set(self, ga4: MagicMock, db: None) -> None:
-        """An HTML GET mints the client-id cookie and sends page_view."""
-        client = Client()
-        response = client.get(reverse("account_login"), HTTP_USER_AGENT="Mozilla/5.0")
+    def test_page_view_tracked_and_cookie_set(
+        self, ga4: MagicMock, logged_in_client: Client
+    ) -> None:
+        """A first HTML GET mints the client-id cookie and sends page_view."""
+        response = logged_in_client.get(
+            reverse("core:create_workspace"), HTTP_USER_AGENT="Mozilla/5.0"
+        )
         assert response.status_code == 200
         assert analytics.CLIENT_ID_COOKIE in response.cookies
 
+        (event,) = _events_named(ga4, "page_view")
+        assert event["params"]["page_location"].endswith(
+            reverse("core:create_workspace")
+        )
+
+    def test_cookieless_pre_auth_page_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A cookieless GET to the login page (crawler-shaped) is skipped."""
+        response = Client().get(reverse("account_login"), HTTP_USER_AGENT="Mozilla/5.0")
+        assert response.status_code == 200
+        assert _events_named(ga4, "page_view") == []
+        assert analytics.CLIENT_ID_COOKIE not in response.cookies
+
+    def test_pre_auth_page_tracked_for_known_visitor(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """A returning visitor (client-id cookie) is tracked on the login page."""
+        client = Client()
+        client.cookies[analytics.CLIENT_ID_COOKIE] = "12345.67890"
+        response = client.get(reverse("account_login"), HTTP_USER_AGENT="Mozilla/5.0")
+        assert response.status_code == 200
         (event,) = _events_named(ga4, "page_view")
         assert event["params"]["page_location"].endswith(reverse("account_login"))
 
@@ -262,6 +287,15 @@ class TestMiddleware:
             factory.get("/webhook/stripe/", **browser), html_response()
         )
         assert not should_track(factory.get("/admin/core/", **browser), html_response())
+
+        # Pre-auth pages: a cookieless hit (crawler-shaped) is skipped, but
+        # a visitor carrying a client-id cookie is tracked.
+        assert not should_track(
+            factory.get("/accounts/login/", **browser), html_response()
+        )
+        known = factory.get("/accounts/login/", **browser)
+        known.COOKIES[analytics.CLIENT_ID_COOKIE] = "12345.67890"
+        assert should_track(known, html_response())
 
         json_response = MagicMock()
         json_response.status_code = 200
