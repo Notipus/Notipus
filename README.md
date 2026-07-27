@@ -437,7 +437,7 @@ PLUGINS = {
         "brandfetch": {
             "enabled": True,
             "priority": 100,
-            "config": {"api_key": "...", "timeout": 10}
+            "config": {"api_key": "...", "timeout": 10},
         }
     },
     "sources": {
