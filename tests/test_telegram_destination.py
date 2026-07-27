@@ -1014,6 +1014,38 @@ class TestTelegramSend:
             plugin.send(formatted, {"bot_token": "123:ABC", "chat_id": "456"})
 
     @patch("plugins.destinations.telegram.requests.post")
+    def test_send_failure_never_leaks_bot_token(
+        self,
+        mock_post: MagicMock,
+        plugin: TelegramDestinationPlugin,
+        basic_notification: RichNotification,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A request failure must not leak the bot token into logs or errors.
+
+        requests exception messages embed the request URL, which for Telegram
+        is https://api.telegram.org/bot<token>/... — so neither the raised
+        error nor anything logged may contain the token.
+        """
+        import logging
+
+        import requests
+
+        token = "123456789:SUPERSECRETTOKENvalue"
+        mock_post.side_effect = requests.exceptions.ConnectionError(
+            "HTTPSConnectionPool(host='api.telegram.org', port=443): Max "
+            f"retries exceeded with url: /bot{token}/sendMessage"
+        )
+        formatted = plugin.format(basic_notification)
+
+        with caplog.at_level(logging.DEBUG):
+            with pytest.raises(RuntimeError) as exc_info:
+                plugin.send(formatted, {"bot_token": token, "chat_id": "456"})
+
+        assert "SUPERSECRETTOKEN" not in str(exc_info.value)
+        assert "SUPERSECRETTOKEN" not in caplog.text
+
+    @patch("plugins.destinations.telegram.requests.post")
     def test_send_handles_timeout(
         self,
         mock_post: MagicMock,

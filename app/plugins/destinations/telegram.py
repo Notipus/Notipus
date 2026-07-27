@@ -294,12 +294,16 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
                 "Telegram returned an invalid (non-JSON) response"
             ) from e
         except requests.exceptions.RequestException as e:
+            # Do NOT log str(e)/exc_info here: requests exception messages
+            # embed the request URL, which is https://api.telegram.org/bot
+            # <token>/... — logging it would leak the bot token. Log only the
+            # exception type, and raise `from None` so the token-bearing cause
+            # isn't chained into a caller that logs with exc_info.
             logger.error(
                 "Failed to send message to Telegram",
-                extra={"error": str(e)},
-                exc_info=True,
+                extra={"error_type": type(e).__name__},
             )
-            raise RuntimeError("Failed to send notification to Telegram") from e
+            raise RuntimeError("Failed to send notification to Telegram") from None
 
     def _format_header(self, n: RichNotification) -> str:
         """Format the notification header.

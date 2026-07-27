@@ -57,8 +57,9 @@ def _validate_bot_token(bot_token: str) -> dict | None:
 
     except (requests.exceptions.RequestException, ValueError) as e:
         # ValueError covers response.json() decode failures (non-JSON body,
-        # e.g. an HTML error page from a proxy) — treat as invalid.
-        logger.error(f"Telegram bot validation failed: {e!s}")
+        # e.g. an HTML error page from a proxy) — treat as invalid. Log only
+        # the exception type: requests messages embed the /bot<token>/ URL.
+        logger.error(f"Telegram bot validation failed: {type(e).__name__}")
         return None
 
 
@@ -83,7 +84,8 @@ def _validate_chat_id(bot_token: str, chat_id: str) -> bool:
 
     except (requests.exceptions.RequestException, ValueError) as e:
         # ValueError covers response.json() decode failures (non-JSON body).
-        logger.error(f"Telegram chat validation failed: {e!s}")
+        # Log only the exception type: requests messages embed the token URL.
+        logger.error(f"Telegram chat validation failed: {type(e).__name__}")
         return False
 
 
@@ -286,7 +288,8 @@ def test_telegram(request: HttpRequest) -> HttpResponseRedirect:
         messages.error(request, "Request timed out. Please try again.")
     except (requests.exceptions.RequestException, ValueError) as e:
         # ValueError covers response.json() decode failures (non-JSON body).
-        logger.error(f"Telegram test message failed: {e!s}")
+        # Log only the exception type: requests messages embed the token URL.
+        logger.error(f"Telegram test message failed: {type(e).__name__}")
         messages.error(request, "Failed to send test message. Please try again.")
 
     return redirect("core:integrations")
