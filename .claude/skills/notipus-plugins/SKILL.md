@@ -29,7 +29,7 @@ classmethod `get_metadata() -> PluginMetadata`:
 
 ```python
 PluginMetadata(
-    name="telegram",              # unique id, used as the registry key
+    name="telegram",  # unique id, used as the registry key
     display_name="Telegram",
     version="1.0.0",
     description="...",
