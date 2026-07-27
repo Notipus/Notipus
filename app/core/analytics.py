@@ -42,6 +42,7 @@ diagnosing missing events.
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import re
 import secrets
@@ -245,6 +246,32 @@ def is_valid_client_id(value: str) -> bool:
     return bool(_CLIENT_ID_RE.match(value))
 
 
+def _usable_public_ip(value: Any) -> str | None:
+    """Return ``value`` if it parses as a globally-routable IP, else None.
+
+    Guards ``ip_override``: a malformed address can make GA4 discard the
+    whole payload, and a private/loopback address (RFC1918, 127.0.0.0/8,
+    link-local) geolocates to nothing — worse than sending no IP at all.
+    Only globally-routable addresses are accepted; everything else yields
+    None so the caller falls through to the next candidate.
+
+    Args:
+        value: A candidate IP string (header value or ``REMOTE_ADDR``).
+
+    Returns:
+        The trimmed IP string when it is a public IPv4/IPv6 address, else
+        None.
+    """
+    if not value:
+        return None
+    candidate = str(value).strip()
+    try:
+        parsed = ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate if parsed.is_global else None
+
+
 def _client_ip(request: HttpRequest) -> str | None:
     """Return the visitor's public IP for GA4 geolocation, if resolvable.
 
@@ -252,23 +279,29 @@ def _client_ip(request: HttpRequest) -> str | None:
     our own server, so real visitors land under an unknown country and
     Google cannot apply its IP-based bot exclusions. Behind Fly.io the
     edge sets ``Fly-Client-IP``; fall back to the first hop of
-    ``X-Forwarded-For`` and finally ``REMOTE_ADDR``.
+    ``X-Forwarded-For`` and finally ``REMOTE_ADDR``. Each candidate is
+    validated (see :func:`_usable_public_ip`) and the first that is a
+    globally-routable address wins; private/loopback/garbage values are
+    skipped so GA4 never receives an unusable ``ip_override``.
 
     Args:
         request: The current HTTP request.
 
     Returns:
-        The client IP string, or None when the request carries no usable
-        address.
+        The client IP string, or None when no candidate is a usable
+        public address.
     """
-    fly_ip = request.META.get("HTTP_FLY_CLIENT_IP")
-    if fly_ip:
-        return str(fly_ip).strip()
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
-    if forwarded:
-        return str(forwarded).split(",")[0].strip()
-    remote = request.META.get("REMOTE_ADDR")
-    return str(remote) if remote else None
+    first_hop = forwarded.split(",")[0] if forwarded else None
+    for candidate in (
+        request.META.get("HTTP_FLY_CLIENT_IP"),
+        first_hop,
+        request.META.get("REMOTE_ADDR"),
+    ):
+        usable = _usable_public_ip(candidate)
+        if usable:
+            return usable
+    return None
 
 
 def _session_id_for_request(request: HttpRequest) -> str | None:
