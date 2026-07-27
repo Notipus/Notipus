@@ -12,7 +12,7 @@
     "@tabler/icons-webfont": "^3.45.0",
     "@tailwindcss/cli": "^4.3.3",
     "autoprefixer": "^10.5.4",
-    "postcss": "^8.5.20",
+    "postcss": "^8.5.23",
     "tailwindcss": "^4.3.3"
   },
   "dependencies": {
