@@ -18,7 +18,7 @@
                                 </svg>
                             </div>
                             <div>
-                                <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl">Connect Telegram</h2>
+                                <h1 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl">Connect Telegram</h1>
                                 <p class="mt-1 text-lg text-gray-600">Receive real-time notifications in your Telegram chat or channel</p>
                             </div>
                         </div>
@@ -80,14 +80,16 @@
                     <div>
                         <label for="bot_token" class="block text-sm font-medium text-gray-700">Bot Token</label>
                         <div class="mt-1">
-                            {# Never render the stored bot token back into the
-                               page: even in a password field it would sit in
-                               the DOM/source where an extension or XSS could
-                               read it. Re-enter the token to update the
-                               connection. #}
+                            {% comment %}
+                            Never render the stored bot token back into the
+                            page: even in a password field it would sit in the
+                            DOM/source where an extension or XSS could read it.
+                            Re-enter the token to update the connection.
+                            {% endcomment %}
                             <input type="password"
                                    name="bot_token"
                                    id="bot_token"
+                                   autocomplete="off"
                                    class="shadow-sm focus:ring-[#0088cc] focus:border-[#0088cc] block w-full sm:text-sm border-gray-300 rounded-md"
                                    placeholder="123456789:ABCdefGHIjklmnOPQrstUVwxyz"
                                    required>
