@@ -488,21 +488,24 @@ def _process_immediately(
             status=200,
         )
 
-    # Deliver to each configured destination independently. A missing
-    # plugin is a deploy-time misconfiguration a retry can't fix, so we log
-    # and skip it. A send failure may be transient, so we record it and,
-    # after attempting every destination, raise — the router then returns
-    # 5xx and the provider retries, re-attempting all destinations, rather
-    # than silently losing the notification. Trade-off: the dedup marker is
-    # recorded only on full success (see _process_webhook_data), so a retry
-    # after a partial failure re-sends to destinations that already
-    # succeeded. We accept a possible duplicate as the cost of never dropping
-    # a notification.
+    # Deliver to each configured destination independently. Both a missing
+    # plugin and a send failure count as delivery errors: after attempting
+    # every destination we raise, so the router returns 5xx and the provider
+    # retries (re-attempting all destinations) instead of silently dropping
+    # the notification. Treating a missing plugin as an error — rather than
+    # skipping it — keeps this consistent with
+    # PendingEventQueue._send_notification and prevents a
+    # configured-but-undeliverable destination from being suppressed once the
+    # dedup marker is recorded (see _process_webhook_data). Trade-off: the
+    # marker is recorded only on full success, so a retry after a partial
+    # failure re-sends to destinations that already succeeded — an accepted
+    # duplicate beats a dropped notification.
     delivery_errors: list[str] = []
     for name, credentials in destinations:
         plugin = registry.get(PluginType.DESTINATION, name)
         if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
             logger.error(f"{name} destination plugin not found or not configured")
+            delivery_errors.append(name)
             continue
         try:
             formatted = plugin.format(notification)

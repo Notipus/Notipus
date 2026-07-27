@@ -396,6 +396,32 @@ class TestTelegramImmediateDelivery:
 
         assert response.status_code == 500
 
+    @patch("plugins.sources.chargify.ChargifySourcePlugin.validate_webhook")
+    def test_missing_plugin_returns_5xx(
+        self,
+        mock_validate: Mock,
+        mock_consolidation_cache: dict,
+        client: Client,
+        workspace: Workspace,
+    ) -> None:
+        """A configured destination whose plugin is missing returns 5xx.
+
+        The notification must not be silently dropped (with the dedup marker
+        then suppressing the provider's retry) just because the plugin
+        didn't load — consistent with the delayed delivery path.
+        """
+        mock_validate.return_value = True
+
+        mock_registry = Mock()
+        mock_registry.get.return_value = None  # plugin not registered
+
+        with patch(
+            "plugins.registry.PluginRegistry.instance", return_value=mock_registry
+        ):
+            response = self._post_chargify(client, workspace)
+
+        assert response.status_code == 500
+
 
 @pytest.mark.django_db
 class TestBillingWebhookPropagatesDbErrors:
