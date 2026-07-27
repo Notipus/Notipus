@@ -10,10 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .exceptions import WebhookError, WebhookSignatureError
-from .services.destination_credentials import (
-    get_teams_credentials,
-    get_telegram_credentials,
-)
+from .services.destination_credentials import collect_destinations
 from .services.event_consolidation import event_consolidation_service
 from .services.pending_event_queue import pending_event_queue
 from .services.rate_limiter import RateLimitException, rate_limiter
@@ -237,29 +234,6 @@ def _add_rate_limit_headers(
             response[header_name] = header_value
 
 
-def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
-    """Get Slack webhook URL for a workspace."""
-    if not workspace:
-        return None
-
-    try:
-        slack_integration = Integration.objects.get(
-            workspace=workspace,
-            integration_type="slack_notifications",
-            is_active=True,
-        )
-        # Get webhook URL from incoming_webhook in oauth_credentials
-        incoming_webhook = slack_integration.oauth_credentials.get(
-            "incoming_webhook", {}
-        )
-        return cast("str | None", incoming_webhook.get("url"))
-    except Integration.DoesNotExist:
-        logger.debug(
-            f"No active Slack integration found for workspace {workspace.uuid}"
-        )
-        return None
-
-
 def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     """Build the deduplication key for a parsed webhook event.
 
@@ -444,16 +418,9 @@ def _process_immediately(
     registry = PluginRegistry.instance()
 
     # Every destination this workspace has enabled, as (name, credentials).
-    slack_webhook_url = _get_slack_webhook_url(workspace)
-    telegram_credentials = get_telegram_credentials(workspace)
-    teams_credentials = get_teams_credentials(workspace)
-    destinations: list[tuple[str, dict[str, Any]]] = []
-    if slack_webhook_url:
-        destinations.append(("slack", {"webhook_url": slack_webhook_url}))
-    if telegram_credentials:
-        destinations.append(("telegram", telegram_credentials))
-    if teams_credentials:
-        destinations.append(("teams", teams_credentials))
+    # Shared with the delayed path so the two never drift (see
+    # destination_credentials.collect_destinations).
+    destinations = collect_destinations(workspace)
 
     if not destinations:
         logger.warning(

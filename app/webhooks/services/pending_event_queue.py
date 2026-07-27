@@ -27,15 +27,15 @@ import logging
 import threading
 import time
 import uuid
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 
 from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
-from core.models import Integration, Workspace
+from core.models import Workspace
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
 
-from .destination_credentials import get_teams_credentials, get_telegram_credentials
+from .destination_credentials import collect_destinations
 from .redis_client import get_raw_redis_client
 
 logger = logging.getLogger(__name__)
@@ -839,7 +839,7 @@ class PendingEventQueue:
             event_data: Aggregated event data.
             customer_data: Aggregated customer data.
             provider_name: Name of the provider.
-            workspace: Workspace model instance.
+            workspace: The workspace the event belongs to, or None.
 
         Returns:
             True if the notification was delivered to every configured
@@ -900,7 +900,9 @@ class PendingEventQueue:
 
         registry = PluginRegistry.instance()
 
-        destinations = self._collect_destinations(workspace)
+        # Shared with the immediate router path so the two never drift
+        # (see destination_credentials.collect_destinations).
+        destinations = collect_destinations(workspace)
         if not destinations:
             logger.warning(
                 f"No notification destinations configured for workspace "
@@ -947,58 +949,6 @@ class PendingEventQueue:
             external_id=external_id,
         )
         return True
-
-    def _collect_destinations(
-        self, workspace: Workspace | None
-    ) -> list[tuple[str, dict[str, Any]]]:
-        """Return every destination this workspace has enabled.
-
-        Args:
-            workspace: Workspace model instance.
-
-        Returns:
-            A list of ``(plugin_name, credentials)`` tuples, one per
-            configured destination.
-        """
-        destinations: list[tuple[str, dict[str, Any]]] = []
-        slack_webhook_url = self._get_slack_webhook_url(workspace)
-        if slack_webhook_url:
-            destinations.append(("slack", {"webhook_url": slack_webhook_url}))
-        telegram_credentials = get_telegram_credentials(workspace)
-        if telegram_credentials:
-            destinations.append(("telegram", telegram_credentials))
-        teams_credentials = get_teams_credentials(workspace)
-        if teams_credentials:
-            destinations.append(("teams", teams_credentials))
-        return destinations
-
-    def _get_slack_webhook_url(self, workspace: Workspace | None) -> str | None:
-        """Get Slack webhook URL for a workspace.
-
-        Args:
-            workspace: Workspace model instance.
-
-        Returns:
-            Slack webhook URL or None if not configured.
-        """
-        if not workspace:
-            return None
-
-        try:
-            slack_integration = Integration.objects.get(
-                workspace=workspace,
-                integration_type="slack_notifications",
-                is_active=True,
-            )
-            incoming_webhook = slack_integration.oauth_credentials.get(
-                "incoming_webhook", {}
-            )
-            return cast("str | None", incoming_webhook.get("url"))
-        except Integration.DoesNotExist:
-            logger.warning(
-                f"No active Slack integration found for workspace {workspace.uuid}"
-            )
-            return None
 
     def start_periodic_recovery(
         self, interval_seconds: int = RECOVERY_SWEEP_INTERVAL_SECONDS
