@@ -4,6 +4,7 @@ Handles Telegram bot connection for receiving notifications in Telegram chats.
 Unlike Slack (which uses OAuth), Telegram uses direct bot token + chat ID configuration.
 """
 
+import html
 import json
 import logging
 from typing import cast
@@ -231,9 +232,12 @@ def test_telegram(request: HttpRequest) -> HttpResponseRedirect:
     if error_redirect:
         return error_redirect
 
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return redirect("core:create_workspace")
+    # Sending a test message hits the workspace's chat, so gate it on
+    # admin/owner role — otherwise any member could spam the channel.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response:
+        return redirect_response
+    assert workspace is not None
 
     # Find the active Telegram integration
     integration = Integration.objects.filter(
@@ -294,11 +298,16 @@ def _build_test_message(request: HttpRequest, workspace: Workspace) -> str:
     Returns:
         HTML formatted test message string.
     """
+    # Escape user- and workspace-controlled values: this is an HTML
+    # (parse_mode=HTML) message, so an unescaped < or & would break the
+    # markup. html.escape emits &lt;/&gt;/&amp;/&quot;, all Telegram-safe.
+    username = html.escape(cast(User, request.user).username)
+    workspace_name = html.escape(workspace.name)
     return (
         "🐙 <b>Test message from Notipus!</b>\n\n"
         "Your Telegram integration is working perfectly. "
         "You'll receive payment and subscription notifications here.\n\n"
-        f"<i>Sent by {cast(User, request.user).username} from {workspace.name}</i>"
+        f"<i>Sent by {username} from {workspace_name}</i>"
     )
 
 
@@ -313,9 +322,13 @@ def configure_telegram(request: HttpRequest) -> JsonResponse:
     Returns:
         JSON response with success status or error.
     """
-    workspace = get_user_workspace(request)
-    if not workspace:
-        return JsonResponse({"error": "User profile not found"}, status=400)
+    # Changing the chat_id re-routes where notifications go, so require
+    # admin/owner role (consistent with configure_slack). Return 403 JSON
+    # rather than a redirect since this is a fetch endpoint.
+    workspace, redirect_response = require_admin_role(request)
+    if redirect_response is not None:
+        return JsonResponse({"error": "Admin or owner role required"}, status=403)
+    assert workspace is not None
 
     # Find the active Telegram integration
     integration = Integration.objects.filter(

@@ -493,9 +493,11 @@ def _process_immediately(
     # and skip it. A send failure may be transient, so we record it and,
     # after attempting every destination, raise — the router then returns
     # 5xx and the provider retries, re-attempting all destinations, rather
-    # than silently losing the notification. A possible duplicate on a
-    # destination that already succeeded is preferable to a lost one, and
-    # content-based dedup guards against genuine double-sends.
+    # than silently losing the notification. Trade-off: the dedup marker is
+    # recorded only on full success (see _process_webhook_data), so a retry
+    # after a partial failure re-sends to destinations that already
+    # succeeded. We accept a possible duplicate as the cost of never dropping
+    # a notification.
     delivery_errors: list[str] = []
     for name, credentials in destinations:
         plugin = registry.get(PluginType.DESTINATION, name)

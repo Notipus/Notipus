@@ -917,9 +917,11 @@ class PendingEventQueue:
 
         # Deliver to each configured destination. If any fails (missing
         # plugin or send error), return False so orphan recovery retries the
-        # whole event later — every destination is re-attempted. A possible
-        # duplicate on a destination that already succeeded is preferable to
-        # a lost notification; content-based dedup guards against that.
+        # whole event later — every destination is re-attempted. Trade-off:
+        # the consolidation marker is recorded only after all destinations
+        # succeed, so a retry after a partial failure re-sends to destinations
+        # that already succeeded. We accept a possible duplicate as the cost
+        # of never dropping a notification.
         all_delivered = True
         for name, credentials in destinations:
             plugin = registry.get(PluginType.DESTINATION, name)

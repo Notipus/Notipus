@@ -329,6 +329,25 @@ class TestTelegramFormatEcommerceNotification:
         result = plugin.format(ecommerce_notification)
         assert "12345" in result["text"]
 
+    def test_string_amount_and_price_are_coerced(
+        self, plugin: TelegramDestinationPlugin
+    ) -> None:
+        """String amounts/prices (some providers send them) don't crash send.
+
+        Formatting a str with :.2f would raise TypeError and fail delivery;
+        the values must be coerced defensively.
+        """
+        payment = PaymentInfo(
+            amount="2999.00",  # type: ignore[arg-type]
+            currency="USD",
+            order_number="1001",
+            line_items=[{"name": "Widget", "quantity": 1, "price": "9.99"}],
+        )
+        # Must not raise, and both figures render formatted.
+        result = plugin._format_ecommerce_details(payment)
+        assert "2,999.00" in result
+        assert "9.99" in result
+
     def test_format_includes_line_items(
         self,
         plugin: TelegramDestinationPlugin,
@@ -791,6 +810,25 @@ class TestTelegramHtmlEscaping:
         result = plugin.format(notification)
         assert "<script>" not in result["text"]
         assert "&lt;script&gt;" in result["text"]
+
+    def test_company_link_href_is_attribute_escaped(
+        self, plugin: TelegramDestinationPlugin
+    ) -> None:
+        """Enrichment URLs are escaped inside the href attribute.
+
+        A domain/URL containing a quote or angle bracket must not break out
+        of href="..." or inject markup.
+        """
+        company = CompanyInfo(
+            name="Evil Co",
+            domain='e.com" onmouseover="alert(1)',
+            linkedin_url='https://x/"><b>x',
+        )
+        result = plugin._format_company_links(company)
+        assert result is not None
+        assert '" onmouseover=' not in result
+        assert '"><b>' not in result
+        assert "&quot;" in result
 
 
 class TestTelegramSend:

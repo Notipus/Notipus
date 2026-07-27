@@ -413,15 +413,17 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         order_display = payment.order_number or "N/A"
         lines = [f"🛒 <b>Order #{self._escape_html(order_display)}</b>"]
 
-        # Amount
-        lines.append(f"<b>Amount:</b> {payment.currency} {payment.amount:,.2f}")
+        # Amount. Coerce defensively: some providers send amounts as strings,
+        # which would raise on :.2f formatting and fail the whole send.
+        amount = self._coerce_float(payment.amount)
+        lines.append(f"<b>Amount:</b> {payment.currency} {amount:,.2f}")
 
         # Line items (max 5)
         if payment.line_items:
             for item in payment.line_items[:5]:
                 qty = item.get("quantity", 1)
                 name = self._escape_html(item.get("name", "Item"))
-                price = item.get("price", 0)
+                price = self._coerce_float(item.get("price", 0))
                 lines.append(f"• {qty}x {name} ({payment.currency} {price:.2f})")
 
             if len(payment.line_items) > 5:
@@ -502,13 +504,17 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         """
         elements: list[str] = []
 
-        # Website link
+        # Website link. Escape the enrichment-supplied values for the href
+        # attribute so a domain/URL with quotes or angle brackets can't break
+        # out of the tag or inject markup.
         if company.domain:
-            elements.append(f'🌐 <a href="https://{company.domain}">Website</a>')
+            domain = self._escape_html_attr(company.domain)
+            elements.append(f'🌐 <a href="https://{domain}">Website</a>')
 
         # LinkedIn link
         if company.linkedin_url:
-            elements.append(f'💼 <a href="{company.linkedin_url}">LinkedIn</a>')
+            linkedin_url = self._escape_html_attr(company.linkedin_url)
+            elements.append(f'💼 <a href="{linkedin_url}">LinkedIn</a>')
 
         if not elements:
             return None
@@ -604,3 +610,40 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         if not text:
             return ""
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    @classmethod
+    def _escape_html_attr(cls, value: str) -> str:
+        """Escape a value for use inside a double-quoted HTML attribute.
+
+        Same as :meth:`_escape_html` plus ``"`` -> ``&quot;`` so that
+        enrichment-supplied URLs (domain, LinkedIn) cannot break out of an
+        ``href="..."`` attribute or inject markup. ``&quot;`` is one of the
+        named entities Telegram's HTML parse mode accepts.
+
+        Args:
+            value: The attribute value to escape.
+
+        Returns:
+            The escaped attribute value.
+        """
+        return cls._escape_html(value).replace('"', "&quot;")
+
+    @staticmethod
+    def _coerce_float(value: Any, default: float = 0.0) -> float:
+        """Best-effort float coercion for amounts that may arrive as strings.
+
+        Some providers send numeric fields as strings; formatting those with
+        ``:.2f`` directly would raise and fail the whole send. Mirrors the
+        defensive handling in the Slack plugin.
+
+        Args:
+            value: The value to coerce.
+            default: Fallback when coercion fails.
+
+        Returns:
+            The value as a float, or ``default`` when it can't be parsed.
+        """
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default

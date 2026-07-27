@@ -80,10 +80,14 @@
                     <div>
                         <label for="bot_token" class="block text-sm font-medium text-gray-700">Bot Token</label>
                         <div class="mt-1">
+                            {# Never render the stored bot token back into the
+                               page: even in a password field it would sit in
+                               the DOM/source where an extension or XSS could
+                               read it. Re-enter the token to update the
+                               connection. #}
                             <input type="password"
                                    name="bot_token"
                                    id="bot_token"
-                                   value="{% if existing_integration %}{{ existing_integration.oauth_credentials.bot_token }}{% endif %}"
                                    class="shadow-sm focus:ring-[#0088cc] focus:border-[#0088cc] block w-full sm:text-sm border-gray-300 rounded-md"
                                    placeholder="123456789:ABCdefGHIjklmnOPQrstUVwxyz"
                                    required>
@@ -91,7 +95,7 @@
                         <p class="mt-2 text-sm text-gray-500">
                             Get your bot token from <a href="https://t.me/botfather"
     target="_blank"
-    class="text-[#0088cc] hover:underline">@BotFather</a> on Telegram
+    class="text-[#0088cc] hover:underline">@BotFather</a> on Telegram{% if existing_integration %} (re-enter it to update the connection){% endif %}
                         </p>
                     </div>
 
