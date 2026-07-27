@@ -137,6 +137,53 @@ class TestTrackEvent:
         assert event["params"]["engagement_time_msec"] == 100
         assert event["params"]["session_id"]
 
+    def test_ip_override_from_fly_header(self, ga4: MagicMock, user: User) -> None:
+        """The Fly-Client-IP header populates ip_override for geolocation."""
+        request = RequestFactory().get("/", HTTP_FLY_CLIENT_IP="8.8.8.8")
+        request.COOKIES[analytics.CLIENT_ID_COOKIE] = "12345.67890"
+        request.session = {}  # type: ignore[assignment]
+        request.user = user
+
+        analytics.track_event(request, "page_view")
+
+        (payload,) = _payloads(ga4)
+        assert payload["ip_override"] == "8.8.8.8"
+
+    def test_ip_override_precedence(self) -> None:
+        """Fly header wins; else first X-Forwarded-For hop; else REMOTE_ADDR."""
+        factory = RequestFactory()
+        assert (
+            analytics._client_ip(
+                factory.get(
+                    "/", HTTP_FLY_CLIENT_IP="1.1.1.1", HTTP_X_FORWARDED_FOR="8.8.8.8"
+                )
+            )
+            == "1.1.1.1"
+        )
+        assert (
+            analytics._client_ip(
+                factory.get("/", HTTP_X_FORWARDED_FOR="8.8.8.8, 10.0.0.1")
+            )
+            == "8.8.8.8"
+        )
+
+    def test_ip_override_skips_non_public_addresses(self) -> None:
+        """Loopback, private and malformed addresses are never sent."""
+        factory = RequestFactory()
+        # RequestFactory defaults REMOTE_ADDR to loopback 127.0.0.1.
+        assert analytics._client_ip(factory.get("/")) is None
+        assert (
+            analytics._client_ip(factory.get("/", HTTP_FLY_CLIENT_IP="10.0.0.5"))
+            is None
+        )
+        assert (
+            analytics._client_ip(factory.get("/", HTTP_FLY_CLIENT_IP="garbage")) is None
+        )
+        # A private first hop is skipped in favour of a public REMOTE_ADDR.
+        req = factory.get("/", HTTP_X_FORWARDED_FOR="192.168.1.1")
+        req.META["REMOTE_ADDR"] = "1.1.1.1"
+        assert analytics._client_ip(req) == "1.1.1.1"
+
     def test_prefers_ga_cookie_for_stitching(self, ga4: MagicMock) -> None:
         """A gtag.js _ga cookie wins over our first-party cookie."""
         request = RequestFactory().get("/")

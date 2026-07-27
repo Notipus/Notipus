@@ -33,7 +33,10 @@ so key rotation doesn't reset user continuity), page locations are
 stripped to path + whitelisted campaign params so tokens and emails in
 query strings never leak, referrers are reduced to their origin, and
 any email-shaped string in event params is redacted as a last line of
-defense.
+defense. The one exception is the visitor's IP address, sent as the
+Measurement Protocol ``ip_override`` purely so Google can derive coarse
+geography and run its IP-based bot exclusions; GA4 does not retain IPs,
+and it is never stored by us nor placed in any event parameter.
 
 Delivery is fire-and-forget on a small thread pool so a slow or down
 Google endpoint can never block a request or a webhook handler. Note
@@ -44,6 +47,7 @@ diagnosing missing events.
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import re
 import secrets
@@ -247,6 +251,64 @@ def is_valid_client_id(value: str) -> bool:
     return bool(_CLIENT_ID_RE.match(value))
 
 
+def _usable_public_ip(value: Any) -> str | None:
+    """Return ``value`` if it parses as a globally-routable IP, else None.
+
+    Guards ``ip_override``: a malformed address can make GA4 discard the
+    whole payload, and a private/loopback address (RFC1918, 127.0.0.0/8,
+    link-local) geolocates to nothing — worse than sending no IP at all.
+    Only globally-routable addresses are accepted; everything else yields
+    None so the caller falls through to the next candidate.
+
+    Args:
+        value: A candidate IP string (header value or ``REMOTE_ADDR``).
+
+    Returns:
+        The trimmed IP string when it is a public IPv4/IPv6 address, else
+        None.
+    """
+    if not value:
+        return None
+    candidate = str(value).strip()
+    try:
+        parsed = ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate if parsed.is_global else None
+
+
+def _client_ip(request: HttpRequest) -> str | None:
+    """Return the visitor's public IP for GA4 geolocation, if resolvable.
+
+    Server-side Measurement Protocol events are otherwise geolocated to
+    our own server, so real visitors land under an unknown country and
+    Google cannot apply its IP-based bot exclusions. Behind Fly.io the
+    edge sets ``Fly-Client-IP``; fall back to the first hop of
+    ``X-Forwarded-For`` and finally ``REMOTE_ADDR``. Each candidate is
+    validated (see :func:`_usable_public_ip`) and the first that is a
+    globally-routable address wins; private/loopback/garbage values are
+    skipped so GA4 never receives an unusable ``ip_override``.
+
+    Args:
+        request: The current HTTP request.
+
+    Returns:
+        The client IP string, or None when no candidate is a usable
+        public address.
+    """
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    first_hop = forwarded.split(",")[0] if forwarded else None
+    for candidate in (
+        request.META.get("HTTP_FLY_CLIENT_IP"),
+        first_hop,
+        request.META.get("REMOTE_ADDR"),
+    ):
+        usable = _usable_public_ip(candidate)
+        if usable:
+            return usable
+    return None
+
+
 def _session_id_for_request(request: HttpRequest) -> str | None:
     """Return the GA4 session id, creating one in the Django session.
 
@@ -426,6 +488,10 @@ def track_event(
     user = getattr(request, "user", None)
     if user is not None and user.is_authenticated:
         payload["user_id"] = hashed_user_id(user)
+
+    client_ip = _client_ip(request)
+    if client_ip:
+        payload["ip_override"] = client_ip
 
     _submit(payload)
 
