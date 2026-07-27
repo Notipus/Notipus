@@ -28,7 +28,10 @@ so key rotation doesn't reset user continuity), page locations are
 stripped to path + whitelisted campaign params so tokens and emails in
 query strings never leak, referrers are reduced to their origin, and
 any email-shaped string in event params is redacted as a last line of
-defense.
+defense. The one exception is the visitor's IP address, sent as the
+Measurement Protocol ``ip_override`` purely so Google can derive coarse
+geography and run its IP-based bot exclusions; GA4 does not retain IPs,
+and it is never stored by us nor placed in any event parameter.
 
 Delivery is fire-and-forget on a small thread pool so a slow or down
 Google endpoint can never block a request or a webhook handler. Note
@@ -242,6 +245,32 @@ def is_valid_client_id(value: str) -> bool:
     return bool(_CLIENT_ID_RE.match(value))
 
 
+def _client_ip(request: HttpRequest) -> str | None:
+    """Return the visitor's public IP for GA4 geolocation, if resolvable.
+
+    Server-side Measurement Protocol events are otherwise geolocated to
+    our own server, so real visitors land under an unknown country and
+    Google cannot apply its IP-based bot exclusions. Behind Fly.io the
+    edge sets ``Fly-Client-IP``; fall back to the first hop of
+    ``X-Forwarded-For`` and finally ``REMOTE_ADDR``.
+
+    Args:
+        request: The current HTTP request.
+
+    Returns:
+        The client IP string, or None when the request carries no usable
+        address.
+    """
+    fly_ip = request.META.get("HTTP_FLY_CLIENT_IP")
+    if fly_ip:
+        return str(fly_ip).strip()
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        return str(forwarded).split(",")[0].strip()
+    remote = request.META.get("REMOTE_ADDR")
+    return str(remote) if remote else None
+
+
 def _session_id_for_request(request: HttpRequest) -> str | None:
     """Return the GA4 session id, creating one in the Django session.
 
@@ -421,6 +450,10 @@ def track_event(
     user = getattr(request, "user", None)
     if user is not None and user.is_authenticated:
         payload["user_id"] = hashed_user_id(user)
+
+    client_ip = _client_ip(request)
+    if client_ip:
+        payload["ip_override"] = client_ip
 
     _submit(payload)
 

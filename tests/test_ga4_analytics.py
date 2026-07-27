@@ -137,6 +137,38 @@ class TestTrackEvent:
         assert event["params"]["engagement_time_msec"] == 100
         assert event["params"]["session_id"]
 
+    def test_ip_override_from_fly_header(self, ga4: MagicMock, user: User) -> None:
+        """The Fly-Client-IP header populates ip_override for geolocation."""
+        request = RequestFactory().get("/", HTTP_FLY_CLIENT_IP="203.0.113.7")
+        request.COOKIES[analytics.CLIENT_ID_COOKIE] = "12345.67890"
+        request.session = {}  # type: ignore[assignment]
+        request.user = user
+
+        analytics.track_event(request, "page_view")
+
+        (payload,) = _payloads(ga4)
+        assert payload["ip_override"] == "203.0.113.7"
+
+    def test_ip_override_precedence(self) -> None:
+        """Fly header wins; else first X-Forwarded-For hop; else REMOTE_ADDR."""
+        factory = RequestFactory()
+        assert (
+            analytics._client_ip(
+                factory.get(
+                    "/", HTTP_FLY_CLIENT_IP="1.1.1.1", HTTP_X_FORWARDED_FOR="2.2.2.2"
+                )
+            )
+            == "1.1.1.1"
+        )
+        assert (
+            analytics._client_ip(
+                factory.get("/", HTTP_X_FORWARDED_FOR="2.2.2.2, 10.0.0.1")
+            )
+            == "2.2.2.2"
+        )
+        # RequestFactory defaults REMOTE_ADDR to 127.0.0.1.
+        assert analytics._client_ip(factory.get("/")) == "127.0.0.1"
+
     def test_prefers_ga_cookie_for_stitching(self, ga4: MagicMock) -> None:
         """A gtag.js _ga cookie wins over our first-party cookie."""
         request = RequestFactory().get("/")
