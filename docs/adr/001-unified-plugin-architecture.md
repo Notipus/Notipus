@@ -77,10 +77,12 @@ BasePlugin (abstract)
 ```python
 from enum import Enum
 
+
 class PluginType(Enum):
     ENRICHMENT = "enrichment"
     SOURCE = "source"
     DESTINATION = "destination"
+
 
 class PluginRegistry:
     """Singleton registry for all plugin types."""
