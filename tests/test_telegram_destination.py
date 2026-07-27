@@ -963,6 +963,20 @@ class TestTelegramSend:
             plugin.send(formatted, {"bot_token": "123:ABC", "chat_id": "456"})
 
     @patch("plugins.destinations.telegram.requests.post")
+    def test_send_handles_non_json_response(
+        self,
+        mock_post: MagicMock,
+        plugin: TelegramDestinationPlugin,
+        basic_notification: RichNotification,
+    ) -> None:
+        """A non-JSON body (e.g. an HTML 502 page) raises a clear error."""
+        mock_post.return_value.json.side_effect = ValueError("no json")
+        formatted = plugin.format(basic_notification)
+
+        with pytest.raises(RuntimeError, match="non-JSON"):
+            plugin.send(formatted, {"bot_token": "123:ABC", "chat_id": "456"})
+
+    @patch("plugins.destinations.telegram.requests.post")
     def test_send_handles_timeout(
         self,
         mock_post: MagicMock,

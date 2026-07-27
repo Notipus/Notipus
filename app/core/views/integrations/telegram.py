@@ -55,7 +55,9 @@ def _validate_bot_token(bot_token: str) -> dict | None:
             return cast("dict | None", data.get("result"))
         return None
 
-    except requests.exceptions.RequestException as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
+        # ValueError covers response.json() decode failures (non-JSON body,
+        # e.g. an HTML error page from a proxy) — treat as invalid.
         logger.error(f"Telegram bot validation failed: {e!s}")
         return None
 
@@ -79,7 +81,8 @@ def _validate_chat_id(bot_token: str, chat_id: str) -> bool:
         data = response.json()
         return bool(data.get("ok", False))
 
-    except requests.exceptions.RequestException as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
+        # ValueError covers response.json() decode failures (non-JSON body).
         logger.error(f"Telegram chat validation failed: {e!s}")
         return False
 
@@ -281,7 +284,8 @@ def test_telegram(request: HttpRequest) -> HttpResponseRedirect:
     except requests.exceptions.Timeout:
         logger.error("Telegram test message timed out")
         messages.error(request, "Request timed out. Please try again.")
-    except requests.exceptions.RequestException as e:
+    except (requests.exceptions.RequestException, ValueError) as e:
+        # ValueError covers response.json() decode failures (non-JSON body).
         logger.error(f"Telegram test message failed: {e!s}")
         messages.error(request, "Failed to send test message. Please try again.")
 

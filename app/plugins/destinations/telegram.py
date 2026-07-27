@@ -282,6 +282,17 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
                 extra={"timeout": self.timeout},
             )
             raise RuntimeError("Telegram request timed out") from None
+        except ValueError as e:
+            # response.json() raises when Telegram (or an intermediary proxy)
+            # returns a non-JSON body, e.g. an HTML 502/504 page. Surface it
+            # distinctly from network errors so failures are diagnosable.
+            logger.error(
+                "Telegram returned a non-JSON response",
+                extra={"error": str(e)},
+            )
+            raise RuntimeError(
+                "Telegram returned an invalid (non-JSON) response"
+            ) from e
         except requests.exceptions.RequestException as e:
             logger.error(
                 "Failed to send message to Telegram",
