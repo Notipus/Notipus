@@ -46,14 +46,20 @@ PluginMetadata(
    module files* in each subpackage and registers every `BasePlugin` subclass it
    finds. Discovery is by file scan, **not** by `__init__.py` exports — a plugin is
    found because its `.py` file exists in the right folder, regardless of `__all__`.
-2. **Enablement** — a plugin only runs if it's enabled in `PLUGINS` in
-   `app/django_notipus/settings.py`. Add your plugin under the matching type:
+2. **Configuration** — a discovered plugin is **enabled by default**:
+   `PluginRegistry.is_enabled()` returns `True` when a plugin isn't listed in
+   `PLUGINS` (`registry.py`), so you do **not** need to add it to run it.
+   `PLUGINS` in `app/django_notipus/settings.py` is where you *configure* a
+   plugin — turn one off with `{"enabled": False}`, or pass settings via
+   `config` (enrichment plugins get their API keys this way). Listing a
+   destination/source with `{"enabled": True}` is optional but conventional:
 
    ```python
    PLUGINS = {
-       "destination": {"slack": {"enabled": True}},  # add your plugin's key here
+       "destination": {"slack": {"enabled": True}},  # explicit (optional)
        "source": {"stripe": {"enabled": True}, ...},
-       ...
+       # A discovered plugin absent here still runs. To disable one:
+       #   "destination": {"telegram": {"enabled": False}},
    }
    ```
 
@@ -82,7 +88,9 @@ illustration of the plugin you'd be adding; substitute your own destination.
      payload. Escape/format for that platform here.
    - `send(self, formatted, credentials: dict) -> bool` — deliver it. Raise on
      failure (delivery failures must surface, not be swallowed).
-2. **Enable** it in `PLUGINS["destination"]` in settings.
+2. **(Optional) Configure** in `PLUGINS["destination"]` — it runs once
+   discovered; add an entry only to pass `config` or to disable it
+   (`{"enabled": False}`).
 3. **Model + migration** — add `("<name>_notifications", "…")` to
    `Integration.INTEGRATION_TYPES`, then **generate** the migration (never hand-number):
    ```bash
@@ -119,7 +127,8 @@ illustration of the plugin you'd be adding; substitute your own destination.
    `parse_webhook(request) -> dict` (normalize into the standard event dict). Set
    `content_hash` (via `signed_content_hash`) when the provider's event id only travels
    in an unsigned header, so replay-with-fresh-header can't defeat dedup.
-2. **Enable** in `PLUGINS["source"]`.
+2. **(Optional) Configure** in `PLUGINS["source"]` — discovered plugins run
+   by default; add an entry only to pass `config` or to disable it.
 3. **Model + migration** for the new `INTEGRATION_TYPES` entry (same `makemigrations`
    step as above).
 4. **Router endpoint** — add the webhook view/route in `app/webhooks/webhook_router.py` +
