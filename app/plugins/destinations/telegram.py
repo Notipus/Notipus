@@ -251,8 +251,11 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         if "reply_markup" in formatted:
             payload["reply_markup"] = json.dumps(formatted["reply_markup"])
 
-        # Disable link previews for cleaner messages
-        payload["disable_web_page_preview"] = True
+        # Disable link previews for cleaner messages. link_preview_options
+        # replaced the deprecated disable_web_page_preview flag; as a nested
+        # object it must be JSON-serialized in a form-encoded request, the
+        # same as reply_markup above.
+        payload["link_preview_options"] = json.dumps({"is_disabled": True})
 
         try:
             response = requests.post(

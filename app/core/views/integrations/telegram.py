@@ -262,7 +262,7 @@ def test_telegram(request: HttpRequest) -> HttpResponseRedirect:
                 "chat_id": chat_id,
                 "text": _build_test_message(request, workspace),
                 "parse_mode": "HTML",
-                "disable_web_page_preview": True,
+                "link_preview_options": json.dumps({"is_disabled": True}),
             },
             timeout=DEFAULT_API_TIMEOUT,
         )

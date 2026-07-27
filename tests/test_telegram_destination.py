@@ -5,6 +5,7 @@ RichNotification objects to Telegram HTML format and sends them via
 the Telegram Bot API.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -868,14 +869,20 @@ class TestTelegramSend:
         plugin: TelegramDestinationPlugin,
         basic_notification: RichNotification,
     ) -> None:
-        """Test that send disables web page preview."""
+        """Send disables link previews via link_preview_options.
+
+        link_preview_options replaced the deprecated
+        disable_web_page_preview parameter and is JSON-serialized like
+        reply_markup.
+        """
         mock_post.return_value.json.return_value = {"ok": True}
         formatted = plugin.format(basic_notification)
 
         plugin.send(formatted, {"bot_token": "123:ABC", "chat_id": "456"})
 
         call_data = mock_post.call_args[1]["data"]
-        assert call_data["disable_web_page_preview"] is True
+        assert "disable_web_page_preview" not in call_data
+        assert json.loads(call_data["link_preview_options"]) == {"is_disabled": True}
 
     @patch("plugins.destinations.telegram.requests.post")
     def test_send_serializes_reply_markup_as_json(

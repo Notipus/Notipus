@@ -1,7 +1,7 @@
 """Capture the integrations page (desktop and mobile).
 
 Shows connected Slack and Stripe integrations alongside the
-available Shopify, Chargify, and Hunter.io connectors.
+available Shopify, Chargify, Telegram, and Hunter.io connectors.
 """
 
 import pytest
