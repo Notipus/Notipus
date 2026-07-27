@@ -1,9 +1,12 @@
 """Server-side Google Analytics 4 tracking via the Measurement Protocol.
 
-All analytics events are sent from the server, never from browser
-JavaScript: webhook-driven events (plan changes from Stripe) have no
-browser to send from, server-side events can't be dropped by ad
-blockers, and no third-party script runs on users' pages.
+By default all analytics events are sent from the server rather than
+from browser JavaScript: webhook-driven events (plan changes from
+Stripe) have no browser to send from, server-side events can't be
+dropped by ad blockers, and no third-party script runs on users' pages.
+The optional ``GA4_CLIENT_SIDE`` flag adds a client-side ``gtag.js``
+snippet that takes over page-view tracking (see :class:`GA4Middleware`);
+event-style tracking (sign_up, login, billing) always stays server-side.
 
 Requires two settings (both empty disables tracking entirely):
 

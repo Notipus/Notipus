@@ -242,9 +242,10 @@ class TestClientSideGtag:
         self, ga4: MagicMock, logged_in_client: Client
     ) -> None:
         """With the flag off, the middleware still emits page_view server-side."""
-        response = logged_in_client.get(
-            reverse("core:create_workspace"), HTTP_USER_AGENT="Mozilla/5.0"
-        )
+        with override_settings(GA4_CLIENT_SIDE=False):
+            response = logged_in_client.get(
+                reverse("core:create_workspace"), HTTP_USER_AGENT="Mozilla/5.0"
+            )
         assert response.status_code == 200
         assert len(_events_named(ga4, "page_view")) == 1
 
