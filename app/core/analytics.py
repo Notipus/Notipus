@@ -486,12 +486,16 @@ class GA4Middleware:
 
         response = self.get_response(request)
 
-        track_page_view = self._should_track_page_view(request, response)
+        eligible = self._should_track_page_view(request, response)
 
-        # Only mint the cookie for responses that are actually tracked:
-        # Set-Cookie on excluded paths (static assets, webhooks) breaks
-        # response caching, and bot traffic never becomes a page view.
-        if not had_cookie and track_page_view:
+        # Mint the first-party cookie for eligible page loads — even in
+        # client-side mode. Server-side events (the Stripe checkout client
+        # id, sign_up/login) resolve their client id from this cookie, so
+        # it must persist before gtag.js has written its own ``_ga`` cookie;
+        # otherwise those events would mint a fresh id per request and lose
+        # user stitching. Excluded paths (static assets, webhooks) and bots
+        # never qualify, so Set-Cookie stays off machine responses.
+        if not had_cookie and eligible:
             response.set_cookie(
                 CLIENT_ID_COOKIE,
                 client_id,
@@ -501,7 +505,9 @@ class GA4Middleware:
                 samesite="Lax",
             )
 
-        if track_page_view:
+        # Emit the server-side page_view unless the browser owns page
+        # views (GA4_CLIENT_SIDE); sending both would double-count.
+        if eligible and not settings.GA4_CLIENT_SIDE:
             params: dict[str, Any] = {
                 "page_location": sanitize_page_location(request.build_absolute_uri())
             }
@@ -519,11 +525,11 @@ class GA4Middleware:
 
     @staticmethod
     def _should_track_page_view(request: HttpRequest, response: HttpResponse) -> bool:
-        """Return whether this request/response pair is a real page view."""
-        if settings.GA4_CLIENT_SIDE:
-            # gtag.js owns page views in this mode; sending them
-            # server-side too would double-count every real page load.
-            return False
+        """Return whether this request/response is an eligible HTML page load.
+
+        Gates both first-party cookie minting and (unless GA4_CLIENT_SIDE
+        hands page views to the browser) the server-side ``page_view``.
+        """
         if request.method != "GET":
             return False
         if not 200 <= response.status_code < 300:

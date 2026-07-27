@@ -225,18 +225,28 @@ class TestMiddleware:
 class TestClientSideGtag:
     """GA4_CLIENT_SIDE: browser gtag.js owns page views."""
 
-    def test_client_side_suppresses_server_page_view(self) -> None:
-        """With GA4_CLIENT_SIDE on, the middleware sends no page_view."""
-        factory = RequestFactory()
-        should_track = analytics.GA4Middleware._should_track_page_view
-        request = factory.get("/dashboard/", HTTP_USER_AGENT="Mozilla/5.0")
-        response = MagicMock()
-        response.status_code = 200
-        response.get.return_value = "text/html; charset=utf-8"
-
-        assert should_track(request, response)
+    def test_client_side_suppresses_page_view_but_mints_cookie(
+        self, ga4: MagicMock, logged_in_client: Client
+    ) -> None:
+        """Client-side mode: no server page_view, but the client-id cookie
+        is still minted so server-side events keep a stable client id."""
         with override_settings(GA4_CLIENT_SIDE=True):
-            assert not should_track(request, response)
+            response = logged_in_client.get(
+                reverse("core:create_workspace"), HTTP_USER_AGENT="Mozilla/5.0"
+            )
+        assert response.status_code == 200
+        assert _events_named(ga4, "page_view") == []
+        assert analytics.CLIENT_ID_COOKIE in response.cookies
+
+    def test_server_side_page_view_when_client_side_off(
+        self, ga4: MagicMock, logged_in_client: Client
+    ) -> None:
+        """With the flag off, the middleware still emits page_view server-side."""
+        response = logged_in_client.get(
+            reverse("core:create_workspace"), HTTP_USER_AGENT="Mozilla/5.0"
+        )
+        assert response.status_code == 200
+        assert len(_events_named(ga4, "page_view")) == 1
 
     def test_context_processor_empty_by_default(self) -> None:
         """No measurement id is exposed unless client-side is enabled."""
