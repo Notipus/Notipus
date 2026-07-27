@@ -6,10 +6,12 @@ Unlike Slack (which uses OAuth), Telegram uses direct bot token + chat ID config
 
 import json
 import logging
+from typing import cast
 
 import requests
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_http_methods
@@ -49,7 +51,7 @@ def _validate_bot_token(bot_token: str) -> dict | None:
         data = response.json()
 
         if data.get("ok"):
-            return data.get("result")
+            return cast("dict | None", data.get("result"))
         return None
 
     except requests.exceptions.RequestException as e:
@@ -74,7 +76,7 @@ def _validate_chat_id(bot_token: str, chat_id: str) -> bool:
             timeout=DEFAULT_API_TIMEOUT,
         )
         data = response.json()
-        return data.get("ok", False)
+        return bool(data.get("ok", False))
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Telegram chat validation failed: {e!s}")
@@ -296,7 +298,7 @@ def _build_test_message(request: HttpRequest, workspace: Workspace) -> str:
         "🐙 <b>Test message from Notipus!</b>\n\n"
         "Your Telegram integration is working perfectly. "
         "You'll receive payment and subscription notifications here.\n\n"
-        f"<i>Sent by {request.user.username} from {workspace.name}</i>"
+        f"<i>Sent by {cast(User, request.user).username} from {workspace.name}</i>"
     )
 
 

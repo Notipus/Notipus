@@ -12,75 +12,23 @@ from typing import Any
 from urllib.parse import urlparse
 
 from disposable_email_domains import blocklist
+from webhooks.utils.free_email_domains import FREE_EMAIL_DOMAINS
 
 logger = logging.getLogger(__name__)
 
-# Well-known free email providers - domains that should not be enriched
-FREE_EMAIL_PROVIDERS: frozenset[str] = frozenset(
+# Well-known free email providers - domains that should not be enriched.
+# The curated database lives in webhooks.utils.free_email_domains (a
+# dependency-light module) so the email classifier and this filter share
+# one source of truth.
+FREE_EMAIL_PROVIDERS: frozenset[str] = FREE_EMAIL_DOMAINS
+
+# Hosted email domains - cloud providers where the subdomain represents
+# the tenant/company. These domains should not be enriched since the tenant
+# subdomain does not reliably map to a company website domain.
+HOSTED_EMAIL_DOMAINS: frozenset[str] = frozenset(
     {
-        # Major providers
-        "gmail.com",
-        "googlemail.com",
-        "yahoo.com",
-        "yahoo.co.uk",
-        "yahoo.fr",
-        "yahoo.de",
-        "yahoo.co.jp",
-        "hotmail.com",
-        "hotmail.co.uk",
-        "hotmail.fr",
-        "outlook.com",
-        "outlook.co.uk",
-        "live.com",
-        "live.co.uk",
-        "msn.com",
-        "icloud.com",
-        "me.com",
-        "mac.com",
-        # Privacy-focused
-        "protonmail.com",
-        "proton.me",
-        "tutanota.com",
-        "tutamail.com",
-        # Other free providers
-        "aol.com",
-        "mail.com",
-        "email.com",
-        "zoho.com",
-        "zohomail.com",
-        "yandex.com",
-        "yandex.ru",
-        "gmx.com",
-        "gmx.de",
-        "gmx.net",
-        "web.de",
-        "fastmail.com",
-        "fastmail.fm",
-        "inbox.com",
-        "mailbox.org",
-        "hey.com",
-        # Regional
-        "qq.com",
-        "163.com",
-        "126.com",
-        "sina.com",
-        "naver.com",
-        "daum.net",
-        "hanmail.net",
-        "libero.it",
-        "virgilio.it",
-        "laposte.net",
-        "orange.fr",
-        "free.fr",
-        "wanadoo.fr",
-        "t-online.de",
-        "btinternet.com",
-        "sky.com",
-        "rogers.com",
-        "shaw.ca",
-        "telus.net",
-        "bigpond.com",
-        "optusnet.com.au",
+        "onmicrosoft.com",  # Azure AD / Microsoft 365
+        "mail.onmicrosoft.com",  # Microsoft 365 mail subdomain
     }
 )
 
@@ -221,6 +169,33 @@ def is_free_email_provider(domain: str) -> bool:
     return domain.lower() in FREE_EMAIL_PROVIDERS
 
 
+def is_hosted_email_domain(domain: str) -> bool:
+    """Check if domain is a hosted email provider with tenant subdomains.
+
+    Hosted email domains are cloud providers (like Microsoft Azure AD) where
+    the subdomain represents the tenant/company name, not the actual company
+    website. For example, 'contoso.onmicrosoft.com' is a hosted domain where
+    'contoso' is the tenant name.
+
+    Args:
+        domain: Domain to check (e.g., 'contoso.onmicrosoft.com').
+
+    Returns:
+        True if domain is a hosted email provider.
+    """
+    if not domain:
+        return False
+
+    domain_lower = domain.lower()
+
+    # Check if domain ends with any hosted email domain suffix
+    for hosted_domain in HOSTED_EMAIL_DOMAINS:
+        if domain_lower.endswith(f".{hosted_domain}"):
+            return True
+
+    return False
+
+
 def is_disposable_email(domain: str) -> bool:
     """Check if domain is a disposable/temporary email provider.
 
@@ -267,6 +242,11 @@ def is_enrichable_domain(email: str) -> bool:
     # Check if disposable
     if is_disposable_email(domain):
         logger.debug(f"Disposable email domain, skipping enrichment: {domain}")
+        return False
+
+    # Check if hosted email domain (e.g., onmicrosoft.com)
+    if is_hosted_email_domain(domain):
+        logger.debug(f"Hosted email domain, skipping enrichment: {domain}")
         return False
 
     return True

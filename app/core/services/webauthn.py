@@ -8,7 +8,8 @@ import base64
 import hashlib
 import json
 import logging
-from typing import Any
+from datetime import datetime, timedelta
+from typing import Any, cast
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -34,6 +35,11 @@ from ..models import WebAuthnChallenge, WebAuthnCredential
 
 logger = logging.getLogger(__name__)
 
+# Maximum age a stored challenge may reach before it is treated as invalid at
+# verification time. Challenges are single-use and short-lived, so a tight TTL
+# limits the window in which a leaked or stale challenge could be replayed.
+CHALLENGE_TTL = timedelta(minutes=5)
+
 
 class WebAuthnService:
     """Service for handling WebAuthn operations.
@@ -53,6 +59,23 @@ class WebAuthnService:
         self.rp_name = "Notipus"
         self.origin = self._get_origin()
 
+    @staticmethod
+    def _pad_challenge(challenge_str: str) -> str:
+        """Re-pad a client-supplied base64url challenge for DB lookup.
+
+        ``options_to_json`` serializes challenges as unpadded base64url,
+        which is what clients echo back, but stored challenges are padded
+        (``base64.urlsafe_b64encode``). Without normalization the lookup
+        can never match.
+
+        Args:
+            challenge_str: Challenge string as received from the client.
+
+        Returns:
+            The challenge string with base64 padding restored.
+        """
+        return challenge_str + "=" * (-len(challenge_str) % 4)
+
     def _get_rp_id(self) -> str:
         """Get the Relying Party ID from settings or environment.
 
@@ -62,13 +85,13 @@ class WebAuthnService:
         # In production, this should be your domain (e.g., "notipus.com")
         # In development, use localhost
         if hasattr(settings, "WEBAUTHN_RP_ID"):
-            return settings.WEBAUTHN_RP_ID
+            return cast(str, settings.WEBAUTHN_RP_ID)
 
         if settings.DEBUG:
             return "localhost"
         else:
             # Extract from ALLOWED_HOSTS in production
-            allowed_hosts = getattr(settings, "ALLOWED_HOSTS", [])
+            allowed_hosts: list[str] = getattr(settings, "ALLOWED_HOSTS", [])
             for host in allowed_hosts:
                 if host not in ["*", "localhost", "127.0.0.1"]:
                     return host
@@ -81,7 +104,7 @@ class WebAuthnService:
             Origin URL string.
         """
         if hasattr(settings, "WEBAUTHN_ORIGIN"):
-            return settings.WEBAUTHN_ORIGIN
+            return cast(str, settings.WEBAUTHN_ORIGIN)
 
         if settings.DEBUG:
             return "http://localhost:8000"
@@ -108,7 +131,7 @@ class WebAuthnService:
             options = generate_registration_options(
                 rp_id=self.rp_id,
                 rp_name=self.rp_name,
-                user_id=str(user.id).encode(),
+                user_id=str(user.pk).encode(),
                 user_name=user.username,
                 user_display_name=user.get_full_name() or user.username,
                 exclude_credentials=existing_credentials,
@@ -123,6 +146,9 @@ class WebAuthnService:
                 ],
             )
 
+            # Opportunistically trim stale challenges before storing a new one.
+            self._cleanup_expired_challenges_best_effort()
+
             # Store challenge for verification
             challenge_str = base64.urlsafe_b64encode(options.challenge).decode("utf-8")
             WebAuthnChallenge.objects.create(
@@ -130,7 +156,7 @@ class WebAuthnService:
             )
 
             # Convert to JSON-serializable format
-            return json.loads(options_to_json(options))
+            return cast("dict[str, Any]", json.loads(options_to_json(options)))
 
         except Exception as e:
             logger.error(f"Error generating registration options: {e}")
@@ -159,8 +185,13 @@ class WebAuthnService:
                 logger.error("No challenge in credential data")
                 return False
 
+            challenge_str = self._pad_challenge(challenge_str)
+
             challenge = WebAuthnChallenge.objects.get(
-                challenge=challenge_str, user=user, challenge_type="registration"
+                challenge=challenge_str,
+                user=user,
+                challenge_type="registration",
+                created_at__gte=self._challenge_cutoff(),
             )
 
             # Verify the registration response
@@ -171,28 +202,26 @@ class WebAuthnService:
                 expected_rp_id=self.rp_id,
             )
 
-            if verification.verified:
-                # Store the credential
-                WebAuthnCredential.objects.create(
-                    user=user,
-                    credential_id=base64.urlsafe_b64encode(
-                        verification.credential_id
-                    ).decode(),
-                    public_key=base64.urlsafe_b64encode(
-                        verification.credential_public_key
-                    ).decode(),
-                    sign_count=verification.sign_count,
-                    name=credential_name,
-                )
+            # verify_registration_response raises on failure,
+            # so reaching here means verification succeeded
+            # Store the credential
+            WebAuthnCredential.objects.create(
+                user=user,
+                credential_id=base64.urlsafe_b64encode(
+                    verification.credential_id
+                ).decode(),
+                public_key=base64.urlsafe_b64encode(
+                    verification.credential_public_key
+                ).decode(),
+                sign_count=verification.sign_count,
+                name=credential_name,
+            )
 
-                # Clean up challenge
-                challenge.delete()
+            # Clean up challenge
+            challenge.delete()
 
-                logger.info(f"WebAuthn credential registered for user {user.username}")
-                return True
-            else:
-                logger.error("WebAuthn registration verification failed")
-                return False
+            logger.info(f"WebAuthn credential registered for user {user.username}")
+            return True
 
         except WebAuthnChallenge.DoesNotExist:
             logger.error("Invalid or expired challenge")
@@ -233,6 +262,9 @@ class WebAuthnService:
                 user_verification=UserVerificationRequirement.PREFERRED,
             )
 
+            # Opportunistically trim stale challenges before storing a new one.
+            self._cleanup_expired_challenges_best_effort()
+
             # Store challenge for verification
             challenge_str = base64.urlsafe_b64encode(options.challenge).decode("utf-8")
             WebAuthnChallenge.objects.create(
@@ -242,7 +274,7 @@ class WebAuthnService:
             )
 
             # Convert to JSON-serializable format
-            return json.loads(options_to_json(options))
+            return cast("dict[str, Any]", json.loads(options_to_json(options)))
 
         except Exception as e:
             logger.error(f"Error generating authentication options: {e}")
@@ -264,8 +296,12 @@ class WebAuthnService:
                 logger.error("No challenge in credential data")
                 return None
 
+            challenge_str = self._pad_challenge(challenge_str)
+
             challenge = WebAuthnChallenge.objects.get(
-                challenge=challenge_str, challenge_type="authentication"
+                challenge=challenge_str,
+                challenge_type="authentication",
+                created_at__gte=self._challenge_cutoff(),
             )
 
             # Find the credential
@@ -294,23 +330,21 @@ class WebAuthnService:
                 credential_current_sign_count=stored_credential.sign_count,
             )
 
-            if verification.verified:
-                # Update sign count and last used
-                stored_credential.sign_count = verification.new_sign_count
-                stored_credential.last_used = timezone.now()
-                stored_credential.save()
+            # verify_authentication_response raises on failure,
+            # so reaching here means verification succeeded
+            # Update sign count and last used
+            stored_credential.sign_count = verification.new_sign_count
+            stored_credential.last_used = timezone.now()
+            stored_credential.save()
 
-                # Clean up challenge
-                challenge.delete()
+            # Clean up challenge
+            challenge.delete()
 
-                logger.info(
-                    f"WebAuthn authentication successful for user "
-                    f"{stored_credential.user.username}"
-                )
-                return stored_credential.user
-            else:
-                logger.error("WebAuthn authentication verification failed")
-                return None
+            logger.info(
+                f"WebAuthn authentication successful for user "
+                f"{stored_credential.user.username}"
+            )
+            return cast(User, stored_credential.user)
 
         except WebAuthnChallenge.DoesNotExist:
             logger.error("Invalid or expired challenge")
@@ -363,6 +397,9 @@ class WebAuthnService:
                 ],
             )
 
+            # Opportunistically trim stale challenges before storing a new one.
+            self._cleanup_expired_challenges_best_effort()
+
             # Store challenge for verification with signup context
             challenge_str = base64.urlsafe_b64encode(options.challenge).decode("utf-8")
             WebAuthnChallenge.objects.create(
@@ -372,7 +409,7 @@ class WebAuthnService:
             )
 
             # Convert to JSON-serializable format
-            return json.loads(options_to_json(options))
+            return cast("dict[str, Any]", json.loads(options_to_json(options)))
 
         except Exception as e:
             logger.error(f"Error generating signup registration options: {e}")
@@ -398,11 +435,14 @@ class WebAuthnService:
                 logger.error("No challenge in credential data")
                 return None
 
+            challenge_str = self._pad_challenge(challenge_str)
+
             # Find challenge for signup registration
             challenge = WebAuthnChallenge.objects.get(
                 challenge=challenge_str,
                 user=None,  # Signup challenges have no user
                 challenge_type="signup_registration",
+                created_at__gte=self._challenge_cutoff(),
             )
 
             # Verify the registration response
@@ -413,37 +453,35 @@ class WebAuthnService:
                 expected_rp_id=self.rp_id,
             )
 
-            if verification.verified:
-                # Create the user account atomically with the WebAuthn credential
-                with transaction.atomic():
-                    # Create user without password (passwordless account)
-                    user = User.objects.create_user(
-                        username=username,
-                        email=email,
-                        password=None,  # No password for passkey-only accounts
-                    )
+            # verify_registration_response raises on failure,
+            # so reaching here means verification succeeded
+            # Create the user account atomically with the WebAuthn credential
+            with transaction.atomic():
+                # Create user without password (passwordless account)
+                user = User.objects.create_user(
+                    username=username,
+                    email=email,
+                    password=None,  # No password for passkey-only accounts
+                )
 
-                    # Store the WebAuthn credential
-                    WebAuthnCredential.objects.create(
-                        user=user,
-                        credential_id=base64.urlsafe_b64encode(
-                            verification.credential_id
-                        ).decode(),
-                        public_key=base64.urlsafe_b64encode(
-                            verification.credential_public_key
-                        ).decode(),
-                        sign_count=verification.sign_count,
-                        name="Signup Passkey",
-                    )
+                # Store the WebAuthn credential
+                WebAuthnCredential.objects.create(
+                    user=user,
+                    credential_id=base64.urlsafe_b64encode(
+                        verification.credential_id
+                    ).decode(),
+                    public_key=base64.urlsafe_b64encode(
+                        verification.credential_public_key
+                    ).decode(),
+                    sign_count=verification.sign_count,
+                    name="Signup Passkey",
+                )
 
-                    # Clean up challenge
-                    challenge.delete()
+                # Clean up challenge
+                challenge.delete()
 
-                logger.info(f"WebAuthn signup completed for user {username}")
-                return user
-            else:
-                logger.error("WebAuthn signup registration verification failed")
-                return None
+            logger.info(f"WebAuthn signup completed for user {username}")
+            return user
 
         except WebAuthnChallenge.DoesNotExist:
             logger.error("Challenge not found for signup registration")
@@ -470,16 +508,40 @@ class WebAuthnService:
             )
         return credentials
 
-    def cleanup_expired_challenges(self, hours: int = 1) -> int:
+    def _challenge_cutoff(self) -> datetime:
+        """Compute the earliest ``created_at`` a challenge may have to stay valid.
+
+        Challenges created before this cutoff have exceeded ``CHALLENGE_TTL`` and
+        must be rejected at verification, using the same failure path as a
+        missing challenge.
+
+        Returns:
+            Timezone-aware datetime marking the oldest acceptable challenge.
+        """
+        return timezone.now() - CHALLENGE_TTL
+
+    def _cleanup_expired_challenges_best_effort(self) -> None:
+        """Opportunistically purge expired challenges without raising.
+
+        Called when a new challenge is created so the table is trimmed lazily
+        without requiring an external scheduler. Failures are swallowed and
+        logged at debug level so cleanup never blocks the primary flow.
+        """
+        try:
+            self.cleanup_expired_challenges()
+        except Exception:  # pragma: no cover - defensive best-effort path
+            logger.debug("Best-effort challenge cleanup failed", exc_info=True)
+
+    def cleanup_expired_challenges(self, max_age: timedelta = CHALLENGE_TTL) -> int:
         """Clean up expired WebAuthn challenges.
 
         Args:
-            hours: Hours after which challenges are considered expired.
+            max_age: Age after which challenges are considered expired.
 
         Returns:
             Number of challenges cleaned up.
         """
-        cutoff_time = timezone.now() - timezone.timedelta(hours=hours)
+        cutoff_time = timezone.now() - max_age
         count, _ = WebAuthnChallenge.objects.filter(created_at__lt=cutoff_time).delete()
 
         if count > 0:

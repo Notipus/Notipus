@@ -1,8 +1,8 @@
 # ADR-001: Unified Plugin Architecture
 
-**Status:** Accepted  
-**Date:** 2026-01-24  
-**Authors:** Team  
+**Status:** Accepted
+**Date:** 2026-01-24
+**Authors:** Team
 
 ## Context
 
@@ -77,16 +77,18 @@ BasePlugin (abstract)
 ```python
 from enum import Enum
 
+
 class PluginType(Enum):
     ENRICHMENT = "enrichment"
     SOURCE = "source"
     DESTINATION = "destination"
 
+
 class PluginRegistry:
     """Singleton registry for all plugin types."""
-    
+
     _instance: "PluginRegistry | None" = None
-    
+
     def __init__(self) -> None:
         self._plugins: dict[PluginType, dict[str, type[BasePlugin]]] = {
             PluginType.ENRICHMENT: {},
@@ -94,27 +96,27 @@ class PluginRegistry:
             PluginType.DESTINATION: {},
         }
         self._instances: dict[str, BasePlugin] = {}
-    
+
     @classmethod
     def instance(cls) -> "PluginRegistry":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
     def register(self, plugin_class: type[BasePlugin]) -> type[BasePlugin]:
         """Register a plugin. Can be used as a decorator."""
         metadata = plugin_class.get_metadata()
         self._plugins[metadata.plugin_type][metadata.name] = plugin_class
         return plugin_class
-    
+
     def discover(self) -> None:
         """Auto-discover plugins in app.plugins subpackages."""
         ...
-    
+
     def get(self, plugin_type: PluginType, name: str) -> BasePlugin | None:
         """Get a configured plugin instance."""
         ...
-    
+
     def get_all(self, plugin_type: PluginType) -> list[BasePlugin]:
         """Get all enabled plugins of a type, sorted by priority."""
         ...
@@ -159,12 +161,12 @@ class BasePlugin(ABC):
     def get_metadata(cls) -> PluginMetadata:
         """Return plugin metadata including type, name, version."""
         ...
-    
+
     @classmethod
     def is_available(cls) -> bool:
         """Check if plugin can be used (has required config, etc.)."""
         return True
-    
+
     def configure(self, config: dict[str, Any]) -> None:
         """Configure plugin with settings from PLUGINS config."""
         self.config = config
@@ -188,12 +190,12 @@ class BaseSourcePlugin(BasePlugin):
     def validate_webhook(self, request: HttpRequest) -> bool:
         """Validate webhook signature."""
         ...
-    
+
     @abstractmethod
     def parse_webhook(self, request: HttpRequest, **kwargs) -> dict[str, Any] | None:
         """Parse webhook into normalized event format."""
         ...
-    
+
     def get_customer_data(self, customer_id: str) -> dict[str, Any]:
         """Retrieve customer data from source."""
         return {}
@@ -207,7 +209,7 @@ class BaseDestinationPlugin(BasePlugin):
     def format(self, notification: RichNotification) -> Any:
         """Format notification for this destination."""
         ...
-    
+
     @abstractmethod
     def send(self, formatted: Any, credentials: dict[str, Any]) -> bool:
         """Send formatted notification to destination."""

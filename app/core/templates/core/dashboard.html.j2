@@ -10,99 +10,65 @@
         <!-- Simplified Header -->
         <div class="bg-white shadow-sm">
             <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-                <div class="md:flex md:items-center md:justify-between">
-                    <div class="flex-1 min-w-0">
-                        <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl flex items-center gap-2">
-                            Welcome back! <i class="ti ti-hand-wave text-primary-500"></i>
-                        </h2>
-                        <p class="mt-1 text-lg text-gray-600">Ready to manage your webhooks</p>
-                    </div>
-                    <div class="mt-4 flex md:mt-0 md:ml-4 space-x-3">
-                        <a href="{% url 'core:billing_dashboard' %}"
-                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                            <svg class="mr-2 h-4 w-4"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z">
-                                </path>
-                            </svg>
-                            Billing
-                        </a>
-                        <a href="{% url 'core:integrations' %}"
-                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                            <svg class="mr-2 h-4 w-4"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
-                                </path>
-                            </svg>
-                            Integrations
-                        </a>
-                        <a href="{% url 'core:workspace_settings' %}"
-                           class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 transition-all duration-200">
-                            <svg class="mr-2 h-4 w-4"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                </path>
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                            </svg>
-                            Settings
-                        </a>
-                    </div>
+                <div class="flex-1 min-w-0">
+                    <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl flex items-center gap-2">
+                        Welcome back{% if user.first_name %}, {{ user.first_name }}{% endif %}! <i class="ti ti-hand-wave text-primary-500"></i>
+                    </h2>
+                    <p class="mt-1 text-lg text-gray-600">Here's what's happening across {{ organization.name }}</p>
                 </div>
             </div>
         </div>
 
         <!-- Main content -->
         <div class="max-w-7xl mx-auto py-8 sm:px-6 lg:px-8">
-            <!-- Getting Started -->
-            {% if not has_slack and not has_shopify and not has_chargify %}
+            <!-- Getting Started: setup checklist driven by real integration state -->
+            {% if setup_progress and not setup_progress.complete %}
                 <div class="bg-gradient-to-r from-primary-50 to-blue-50 border border-primary-200 rounded-xl p-6 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <div class="h-12 w-12 bg-primary-100 rounded-xl flex items-center justify-center">
-                                <svg class="h-6 w-6 text-primary-600"
-                                     fill="currentColor"
-                                     viewBox="0 0 20 20">
-                                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd">
-                                    </path>
-                                </svg>
-                            </div>
-                        </div>
-                        <div class="ml-5">
-                            <div class="flex items-center">
-                                <h3 class="text-lg font-semibold text-primary-900 flex items-center gap-2">
-                                    Welcome to Notipus! <i class="ti ti-rocket text-primary-600"></i>
-                                </h3>
-                                <span class="ml-3 inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-primary-100 text-primary-800 border border-primary-200">
-                                    Getting Started
-                                </span>
-                            </div>
-                            <div class="mt-2 text-sm text-primary-700">
-                                <p>Let's get you set up with your first integration. Connect a service to start receiving webhook notifications:</p>
-                            </div>
-                            <div class="mt-4 flex flex-wrap gap-3">
-                                <a href="{% url 'core:integrate_slack' %}"
-                                   class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 transition-all duration-200">
-                                    <i class="fas fa-comments mr-2"></i>
-                                    Connect Slack
-                                </a>
-                                <a href="{% url 'core:integrate_shopify' %}"
-                                   class="inline-flex items-center px-4 py-2 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 transition-all duration-200">
-                                    <i class="fas fa-shopping-cart mr-2"></i>
-                                    Connect Shopify
-                                </a>
-                                <a href="{% url 'core:integrations' %}"
-                                   class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                                    View All Integrations
-                                </a>
-                            </div>
+                    <div class="flex items-center justify-between flex-wrap gap-3">
+                        <h3 class="text-lg font-semibold text-primary-900 flex items-center gap-2">
+                            Finish your setup <i class="ti ti-rocket text-primary-600" aria-hidden="true"></i>
+                        </h3>
+                        <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-primary-100 text-primary-800 border border-primary-200">
+                            {{ setup_progress.done_count }} of {{ setup_progress.total }} steps done
+                        </span>
+                    </div>
+                    <div class="mt-4"
+                         role="progressbar"
+                         aria-valuenow="{{ setup_progress.percent }}"
+                         aria-valuemin="0"
+                         aria-valuemax="100"
+                         aria-label="Setup progress">
+                        <div class="w-full bg-primary-100 rounded-full h-2">
+                            <div class="bg-primary-600 h-2 rounded-full transition-all duration-500"
+                                 style="width: {{ setup_progress.percent }}%"></div>
                         </div>
                     </div>
+                    <ul class="mt-4 space-y-2">
+                        {% for step in setup_progress.steps %}
+                            <li class="flex items-start gap-3 text-sm">
+                                {% if step.done %}
+                                    <i class="ti ti-circle-check text-green-600 text-lg leading-5"
+                                       aria-hidden="true"></i>
+                                    <span class="text-primary-800">{{ step.label }}</span>
+                                {% else %}
+                                    <i class="ti ti-circle text-primary-300 text-lg leading-5"
+                                       aria-hidden="true"></i>
+                                    {% if step.key == 'slack' %}
+                                        <a href="{% url 'core:integrate_slack' %}"
+                                           class="font-medium text-primary-700 hover:text-primary-900 hover:underline">{{ step.label }}</a>
+                                        <span class="text-primary-500">— where your notifications land</span>
+                                    {% elif step.key == 'source' %}
+                                        <a href="{% url 'core:integrations' %}"
+                                           class="font-medium text-primary-700 hover:text-primary-900 hover:underline">{{ step.label }}</a>
+                                        <span class="text-primary-500">— Stripe, Shopify, or Chargify</span>
+                                    {% else %}
+                                        <span class="font-medium text-primary-700">{{ step.label }}</span>
+                                        <span class="text-primary-500">— completes automatically when your first event arrives</span>
+                                    {% endif %}
+                                {% endif %}
+                            </li>
+                        {% endfor %}
+                    </ul>
                 </div>
             {% endif %}
 
@@ -260,7 +226,12 @@
                                     <div class="ml-3">
                                         <h4 class="text-sm font-medium text-red-800">Action Required</h4>
                                         <p class="text-sm text-red-700 mt-1">
-                                            You've used {{ usage_percentage|floatformat:0 }}% of your monthly quota. Upgrade now to avoid service interruption.
+                                            You've used {{ rate_limit_info.current_usage|floatformat:0|intcomma }} of the {{ rate_limit_info.limit|floatformat:0|intcomma }} events in your plan this month.
+                                            {% if pause_at %}
+                                                Delivery stops at {{ pause_at|intcomma }} events until your count resets{% if rate_limit_info.reset_time %} on {{ rate_limit_info.reset_time|date:"M j" }}{% endif %} — upgrade to keep notifications flowing.
+                                            {% else %}
+                                                Upgrade now to keep notifications flowing.
+                                            {% endif %}
                                         </p>
                                     </div>
                                 </div>
@@ -277,7 +248,8 @@
                                     <div class="ml-3">
                                         <h4 class="text-sm font-medium text-yellow-800">Consider Upgrading</h4>
                                         <p class="text-sm text-yellow-700 mt-1">
-                                            You're at {{ usage_percentage|floatformat:0 }}% usage. Consider upgrading for peace of mind.
+                                            You've used {{ rate_limit_info.current_usage|floatformat:0|intcomma }} of the {{ rate_limit_info.limit|floatformat:0|intcomma }} events in your plan this month.
+                                            If you expect more{% if rate_limit_info.reset_time %} before your count resets on {{ rate_limit_info.reset_time|date:"M j" }}{% endif %}, upgrading now avoids any interruption.
                                         </p>
                                     </div>
                                 </div>
@@ -330,23 +302,41 @@
                                                         </path>
                                                     </svg>
                                                 </div>
-                                            {% elif activity.severity == "success" %}
-                                                <div class="h-10 w-10 bg-green-100 rounded-lg flex items-center justify-center">
-                                                    <svg class="h-5 w-5 text-green-600"
+                                            {% elif activity.company_domain %}
+                                                <img src="{% url 'core:company-logo' domain=activity.company_domain %}"
+                                                     alt="{{ activity.company_name|default:activity.company_domain }}"
+                                                     width="40"
+                                                     height="40"
+                                                     loading="lazy"
+                                                     class="h-10 w-10 rounded-lg object-cover bg-white border border-gray-200"
+                                                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                                <!-- Fallback icon shown when no logo is stored -->
+                                                <div class="h-10 w-10 bg-gray-100 rounded-lg items-center justify-center hidden">
+                                                    <svg class="h-5 w-5 text-gray-400"
                                                          fill="none"
                                                          stroke="currentColor"
                                                          viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4">
                                                         </path>
                                                     </svg>
                                                 </div>
-                                            {% elif activity.severity == "error" %}
+                                            {% elif activity.status == "failed" or activity.status == "declined" or activity.status == "error" or activity.severity == "error" or activity.severity == "critical" %}
                                                 <div class="h-10 w-10 bg-red-100 rounded-lg flex items-center justify-center">
                                                     <svg class="h-5 w-5 text-red-600"
                                                          fill="none"
                                                          stroke="currentColor"
                                                          viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z">
+                                                        </path>
+                                                    </svg>
+                                                </div>
+                                            {% elif activity.status == "cancelled" %}
+                                                <div class="h-10 w-10 bg-gray-100 rounded-lg flex items-center justify-center">
+                                                    <svg class="h-5 w-5 text-gray-500"
+                                                         fill="none"
+                                                         stroke="currentColor"
+                                                         viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636">
                                                         </path>
                                                     </svg>
                                                 </div>
@@ -437,7 +427,7 @@
 
                                                     <!-- Insight Banner -->
                                                     {% if activity.insight_text %}
-                                                        <div class="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-primary-50 text-primary-700 text-xs font-medium">
+                                                        <div class="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium {% if activity.severity == 'error' or activity.severity == 'critical' %}bg-red-50 text-red-700{% elif activity.severity == 'warning' %}bg-amber-50 text-amber-700{% else %}bg-green-50 text-green-700{% endif %}">
                                                             {% if activity.insight_icon == "celebration" %}
                                                                 <i class="ti ti-confetti"></i>
                                                             {% elif activity.insight_icon == "trophy" %}

@@ -5,6 +5,7 @@ Tests cover:
 - Domain extraction
 - Free email provider detection
 - Disposable email detection
+- Hosted email domain detection
 - Combined enrichability check
 """
 
@@ -13,6 +14,7 @@ from core.utils.email_domain import (
     is_disposable_email,
     is_enrichable_domain,
     is_free_email_provider,
+    is_hosted_email_domain,
     is_valid_email,
     sanitize_email_input,
 )
@@ -133,6 +135,7 @@ class TestIsFreeEmailProvider:
             "mail.com",
             "zoho.com",
             "yandex.com",
+            "privaterelay.appleid.com",  # Apple Hide My Email
         ]
         for domain in free_providers:
             assert is_free_email_provider(domain) is True, f"{domain} should be free"
@@ -222,3 +225,64 @@ class TestIsEnrichableDomain:
         ]
         for email in invalid_emails:
             assert not is_enrichable_domain(email), f"{email} not enrichable"
+
+    def test_not_enrichable_hosted_email_domain(self) -> None:
+        """Test that hosted email domains (like onmicrosoft.com) are not enrichable."""
+        hosted_emails = [
+            "user@widgetco.onmicrosoft.com",
+            "admin@acmecorp.onmicrosoft.com",
+            "contact@testorg.mail.onmicrosoft.com",
+        ]
+        for email in hosted_emails:
+            assert not is_enrichable_domain(email), f"{email} not enrichable"
+
+    def test_not_enrichable_apple_relay(self) -> None:
+        """Test that Apple Hide My Email addresses are not enrichable."""
+        assert not is_enrichable_domain("user@privaterelay.appleid.com")
+
+
+class TestIsHostedEmailDomain:
+    """Tests for is_hosted_email_domain function."""
+
+    def test_detects_onmicrosoft_domains(self) -> None:
+        """Test detection of Azure AD onmicrosoft.com domains."""
+        hosted_domains = [
+            "widgetco.onmicrosoft.com",
+            "acmecorp.onmicrosoft.com",
+            "testorg.mail.onmicrosoft.com",
+            "democorp.mail.onmicrosoft.com",
+        ]
+        for domain in hosted_domains:
+            assert is_hosted_email_domain(domain) is True, f"{domain} should be hosted"
+
+    def test_rejects_regular_domains(self) -> None:
+        """Test rejection of regular company domains."""
+        regular_domains = [
+            "acme.com",
+            "company.io",
+            "enterprise.org",
+            "microsoft.com",
+            "onmicrosoft.com",  # Base domain without subdomain is not hosted
+        ]
+        for domain in regular_domains:
+            assert not is_hosted_email_domain(domain), f"{domain} should not be hosted"
+
+    def test_rejects_free_providers(self) -> None:
+        """Test rejection of free email providers."""
+        free_providers = [
+            "gmail.com",
+            "outlook.com",
+            "yahoo.com",
+        ]
+        for domain in free_providers:
+            assert not is_hosted_email_domain(domain), f"{domain} should not be hosted"
+
+    def test_case_insensitive(self) -> None:
+        """Test case insensitivity."""
+        assert is_hosted_email_domain("WIDGETCO.ONMICROSOFT.COM") is True
+        assert is_hosted_email_domain("Acmecorp.OnMicrosoft.Com") is True
+
+    def test_empty_and_none(self) -> None:
+        """Test handling of empty and None values."""
+        assert is_hosted_email_domain("") is False
+        assert is_hosted_email_domain(None) is False  # type: ignore[arg-type]

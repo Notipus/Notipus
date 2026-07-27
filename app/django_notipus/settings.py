@@ -10,13 +10,178 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import sentry_sdk
 from django.utils.functional import SimpleLazyObject
+
+if TYPE_CHECKING:
+    from sentry_sdk._types import Event, Hint
+
+_settings_logger = logging.getLogger(__name__)
+
+# URL path fragments that identify tenant-facing webhook endpoints. Requests to
+# these routes carry raw payment payloads and provider signature headers, none
+# of which should ever be shipped to Sentry.
+_SENTRY_WEBHOOK_PATH_MARKERS = ("/webhook/",)
+
+# Substrings that, when found (case-insensitively) in a header name, request
+# data key, or environment key, mark the associated value as sensitive. Kept
+# deliberately broad and conservative: when in doubt, redact.
+_SENTRY_SENSITIVE_KEY_MARKERS = (
+    "authorization",
+    "cookie",
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "api-key",
+    "api_key",
+    "apikey",
+    "signature",
+    "x-shopify-hmac",
+    "x-hub-signature",
+    "stripe-signature",
+    "csrf",
+    "session",
+)
+
+_SENTRY_REDACTED = "[Filtered]"
+
+
+def _sentry_is_sensitive_key(key: str) -> bool:
+    """Return whether a header/data/env key name looks sensitive.
+
+    :param key: The key name to inspect (header, form field, or env var).
+    :returns: ``True`` if the key matches a known-sensitive marker.
+    """
+    lowered = key.lower()
+    return any(marker in lowered for marker in _SENTRY_SENSITIVE_KEY_MARKERS)
+
+
+def _sentry_redact_value(value: Any) -> Any:
+    """Recursively redact sensitive values within nested structures.
+
+    Walks dicts and lists/tuples so that request bodies (which may be deeply
+    nested JSON) have any value under a sensitive-looking key replaced, while
+    non-sensitive structure is preserved.
+
+    :param value: An arbitrary value (dict, list, tuple, or scalar).
+    :returns: A redacted copy of ``value``.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                _SENTRY_REDACTED
+                if _sentry_is_sensitive_key(str(key))
+                else _sentry_redact_value(inner)
+            )
+            for key, inner in value.items()
+        }
+    if isinstance(value, list):
+        return [_sentry_redact_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sentry_redact_value(item) for item in value)
+    return value
+
+
+def _sentry_redact_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``mapping`` with sensitive values redacted.
+
+    :param mapping: A dict of header/data/env key-value pairs.
+    :returns: A shallow copy where values under sensitive keys are replaced
+        with a filtered placeholder.
+    """
+    return {
+        key: (_SENTRY_REDACTED if _sentry_is_sensitive_key(str(key)) else value)
+        for key, value in mapping.items()
+    }
+
+
+def _sentry_redact_query_string(query: Any) -> Any:
+    """Redact sensitive keys in a query string, dict or raw-string form.
+
+    Sentry may represent ``query_string`` either as a dict or as a raw
+    ``"a=1&token=..."`` string. Both are handled: pairs whose key looks
+    sensitive have their value replaced with the filtered placeholder.
+
+    :param query: The query string as a dict or ``str``.
+    :returns: The redacted query string in the same form it was given.
+    """
+    if isinstance(query, dict):
+        return _sentry_redact_mapping(query)
+    if isinstance(query, str):
+        pairs = parse_qsl(query, keep_blank_values=True)
+        redacted = [
+            (key, _SENTRY_REDACTED if _sentry_is_sensitive_key(key) else value)
+            for key, value in pairs
+        ]
+        return urlencode(redacted)
+    return query
+
+
+def _sentry_before_send(event: "Event", hint: "Hint") -> "Event | None":
+    """Scrub sensitive data from a Sentry event before it is sent.
+
+    Conservative scrubbing hook applied to every outbound Sentry event:
+
+    * For requests to webhook routes, the raw request body/data is dropped
+      entirely since it may contain payment-payload PII for any tenant.
+    * For all other routes the request body is walked recursively and values
+      under credential/PII-looking keys are redacted.
+    * Request headers, query strings, cookies, and environment variables are
+      redacted key-by-key whenever the key name looks like a credential,
+      secret, or signature (for webhook routes, headers are dropped wholesale).
+
+    :param event: The Sentry event payload (mutated in place and returned).
+    :param hint: Sentry-provided hint metadata (unused, kept for API contract).
+    :returns: The scrubbed event, or ``None`` to drop it entirely.
+    """
+    request = event.get("request")
+    if not isinstance(request, dict):
+        return event
+
+    # Match on the URL path only: substring-matching the full URL would
+    # misclassify routes whose query string merely contains "/webhook/".
+    url = str(request.get("url", ""))
+    path = urlsplit(url).path
+    is_webhook = any(marker in path for marker in _SENTRY_WEBHOOK_PATH_MARKERS)
+
+    # Request body: drop wholesale for webhook routes (payment-payload PII);
+    # otherwise recursively redact sensitive keys within it.
+    if is_webhook:
+        request.pop("data", None)
+        request.pop("cookies", None)
+    elif "data" in request:
+        request["data"] = _sentry_redact_value(request["data"])
+
+    # Headers: strip entirely for webhook routes (signature headers + more);
+    # otherwise redact only the sensitive ones.
+    headers = request.get("headers")
+    if isinstance(headers, dict):
+        request["headers"] = {} if is_webhook else _sentry_redact_mapping(headers)
+
+    # Query string: handle both dict and raw-string forms.
+    if "query_string" in request:
+        request["query_string"] = _sentry_redact_query_string(request["query_string"])
+
+    # Environment variables: redact sensitive keys regardless of route.
+    env = request.get("env")
+    if isinstance(env, dict):
+        request["env"] = _sentry_redact_mapping(env)
+
+    # Cookies elsewhere: redact rather than drop.
+    cookies = request.get("cookies")
+    if isinstance(cookies, dict):
+        request["cookies"] = _sentry_redact_mapping(cookies)
+
+    return event
+
 
 sentry_sdk.init(
     dsn=os.environ.get("SENTRY_DSN", ""),
@@ -29,9 +194,12 @@ sentry_sdk.init(
         if os.environ.get("DEBUG", "False").lower() == "true"
         else "production",
     ),
-    # Add data like request headers and IP for users, see
-    # https://docs.sentry.io/platforms/python/data-management/data-collected/
-    send_default_pii=True,
+    # Privacy: never attach default PII (request bodies, headers, user IP).
+    # Webhook endpoints carry payment-payload PII and raw signature headers for
+    # all tenants, so this must stay False. See _sentry_before_send below for
+    # the belt-and-suspenders scrubbing applied to whatever remains.
+    send_default_pii=False,
+    before_send=_sentry_before_send,
 )
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -68,6 +236,37 @@ if not DEBUG and SECRET_KEY == _default_secret_key and not _is_build_command:
         "SECURITY ERROR: Default secret key detected in production. "
         "Set SECRET_DJANGO_KEY environment variable to a secure random value."
     )
+
+# Field-level encryption at rest (see core.encryption / core.fields).
+# FIELD_ENCRYPTION_KEYS is a comma-separated list of base64url-encoded 32-byte
+# (256-bit) keys for ChaCha20-Poly1305. The first key is the primary (used to
+# encrypt); all keys can decrypt, which enables key rotation. Generate a key:
+#   python -c "import os, base64; \
+#       print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+#
+# Key resolution is intentionally LAZY (see core.encryption.get_keys): the
+# cipher keys are resolved on first encrypt/decrypt, not here. This means:
+#   * Build steps that never touch encrypted fields (e.g. collectstatic) run
+#     without keys configured.
+#   * Any actual encrypt/decrypt with DEBUG=False and no keys raises
+#     ImproperlyConfigured (fail loud) -- including the re-encrypt data
+#     migration run by `migrate`, which must use the REAL key, never a
+#     throwaway derived one.
+#   * With DEBUG=True and no keys, a deterministic dev-only key is derived
+#     from SECRET_KEY so local dev and the test suite work without config.
+_field_encryption_keys_env = os.environ.get("FIELD_ENCRYPTION_KEYS", "")
+FIELD_ENCRYPTION_KEYS = [
+    key.strip() for key in _field_encryption_keys_env.split(",") if key.strip()
+]
+
+# Whether the DEBUG-only derived-key fallback is permitted when no keys are
+# configured. Captured here from the configured DEBUG (env) rather than read
+# as ``settings.DEBUG`` at runtime, because Django's test runner forces
+# ``settings.DEBUG = False`` during tests -- which must still use the dev
+# fallback so the suite runs without provisioning FIELD_ENCRYPTION_KEYS. In a
+# real production deployment DEBUG is False here, so this is False and any
+# encrypt/decrypt without configured keys fails loud.
+FIELD_ENCRYPTION_ALLOW_DEV_FALLBACK = DEBUG
 
 APP_NAME = os.environ.get("FLY_APP_NAME")
 
@@ -126,6 +325,8 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "allauth.account.middleware.AccountMiddleware",
+    # After session/auth middleware: GA4 events read request.session/user
+    "core.analytics.GA4Middleware",
 ]
 
 ROOT_URLCONF = "django_notipus.urls"
@@ -141,6 +342,8 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "core.context_processors.workspace_role",
+                "core.context_processors.analytics",
             ],
             # Security: Only enable template debug in development
             "debug": DEBUG,
@@ -160,9 +363,20 @@ AUTHENTICATION_BACKENDS = [
 SITE_ID = 1
 
 # Email configuration
-EMAIL_BACKEND = os.environ.get(
-    "EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend"
-)
+_console_email_backend = "django.core.mail.backends.console.EmailBackend"
+EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", _console_email_backend)
+
+# Guard: the console backend only writes emails to stdout. In production this
+# means invitation/verification emails silently vanish into the logs. Warn
+# loudly rather than raising so self-hosters who intentionally rely on the
+# console backend are not broken.
+if not DEBUG and EMAIL_BACKEND == _console_email_backend:
+    _settings_logger.warning(
+        "EMAIL_BACKEND is the console backend while DEBUG is False. "
+        "Outgoing emails (invitations, verification) will only be written to "
+        "logs and never delivered. Set the EMAIL_BACKEND environment variable "
+        "to an SMTP (or other real) backend for production."
+    )
 
 # SMTP settings for production (when EMAIL_BACKEND is smtp)
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
@@ -212,6 +426,12 @@ SOCIALACCOUNT_PROVIDERS = {
         },
         "SCOPE": ["openid", "profile", "email"],
         "AUTH_PARAMS": {"approval_prompt": "force"},
+        # Slack workspace accounts require a verified email, so emails
+        # from Slack SSO are trusted as verified. This skips the
+        # verification email for SSO signups (outgoing email is only
+        # needed for passkey signups) and lets
+        # SOCIALACCOUNT_EMAIL_AUTHENTICATION match existing accounts.
+        "VERIFIED_EMAIL": True,
     },
     "shopify": {
         "APP": {
@@ -349,8 +569,7 @@ if not DEBUG:
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": (
-            "django.contrib.auth.password_validation."
-            "UserAttributeSimilarityValidator"
+            "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
         ),
     },
     {
@@ -418,23 +637,43 @@ LOGGING = {
         "console": {
             "class": "logging.StreamHandler",
         },
+        "null": {
+            "class": "logging.NullHandler",
+        },
     },
+    # propagate=False everywhere: the root logger also has the console
+    # handler, so propagation would emit every record twice (seen in prod
+    # as duplicated, interleaved tracebacks in the Fly logs).
     "loggers": {
         "webhooks": {
             "handlers": ["console"],
             "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": False,
         },
         "core": {
             "handlers": ["console"],
             "level": "DEBUG" if DEBUG else "INFO",
+            "propagate": False,
         },
         "django": {
             "handlers": ["console"],
             "level": "DEBUG" if DEBUG else "WARNING",
+            "propagate": False,
         },
         "django.contrib.staticfiles": {
             "handlers": ["console"],
             "level": "ERROR",  # Always silence static file duplicate warnings
+            "propagate": False,
+        },
+        # Scanners probing unallowed hostnames (e.g. *.fly.dev) trigger a
+        # DisallowedHost log per hit; the 400 response is the correct and
+        # sufficient outcome, so drop the log noise entirely. The null
+        # handler (not an empty handler list) is required: a record that
+        # finds no handler anywhere falls through to logging.lastResort,
+        # which writes the message and traceback to stderr anyway.
+        "django.security.DisallowedHost": {
+            "handlers": ["null"],
+            "propagate": False,
         },
     },
     # Set root logger level based on DEBUG
@@ -468,6 +707,26 @@ SLACK_CLIENT_BOT_ID = os.environ.get("SLACK_CLIENT_BOT_ID", "")
 SLACK_CLIENT_BOT_SECRET = os.environ.get("SLACK_CLIENT_BOT_SECRET", "")
 SLACK_REDIRECT_BOT_URI = os.environ.get("SLACK_REDIRECT_BOT_URI", "")
 
+# Google Analytics 4, server-side via the Measurement Protocol (see
+# core.analytics). Tracking is disabled unless BOTH are set: the
+# Measurement Protocol rejects events without an API secret, which is
+# created in GA4 under Admin -> Data Streams -> stream -> Measurement
+# Protocol API secrets.
+GA4_MEASUREMENT_ID = os.environ.get("GA4_ID", "")
+GA4_API_SECRET = os.environ.get("GA4_API_SECRET", "")
+# Salt for the pseudonymous GA4 user_id (HMAC of the user pk). Falls
+# back to SECRET_KEY when unset; set it explicitly in production so a
+# SECRET_KEY rotation doesn't reset user continuity in GA4.
+GA4_USER_ID_SALT = os.environ.get("GA4_USER_ID_SALT", "")
+# When true, render the gtag.js snippet client-side (see
+# core/templates/core/base.html.j2 and core.context_processors.analytics)
+# and stop emitting server-side page_view from GA4Middleware, so page
+# views are measured in the browser — where Google applies the bot/spam
+# filtering and real engagement signals the Measurement Protocol lacks.
+# Server events with no browser (Stripe webhooks) and the funnel events
+# (sign_up, login) still go via the Measurement Protocol. Needs GA4_ID.
+GA4_CLIENT_SIDE = os.environ.get("GA4_CLIENT_SIDE", "").lower() in ("1", "true", "yes")
+
 # Stripe configuration for Notipus billing (our revenue)
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "sk_test_dev_key")
 STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "pk_test_dev_key")
@@ -495,10 +754,9 @@ STRIPE_PLANS = {
 }
 TRIAL_PERIOD_DAYS = 14
 
-# Notipus billing webhook secret (for processing our own Stripe webhooks)
-NOTIPUS_STRIPE_WEBHOOK_SECRET = os.environ.get(
-    "NOTIPUS_STRIPE_WEBHOOK_SECRET", "whsec_dev_notipus_billing"
-)
+# NOTE: the billing webhook secret is stored on the GlobalBillingIntegration
+# row (seeded by migration 0017 from NOTIPUS_STRIPE_WEBHOOK_SECRET), not in
+# settings — nothing reads it from here at runtime.
 
 DISABLE_BILLING = os.environ.get("DISABLE_BILLING", "False").lower() == "true"
 
@@ -517,8 +775,10 @@ SHOPIFY_REDIRECT_URI = os.environ.get(
 SHOPIFY_API_VERSION = "2025-01"  # Stable API version for webhook management
 SHOPIFY_SCOPES = "read_orders,read_customers,write_webhooks"
 
-# Base URL for webhook endpoints (used in OAuth callbacks)
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
+# Base URL for webhook endpoints (used in OAuth callbacks). Trailing
+# slash stripped so f"{BASE_URL}/webhook/..." concatenations cannot
+# produce a double slash when the env var carries one.
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000").rstrip("/")
 
 # ============================================================================
 # Unified Plugin Configuration

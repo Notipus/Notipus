@@ -180,7 +180,7 @@ class TestCanInviteUser:
         )
         can_invite, message = can_invite_user(starter_workspace)
         assert can_invite is False
-        assert "starter plan allows up to 2 users" in message
+        assert "basic plan allows up to 2 users" in message
 
     def test_inactive_members_not_counted(
         self, starter_workspace, starter_plan, db

@@ -11,6 +11,7 @@ The tests verify:
 - Final Slack message content and structure using RichNotification
 """
 
+from decimal import Decimal
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -21,6 +22,7 @@ from webhooks.services.event_consolidation import EventConsolidationService
 from webhooks.services.event_processor import EventProcessor
 
 
+@pytest.mark.django_db
 class TestTrialSignupIntegration:
     """Integration test: Trial signup webhook flow.
 
@@ -121,27 +123,32 @@ class TestTrialSignupIntegration:
             "company": "",  # Often empty in Stripe
         }
 
-    def test_subscription_created_generates_rich_notification(
+    def test_trial_subscription_generates_trial_started_notification(
         self,
         stripe_plugin: StripeSourcePlugin,
         event_processor: EventProcessor,
         subscription_created_payload: dict[str, Any],
         customer_data: dict[str, Any],
     ) -> None:
-        """Test that subscription.created generates a proper RichNotification."""
+        """Test subscription.created with status=trialing generates trial_started."""
         # Create mock Stripe event object
         mock_event = Mock()
         mock_event.type = subscription_created_payload["type"]
         mock_event.data.object = subscription_created_payload["data"]["object"]
         mock_event.data.previous_attributes = None
 
-        # Extract event info
+        # Extract event info - initially subscription_created
         event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
         assert event_type == "subscription_created"
 
-        # Handle billing
+        # Handle billing - should detect trial and return 0 amount
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 26.60  # $26.60 plan
+        assert amount == Decimal("0.00")  # No payment for trials
+        assert data.get("_is_trial") is True  # Trial flag should be set
+
+        # Transform event type for trials (as done in parse_webhook)
+        if data.get("_is_trial"):
+            event_type = "trial_started"
 
         # Build event data
         event_data = stripe_plugin._build_stripe_event_data(
@@ -151,6 +158,11 @@ class TestTrialSignupIntegration:
             amount=amount,
         )
 
+        # Verify trial metadata
+        assert event_data["metadata"]["is_trial"] is True
+        assert event_data["metadata"]["trial_days"] == 14  # 14-day trial
+        assert event_data["metadata"]["plan_amount"] == 26.60  # Future billing amount
+
         # Build rich notification
         notification = event_processor.build_rich_notification(
             event_data, customer_data
@@ -158,21 +170,174 @@ class TestTrialSignupIntegration:
 
         # Verify notification structure
         assert isinstance(notification, RichNotification)
-        # Headline contains company name or "new customer" for subscriptions
-        assert notification.headline is not None
+        # Headline should indicate trial, not payment
+        assert "Trial started" in notification.headline
+        assert "New customer" not in notification.headline
 
         # Format for Slack
         slack_message = event_processor.process_event_rich(
             event_data, customer_data, target="slack"
         )
 
-        # Verify Slack message structure
-        assert "blocks" in slack_message
-        assert "color" in slack_message
+        # Verify Slack message structure (attachments format for colored messages)
+        assert "attachments" in slack_message
+        assert len(slack_message["attachments"]) > 0
+        attachment = slack_message["attachments"][0]
+        assert "blocks" in attachment
+        assert "color" in attachment
 
-        # Verify header block exists
-        header_block = slack_message["blocks"][0]
+        # Verify header block exists with trial headline
+        header_block = attachment["blocks"][0]
         assert header_block["type"] == "header"
+
+    def test_non_trial_subscription_generates_new_subscription_notification(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        event_processor: EventProcessor,
+        customer_data: dict[str, Any],
+    ) -> None:
+        """Test that subscription.created with status=active shows 'New subscription!'.
+
+        The headline is subscription-scoped, not customer-scoped: the
+        webhook cannot prove the customer is new (an existing customer
+        adding a second subscription fires the same event).
+        """
+        # Create a non-trial subscription payload (status=active, no trial fields)
+        active_subscription_data = {
+            "id": "sub_active123",
+            "object": "subscription",
+            "customer": "cus_TestCustomer123",
+            "status": "active",  # Not trialing!
+            "currency": "usd",
+            "created": 1769327717,
+            "current_period_start": 1769327717,
+            "current_period_end": 1770537317,
+            "cancel_at_period_end": False,
+            "canceled_at": None,
+            "plan": {
+                "id": "price_1ABC123",
+                "object": "plan",
+                "amount": 2660,
+                "currency": "usd",
+                "interval": "month",
+                "product": "prod_TestProduct",
+            },
+        }
+
+        mock_event = Mock()
+        mock_event.type = "customer.subscription.created"
+        mock_event.data.object = active_subscription_data
+        mock_event.data.previous_attributes = None
+
+        # Extract event info
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        assert event_type == "subscription_created"
+
+        # Handle billing - should NOT detect trial, return actual amount
+        amount = stripe_plugin._handle_stripe_billing(event_type, data)
+        assert amount == Decimal("26.60")  # Actual payment amount
+        assert data.get("_is_trial") is None  # Not a trial
+
+        # Build event data
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type=event_type,
+            customer_id=data["customer"],
+            data=data,
+            amount=amount,
+        )
+
+        # Verify NOT trial metadata
+        assert event_data["metadata"].get("is_trial") is None
+
+        # Build rich notification
+        notification = event_processor.build_rich_notification(
+            event_data, customer_data
+        )
+
+        # Verify notification shows "New subscription!"
+        assert "New subscription" in notification.headline
+
+    def test_trial_does_not_show_first_payment_insight(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        event_processor: EventProcessor,
+        subscription_created_payload: dict[str, Any],
+        customer_data: dict[str, Any],
+    ) -> None:
+        """Test that trial subscriptions don't show 'First payment' insight."""
+        mock_event = Mock()
+        mock_event.type = subscription_created_payload["type"]
+        mock_event.data.object = subscription_created_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        stripe_plugin._handle_stripe_billing(event_type, data)
+
+        # Transform to trial_started
+        if data.get("_is_trial"):
+            event_type = "trial_started"
+
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type=event_type,
+            customer_id=data["customer"],
+            data=data,
+            amount=0.0,
+        )
+
+        # Build notification
+        notification = event_processor.build_rich_notification(
+            event_data, customer_data
+        )
+
+        # Insight should be trial-related, NOT "First payment"
+        assert notification.insight is not None
+        assert "First payment" not in notification.insight.text
+        assert "trial" in notification.insight.text.lower()
+
+    def test_trial_does_not_show_payment_info(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        event_processor: EventProcessor,
+        subscription_created_payload: dict[str, Any],
+        customer_data: dict[str, Any],
+    ) -> None:
+        """Test that trial subscriptions don't show payment details.
+
+        Trials should not display payment info since no payment has occurred.
+        This ensures customer success teams see it as a trial, not a payment.
+        """
+        mock_event = Mock()
+        mock_event.type = subscription_created_payload["type"]
+        mock_event.data.object = subscription_created_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        stripe_plugin._handle_stripe_billing(event_type, data)
+
+        # Transform to trial_started
+        if data.get("_is_trial"):
+            event_type = "trial_started"
+
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type=event_type,
+            customer_id=data["customer"],
+            data=data,
+            amount=0.0,
+        )
+
+        # Build notification
+        notification = event_processor.build_rich_notification(
+            event_data, customer_data
+        )
+
+        # Payment info should be None for trials
+        assert notification.payment is None, "Trials should not have payment info"
+
+        # Amount in the event dict is a float at the JSON boundary
+        # (the Redis pending-event queue serializes it), so assert the
+        # type alongside the value.
+        assert event_data["amount"] == 0.0
+        assert isinstance(event_data["amount"], float)
 
     def test_zero_amount_invoice_filtered_before_notification(
         self,
@@ -205,7 +370,7 @@ class TestTrialSignupIntegration:
         with patch("webhooks.services.event_consolidation.cache") as mock_cache:
             mock_cache.get.return_value = None
 
-            # Event 1: subscription.created
+            # Event 1: subscription.created (with status=trialing)
             mock_event_1 = Mock()
             mock_event_1.type = subscription_created_payload["type"]
             mock_event_1.data.object = subscription_created_payload["data"]["object"]
@@ -215,9 +380,18 @@ class TestTrialSignupIntegration:
                 mock_event_1
             )
             amount_1 = stripe_plugin._handle_stripe_billing(event_type_1, data_1)
+
+            # Transform to trial_started if it's a trial (as done in parse_webhook)
+            if data_1.get("_is_trial"):
+                event_type_1 = "trial_started"
+
             event_data_1 = stripe_plugin._build_stripe_event_data(
                 event_type_1, data_1["customer"], data_1, amount_1
             )
+
+            # Verify this is now a trial_started event
+            assert event_data_1["type"] == "trial_started"
+            assert event_data_1["metadata"]["is_trial"] is True
 
             if consolidation_service.should_send_notification(
                 event_type_1, data_1["customer"], "ws_test", amount_1
@@ -253,12 +427,171 @@ class TestTrialSignupIntegration:
         assert len(notifications_sent) == 1
 
 
+@pytest.mark.django_db
+class TestTrialEndingIntegration:
+    """Integration test: trial_will_end webhook flow.
+
+    trial_will_end fires ~3 days before a trial ends and its payload is
+    a full subscription object, but it carries no customer email. The
+    notification must still say when the trial ends, what it converts
+    to, and who it is about (customer id fallback) - not a bare
+    "Trial ending soon" with an empty body.
+    """
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    @pytest.fixture
+    def event_processor(self) -> EventProcessor:
+        """Create an event processor instance."""
+        return EventProcessor()
+
+    @pytest.fixture
+    def trial_will_end_payload(self) -> dict[str, Any]:
+        """Realistic customer.subscription.trial_will_end webhook payload."""
+        return {
+            "id": "evt_3ABC123DEF456GHI789",
+            "object": "event",
+            "api_version": "2025-12-15.clover",
+            "created": 1770278117,
+            "type": "customer.subscription.trial_will_end",
+            "data": {
+                "object": {
+                    "id": "sub_1ABC123DEF456GHI",
+                    "object": "subscription",
+                    "customer": "cus_TestCustomer123",
+                    "status": "trialing",
+                    "currency": "usd",
+                    "created": 1769327717,
+                    "current_period_start": 1769327717,
+                    "current_period_end": 1770537317,
+                    "trial_start": 1769327717,
+                    "trial_end": 1770537317,
+                    "cancel_at_period_end": False,
+                    "canceled_at": None,
+                    "plan": {
+                        "id": "price_1ABC123",
+                        "object": "plan",
+                        "amount": 2660,
+                        "currency": "usd",
+                        "interval": "month",
+                        "product": "prod_TestProduct",
+                    },
+                },
+            },
+        }
+
+    def test_trial_ending_event_carries_trial_metadata(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        trial_will_end_payload: dict[str, Any],
+    ) -> None:
+        """Test trial_will_end parses with trial end date and plan price."""
+        mock_event = Mock()
+        mock_event.type = trial_will_end_payload["type"]
+        mock_event.data.object = trial_will_end_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        assert event_type == "trial_ending"
+
+        amount = stripe_plugin._handle_stripe_billing(event_type, data)
+        assert amount == Decimal("0.00")
+        # trial_ending must NOT set _is_trial: parse_webhook renames
+        # _is_trial events to trial_started.
+        assert data.get("_is_trial") is None
+
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type=event_type,
+            customer_id=data["customer"],
+            data=data,
+            amount=amount,
+        )
+
+        assert event_data["type"] == "trial_ending"
+        metadata = event_data["metadata"]
+        assert metadata["is_trial"] is True
+        assert metadata["trial_end"] == 1770537317
+        assert metadata["trial_days"] == 14
+        assert metadata["plan_amount"] == 26.60
+        assert metadata["billing_period"] == "monthly"
+        assert metadata["subscription_id"] == "sub_1ABC123DEF456GHI"
+
+    def test_trial_ending_notification_names_customer_without_email(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        event_processor: EventProcessor,
+        trial_will_end_payload: dict[str, Any],
+    ) -> None:
+        """Test the notification carries insight and identity, not a bare title.
+
+        Simulates the email cache miss (no invoice cached the address):
+        the message must still show the trial end date, the post-trial
+        price, and the customer id as last-resort identity.
+        """
+        import json
+
+        mock_event = Mock()
+        mock_event.type = trial_will_end_payload["type"]
+        mock_event.data.object = trial_will_end_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        amount = stripe_plugin._handle_stripe_billing(event_type, data)
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type, data["customer"], data, amount
+        )
+
+        # Email cache miss: only the customer id identifies the customer
+        customer_data = {
+            "email": "",
+            "first_name": "",
+            "last_name": "",
+            "company_name": "",
+            "customer_id": "cus_TestCustomer123",
+        }
+
+        notification = event_processor.build_rich_notification(
+            event_data, customer_data
+        )
+        assert isinstance(notification, RichNotification)
+        assert notification.headline == "Trial ending soon"
+        assert notification.insight is not None
+        assert notification.insight.text == "Trial ends Feb 8, then $26.60/mo"
+
+        slack_message = event_processor.process_event_rich(
+            event_data, customer_data, target="slack"
+        )
+        rendered = json.dumps(slack_message)
+        # Identity fallback: the customer id must appear in a context
+        # (identity) block, not merely inside the action button URL
+        blocks = slack_message["attachments"][0]["blocks"]
+        context_texts = [
+            element["text"]
+            for block in blocks
+            if block["type"] == "context"
+            for element in block["elements"]
+            if element.get("type") == "mrkdwn"
+        ]
+        assert any("cus_TestCustomer123" in text for text in context_texts)
+        # The insight line made it into the rendered message
+        assert "Trial ends Feb 8, then $26.60/mo" in rendered
+
+
+@pytest.mark.django_db
 class TestTrialConversionIntegration:
     """Integration test: Trial conversion to paid subscription.
 
     When a trial converts, we receive invoice.payment_succeeded with:
     - billing_reason="subscription_cycle"
     - Positive amount (first real payment)
+    - The invoice's period_start equal to the subscription's trial_end
+
+    billing_reason="subscription_cycle" alone is NOT sufficient - it fires
+    on every recurring renewal. Only the trial_end/period_start match
+    identifies the first paid invoice after a trial.
 
     The Slack notification should show trial conversion in headline.
     """
@@ -275,7 +608,11 @@ class TestTrialConversionIntegration:
 
     @pytest.fixture
     def trial_conversion_payload(self) -> dict[str, Any]:
-        """Invoice payload for first real payment after trial."""
+        """Invoice payload for first real payment after a multi-item trial.
+
+        The expanded subscription has a null top-level plan (modern
+        multi-item shape) and trial_end equal to the invoice period_start.
+        """
         return {
             "id": "evt_conversion123",
             "object": "event",
@@ -291,7 +628,66 @@ class TestTrialConversionIntegration:
                     "currency": "usd",
                     "status": "paid",
                     "billing_reason": "subscription_cycle",
-                    "subscription": "sub_1ABC123DEF456GHI",
+                    "period_start": 1770537317,
+                    "period_end": 1773215717,
+                    "subscription": {
+                        "id": "sub_1ABC123DEF456GHI",
+                        "object": "subscription",
+                        "status": "active",
+                        "plan": None,  # Null on multi-item subscriptions
+                        "trial_start": 1769327717,
+                        "trial_end": 1770537317,  # == invoice period_start
+                        "items": {
+                            "data": [
+                                {
+                                    "id": "si_base",
+                                    "price": {"unit_amount": 1660},
+                                    "quantity": 1,
+                                },
+                                {
+                                    "id": "si_addon",
+                                    "price": {"unit_amount": 500},
+                                    "quantity": 2,
+                                },
+                            ]
+                        },
+                    },
+                    "created": 1770537317,
+                },
+            },
+        }
+
+    @pytest.fixture
+    def regular_renewal_payload(self) -> dict[str, Any]:
+        """Invoice payload for an ordinary recurring renewal (no trial).
+
+        billing_reason is still "subscription_cycle", but the customer
+        never had a trial - this must NOT be flagged as a conversion.
+        """
+        return {
+            "id": "evt_renewal456",
+            "object": "event",
+            "type": "invoice.payment_succeeded",
+            "data": {
+                "object": {
+                    "id": "in_renewal456",
+                    "object": "invoice",
+                    "customer": "cus_TestCustomer123",
+                    "amount_due": 2660,
+                    "amount_paid": 2660,
+                    "amount_remaining": 0,
+                    "currency": "usd",
+                    "status": "paid",
+                    "billing_reason": "subscription_cycle",
+                    "period_start": 1770537317,
+                    "period_end": 1773215717,
+                    "subscription": {
+                        "id": "sub_1ABC123DEF456GHI",
+                        "object": "subscription",
+                        "status": "active",
+                        "trial_start": None,
+                        "trial_end": None,
+                    },
                     "created": 1770537317,
                 },
             },
@@ -324,7 +720,7 @@ class TestTrialConversionIntegration:
 
         # Handle billing - should detect trial conversion
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 26.60
+        assert amount == Decimal("26.60")
         assert data.get("_is_trial_conversion") is True
 
         # Build event data
@@ -332,6 +728,36 @@ class TestTrialConversionIntegration:
             event_type, data["customer"], data, amount
         )
         assert event_data["metadata"]["is_trial_conversion"] is True
+        # The expanded subscription object must not leak into subscription_id
+        assert event_data["metadata"]["subscription_id"] == "sub_1ABC123DEF456GHI"
+
+    def test_regular_renewal_not_flagged_as_trial_conversion(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        regular_renewal_payload: dict[str, Any],
+    ) -> None:
+        """Test that an ordinary renewal cycle is NOT a trial conversion.
+
+        Regression test: billing_reason="subscription_cycle" fires on every
+        recurring payment; previously each one was mislabeled as a trial
+        conversion even for customers who never had a trial.
+        """
+        mock_event = Mock()
+        mock_event.type = regular_renewal_payload["type"]
+        mock_event.data.object = regular_renewal_payload["data"]["object"]
+        mock_event.data.previous_attributes = None
+
+        event_type, data = stripe_plugin._extract_stripe_event_info(mock_event)
+        assert event_type == "payment_success"
+
+        amount = stripe_plugin._handle_stripe_billing(event_type, data)
+        assert amount == Decimal("26.60")
+        assert data.get("_is_trial_conversion") is None
+
+        event_data = stripe_plugin._build_stripe_event_data(
+            event_type, data["customer"], data, amount
+        )
+        assert "is_trial_conversion" not in event_data["metadata"]
 
     def test_trial_conversion_generates_rich_notification(
         self,
@@ -362,6 +788,7 @@ class TestTrialConversionIntegration:
         assert "Trial converted" in notification.headline
 
 
+@pytest.mark.django_db
 class TestSubscriptionUpgradeIntegration:
     """Integration test: Subscription plan upgrade.
 
@@ -440,7 +867,7 @@ class TestSubscriptionUpgradeIntegration:
 
         # Handle billing - should detect upgrade
         amount = stripe_plugin._handle_stripe_billing(event_type, data)
-        assert amount == 49.00
+        assert amount == Decimal("49.00")
         assert data.get("_change_direction") == "upgrade"
 
         # Build event data
@@ -741,24 +1168,78 @@ class TestWebhookCustomerDataExtraction:
     def test_cache_customer_email_from_invoice(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:
-        """Test that customer email is cached from invoice events."""
+        """Test that customer email is cached encrypted, not as plaintext.
+
+        Emails are PII and the cache TTL keeps them in Redis for weeks,
+        so the stored value must be a ciphertext token.
+        """
+        from core.encryption import decrypt, looks_like_token
+
         with patch("plugins.sources.stripe.cache") as mock_cache:
             stripe_plugin._cache_customer_email("cus_test123", "test@example.com")
 
             mock_cache.set.assert_called_once()
             call_args = mock_cache.set.call_args
             assert call_args[0][0] == "stripe_customer_email:cus_test123"
-            assert call_args[0][1] == "test@example.com"
+            stored_value = call_args[0][1]
+            assert stored_value != "test@example.com"
+            assert looks_like_token(stored_value)
+            assert decrypt(stored_value) == "test@example.com"
+
+    def test_email_cache_ttl_covers_trial_length(self) -> None:
+        """Test the cache TTL outlives a 30-day trial.
+
+        trial_will_end fires ~3 days before the trial ends - up to a month
+        after the invoice event that cached the email. A short TTL makes
+        every trial-ending notification anonymous.
+        """
+        from plugins.sources.stripe import CUSTOMER_EMAIL_CACHE_TTL
+
+        thirty_days = 30 * 24 * 60 * 60
+        assert CUSTOMER_EMAIL_CACHE_TTL > thirty_days
 
     def test_get_cached_customer_email(self, stripe_plugin: StripeSourcePlugin) -> None:
-        """Test that cached customer email is retrieved."""
+        """Test that an encrypted cached email is decrypted on retrieval."""
+        from core.encryption import encrypt
+
+        with patch("plugins.sources.stripe.cache") as mock_cache:
+            mock_cache.get.return_value = encrypt("cached@example.com")
+
+            result = stripe_plugin._get_cached_customer_email("cus_test123")
+
+            assert result == "cached@example.com"
+            mock_cache.get.assert_called_once_with("stripe_customer_email:cus_test123")
+
+    def test_get_cached_customer_email_evicts_undecryptable_token(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test an undecryptable cached token is evicted, not retried forever.
+
+        A token no configured key can decrypt (e.g. after a bad key
+        rotation) can never succeed again; it must be deleted so every
+        subsequent lookup doesn't repeat the warning and decrypt attempt
+        until TTL expiry.
+        """
+        with patch("plugins.sources.stripe.cache") as mock_cache:
+            mock_cache.get.return_value = "pqc1:not-a-valid-token"
+
+            result = stripe_plugin._get_cached_customer_email("cus_test123")
+
+            assert result == ""
+            mock_cache.delete.assert_called_once_with(
+                "stripe_customer_email:cus_test123"
+            )
+
+    def test_get_cached_customer_email_legacy_plaintext(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test legacy plaintext cache entries are still returned as-is."""
         with patch("plugins.sources.stripe.cache") as mock_cache:
             mock_cache.get.return_value = "cached@example.com"
 
             result = stripe_plugin._get_cached_customer_email("cus_test123")
 
             assert result == "cached@example.com"
-            mock_cache.get.assert_called_once_with("stripe_customer_email:cus_test123")
 
     def test_get_customer_data_uses_cached_email_for_subscription(
         self, stripe_plugin: StripeSourcePlugin
@@ -808,6 +1289,298 @@ class TestWebhookCustomerDataExtraction:
             # Should NOT have looked up cache since webhook has email
             mock_cache.get.assert_not_called()
             assert customer_data["email"] == "invoice@new.com"
+
+
+class TestExtractPlanName:
+    """Test plan name extraction from invoice line items.
+
+    Tests structured field lookups (plan/price objects) and fallback
+    to description parsing.
+    """
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    def test_prefers_plan_nickname(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test that plan.nickname is preferred over description parsing."""
+        item: dict[str, Any] = {
+            "plan": {"nickname": "Business Monthly", "name": "price_123"},
+            "description": "2 screen × Something Else (at $26.60 / month)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item) == "Business Monthly"
+        )
+
+    def test_falls_back_to_plan_name(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test fallback to plan.name when nickname is absent."""
+        item: dict[str, Any] = {
+            "plan": {"name": "Pro Plan"},
+            "description": "Something in description",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Pro Plan"
+
+    def test_uses_price_nickname(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test price.nickname extraction."""
+        item: dict[str, Any] = {
+            "price": {"nickname": "Enterprise Annual"},
+            "description": "Fallback description",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item) == "Enterprise Annual"
+        )
+
+    def test_uses_expanded_product_name(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test price.product.name when product is expanded."""
+        item: dict[str, Any] = {
+            "price": {"product": {"name": "Starter Plan"}},
+            "description": "Fallback",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Starter Plan"
+
+    def test_uses_new_api_pricing_field(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test new API pricing.price_details with expanded objects."""
+        item: dict[str, Any] = {
+            "pricing": {
+                "type": "price_details",
+                "price_details": {
+                    "price": {"nickname": "Growth Plan"},
+                },
+            },
+            "description": "Fallback",
+        }
+        assert stripe_plugin._extract_plan_name_from_line_item(item) == "Growth Plan"
+
+    def test_falls_back_to_description_quantity_format(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: '2 screen × Plan (at $X / month)'."""
+        item: dict[str, Any] = {
+            "description": "2 screen × Business Plan Monthly (at $26.60 / month)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
+        )
+
+    def test_falls_back_to_description_trial_format(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: 'Trial period for Plan (details)'."""
+        item: dict[str, Any] = {
+            "description": "Trial period for Business Plan Monthly (per screen)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
+        )
+
+    def test_falls_back_to_description_simple_format(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: 'Plan (details)'."""
+        item: dict[str, Any] = {
+            "description": "Business Plan Monthly (per screen)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
+        )
+
+    def test_falls_back_to_description_plain_name(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test description fallback: plain plan name."""
+        item: dict[str, Any] = {"description": "Pro Plan Annual"}
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item) == "Pro Plan Annual"
+        )
+
+    def test_empty_item_returns_none(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test empty line item returns None."""
+        assert stripe_plugin._extract_plan_name_from_line_item({}) is None
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item({"description": ""}) is None
+        )
+
+    def test_skips_plan_with_no_name(self, stripe_plugin: StripeSourcePlugin) -> None:
+        """Test that plan object without nickname/name falls through."""
+        item: dict[str, Any] = {
+            "plan": {"amount": 2660, "interval": "month"},
+            "description": "Business Plan Monthly (per screen)",
+        }
+        assert (
+            stripe_plugin._extract_plan_name_from_line_item(item)
+            == "Business Plan Monthly"
+        )
+
+
+class TestInvoiceMetadataExtraction:
+    """Test expanded _add_invoice_metadata() with real invoice structures."""
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    def test_extracts_plan_name_from_line_items(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test plan_name is extracted from line item description."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_123",
+            "billing_reason": "subscription_cycle",
+            "attempt_count": 1,
+            "number": "INV-0042",
+            "lines": {
+                "data": [
+                    {
+                        "description": (
+                            "2 screen × Business Plan Monthly (at $26.60 / month)"
+                        ),
+                        "quantity": 2,
+                    }
+                ]
+            },
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["plan_name"] == "Business Plan Monthly"
+        assert metadata["subscription_id"] == "sub_123"
+        assert metadata["billing_reason"] == "subscription_cycle"
+        assert metadata["attempt_count"] == 1
+        assert metadata["invoice_number"] == "INV-0042"
+        assert metadata["quantity"] == 2
+        assert metadata["billing_period"] == "monthly"
+
+    def test_extracts_subscription_id_from_new_api_path(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test subscription_id extraction from new Stripe API path.
+
+        With no line items the billing interval is undeterminable, so the
+        billing_period falls back to "monthly" as a last resort.
+        """
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": None,
+            "parent": {
+                "subscription_details": {
+                    "subscription": "sub_new_api_456",
+                }
+            },
+            "billing_reason": "subscription_cycle",
+            "lines": {"data": []},
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["subscription_id"] == "sub_new_api_456"
+        assert metadata["billing_period"] == "monthly"
+
+    def test_extracts_attempt_count_and_next_retry(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test attempt_count and next_payment_attempt for failures."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "attempt_count": 2,
+            "next_payment_attempt": 1740182400,
+            "billing_reason": "subscription_cycle",
+            "lines": {"data": []},
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["attempt_count"] == 2
+        assert metadata["next_payment_attempt"] == 1740182400
+
+    def test_annual_billing_period_from_description(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test billing period parsed as annual from description."""
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_123",
+            "billing_reason": "subscription_cycle",
+            "lines": {
+                "data": [
+                    {
+                        "description": "Enterprise Plan (at $999.00 / year)",
+                        "quantity": 1,
+                    }
+                ]
+            },
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["plan_name"] == "Enterprise Plan"
+        assert metadata["billing_period"] == "annual"
+
+    def test_annual_billing_period_from_price_recurring_interval(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test annual invoice with price.recurring.interval is not "monthly".
+
+        Regression test: subscription_cycle invoices used to be pre-labeled
+        "monthly" before line-item inspection, so a $1200/year renewal whose
+        line item only carried price.recurring.interval="year" was silently
+        mislabeled. The interval must be computed from the line item first
+        ("annual" is this codebase's label for yearly billing).
+        """
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_annual_123",
+            "billing_reason": "subscription_cycle",
+            "lines": {
+                "data": [
+                    {
+                        "description": "Enterprise Plan",
+                        "quantity": 1,
+                        "price": {
+                            "unit_amount": 120000,
+                            "recurring": {"interval": "year"},
+                        },
+                    }
+                ]
+            },
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["billing_period"] == "annual"
+        assert metadata["billing_period"] != "monthly"
+
+    def test_no_line_items_still_extracts_other_metadata(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Test metadata extraction works even without line items.
+
+        billing_period falls back to "monthly" only because the interval
+        is truly undeterminable without line items.
+        """
+        metadata: dict[str, Any] = {}
+        data: dict[str, Any] = {
+            "subscription": "sub_789",
+            "billing_reason": "subscription_create",
+            "number": "INV-0001",
+            "lines": {"data": []},
+        }
+
+        stripe_plugin._add_invoice_metadata(metadata, data)
+
+        assert metadata["subscription_id"] == "sub_789"
+        assert metadata["billing_reason"] == "subscription_create"
+        assert metadata["invoice_number"] == "INV-0001"
+        assert metadata["billing_period"] == "monthly"
 
 
 class TestPaymentFailureNotFiltered:
@@ -879,3 +1652,86 @@ class TestPaymentFailureNotFiltered:
         # Headlines are event-focused (no company name)
         assert "failed" in notification.headline.lower()
         assert "$99.00" in notification.headline
+
+
+class TestGuestCheckoutIdentity:
+    """Integration test: guest checkout (payment mode, no Customer object).
+
+    checkout.session.completed for a guest checkout has customer=None and
+    the buyer's identity only in the nested customer_details object. Seen
+    in prod: these events produced anonymous notifications and were
+    dropped from the dashboard activity feed entirely.
+    """
+
+    @pytest.fixture
+    def stripe_plugin(self) -> StripeSourcePlugin:
+        """Create a Stripe plugin instance."""
+        return StripeSourcePlugin()
+
+    @pytest.fixture
+    def guest_checkout_session(self) -> dict[str, Any]:
+        """checkout.session.completed object for a guest checkout."""
+        return {
+            "id": "cs_test_a1b2c3",
+            "object": "checkout.session",
+            "customer": None,
+            "customer_email": None,
+            "customer_details": {
+                "email": "guest@example.com",
+                "name": "Guest Buyer",
+            },
+            "amount_total": 4900,
+            "currency": "usd",
+            "mode": "payment",
+            "status": "complete",
+            "created": 1769327717,
+        }
+
+    def test_customer_details_hoisted_to_flat_fields(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        guest_checkout_session: dict[str, Any],
+    ) -> None:
+        """The nested customer_details identity lands in the flat fields."""
+        stripe_plugin._hoist_checkout_customer_details(guest_checkout_session)
+
+        assert guest_checkout_session["customer_email"] == "guest@example.com"
+        assert guest_checkout_session["customer_name"] == "Guest Buyer"
+
+    def test_explicit_flat_fields_are_not_overwritten(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """A customer_email set at session creation wins over the echo."""
+        data = {
+            "customer_email": "explicit@example.com",
+            "customer_details": {"email": "details@example.com", "name": "N"},
+        }
+
+        stripe_plugin._hoist_checkout_customer_details(data)
+
+        assert data["customer_email"] == "explicit@example.com"
+
+    def test_non_dict_and_null_customer_details_are_ignored(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """Events without a usable customer_details object are untouched."""
+        for details in (None, "str", 42, ["list"]):
+            data = {"customer_details": details}
+            stripe_plugin._hoist_checkout_customer_details(data)
+            assert "customer_email" not in data
+            assert "customer_name" not in data
+
+    def test_get_customer_data_returns_guest_identity(
+        self,
+        stripe_plugin: StripeSourcePlugin,
+        guest_checkout_session: dict[str, Any],
+    ) -> None:
+        """After the hoist, the customer lookup yields the buyer identity."""
+        stripe_plugin._hoist_checkout_customer_details(guest_checkout_session)
+        stripe_plugin._current_webhook_data = guest_checkout_session
+
+        customer_data = stripe_plugin.get_customer_data("")
+
+        assert customer_data["email"] == "guest@example.com"
+        assert customer_data["first_name"] == "Guest"
+        assert customer_data["last_name"] == "Buyer"

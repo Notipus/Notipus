@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from core.models import Company, Integration, UserProfile, Workspace
@@ -5,6 +6,9 @@ from core.services.enrichment import DomainEnrichmentService
 from core.services.stripe import StripeAPI
 from django.test import TestCase
 from webhooks.services.billing import BillingService
+
+# Recent timestamp so cached enrichment is treated as fresh (within TTL).
+_FRESH_BLENDED_AT = datetime.now(timezone.utc).isoformat()
 
 
 class DomainEnrichmentServiceTest(TestCase):
@@ -70,11 +74,11 @@ class DomainEnrichmentServiceTest(TestCase):
         """Test enriching existing company that already has enrichment data."""
         domain = "existing.com"
 
-        # Create existing company with enrichment data (_blended_at indicates enriched)
+        # Create existing company with fresh enrichment data (within cache TTL)
         existing_company = Company.objects.create(
             domain=domain,
             name="Existing Company",
-            brand_info={"_blended_at": "2024-01-01T00:00:00Z"},
+            brand_info={"_blended_at": _FRESH_BLENDED_AT},
         )
 
         # Mock plugin
@@ -140,10 +144,10 @@ class DomainEnrichmentServiceTest(TestCase):
         self.assertEqual(company.brand_info["_blended_at"], "2024-01-01T00:00:00Z")
 
     def test_has_enrichment_true(self) -> None:
-        """Test _has_enrichment returns True when company has enrichment data."""
+        """Test _has_enrichment returns True for fresh enrichment data."""
         company = Company.objects.create(
             domain="enriched.com",
-            brand_info={"_blended_at": "2024-01-01T00:00:00Z"},
+            brand_info={"_blended_at": _FRESH_BLENDED_AT},
         )
 
         self.assertTrue(self.service._has_enrichment(company))
@@ -151,6 +155,20 @@ class DomainEnrichmentServiceTest(TestCase):
     def test_has_enrichment_false(self) -> None:
         """Test _has_enrichment returns False when company lacks enrichment data."""
         company = Company.objects.create(domain="notenriched.com", brand_info={})
+
+        self.assertFalse(self.service._has_enrichment(company))
+
+    def test_has_enrichment_false_when_stale(self) -> None:
+        """Test _has_enrichment returns False for enrichment past the TTL."""
+        ttl = self.service.CACHE_DURATION_DAYS
+        assert ttl is not None
+        # Generate the stale timestamp relative to now so the test is stable
+        # over time rather than depending on a fixed calendar date.
+        stale_at = (datetime.now(timezone.utc) - timedelta(days=ttl + 1)).isoformat()
+        company = Company.objects.create(
+            domain="stale.com",
+            brand_info={"_blended_at": stale_at},
+        )
 
         self.assertFalse(self.service._has_enrichment(company))
 
@@ -171,9 +189,12 @@ class BillingServiceTest(TestCase):
     def test_handle_subscription_created_success(self, mock_logger, mock_sync):
         """Test successful subscription creation handling"""
         subscription_data = {
+            "id": "sub_test123",
             "customer": "cus_test123",
+            "status": "active",
             "items": {"data": [{"plan": {"id": "plan_basic"}}]},
             "current_period_start": 1234567890,
+            "current_period_end": 1237246290,
         }
 
         BillingService.handle_subscription_created(subscription_data)
@@ -181,7 +202,9 @@ class BillingServiceTest(TestCase):
         self.workspace.refresh_from_db()
         # subscription_plan is set by sync_workspace_from_stripe, not directly
         self.assertEqual(self.workspace.subscription_status, "active")
-        self.assertEqual(self.workspace.billing_cycle_anchor, 1234567890)
+        # Anchor uses current_period_end (next renewal), never period_start
+        self.assertEqual(self.workspace.billing_cycle_anchor, 1237246290)
+        self.assertEqual(self.workspace.stripe_subscription_id, "sub_test123")
 
         mock_logger.info.assert_called_once_with(
             "Subscription created for customer cus_test123, syncing..."
@@ -242,20 +265,100 @@ class BillingServiceTest(TestCase):
             "No workspace found for customer cus_nonexistent"
         )
 
+    @patch.object(BillingService, "sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
-    def test_handle_payment_success(self, mock_logger):
-        """Test successful payment handling"""
-        invoice_data = {"customer": "cus_test123", "period_end": 1234567890}
+    def test_handle_payment_success(self, mock_logger, mock_sync):
+        """Test successful payment handling for the workspace's subscription"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            stripe_subscription_id="sub_test123"
+        )
+        # Seed a known anchor (a future renewal a subscription handler
+        # would have written) so we can assert the invoice handler leaves
+        # it untouched — the sync is what advances it, and it's mocked.
+        Workspace.objects.filter(id=self.workspace.id).update(
+            billing_cycle_anchor=1300000000
+        )
+        anchor_before = Workspace.objects.get(id=self.workspace.id).billing_cycle_anchor
+
+        invoice_data = {
+            "customer": "cus_test123",
+            "subscription": "sub_test123",
+            "amount_paid": 2900,
+            "period_end": 1234567890,
+        }
 
         BillingService.handle_payment_success(invoice_data)
 
         self.workspace.refresh_from_db()
         self.assertEqual(self.workspace.subscription_status, "active")
-        self.assertEqual(self.workspace.billing_cycle_anchor, 1234567890)
+        self.assertTrue(self.workspace.payment_method_added)
+        # With sync mocked, the handler itself writes nothing into the
+        # anchor: it must be exactly what it was before the call (not the
+        # invoice's period_end, and not any other value).
+        self.assertEqual(self.workspace.billing_cycle_anchor, anchor_before)
 
         mock_logger.info.assert_called_once_with(
-            "Updated payment status to active for customer cus_test123"
+            "Applied payment_success for customer cus_test123 (amount_paid=2900)"
         )
+        # Authoritative refinement runs after the direct write
+        mock_sync.assert_called_once_with("cus_test123")
+
+    @patch.object(BillingService, "sync_workspace_from_stripe")
+    def test_handle_payment_success_ignores_one_off_invoice(self, mock_sync):
+        """A paid invoice with no subscription must not touch the workspace"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            subscription_status="cancelled"
+        )
+        invoice_data = {"customer": "cus_test123", "period_end": 1234567890}
+
+        BillingService.handle_payment_success(invoice_data)
+
+        self.workspace.refresh_from_db()
+        # A one-off invoice must not reactivate a cancelled workspace
+        self.assertEqual(self.workspace.subscription_status, "cancelled")
+        mock_sync.assert_not_called()
+
+    @patch.object(BillingService, "sync_workspace_from_stripe")
+    def test_handle_payment_success_ignores_other_subscription(self, mock_sync):
+        """A paid invoice for an add-on subscription must not activate"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            subscription_status="cancelled",
+            stripe_subscription_id="sub_primary",
+        )
+        invoice_data = {
+            "customer": "cus_test123",
+            "subscription": "sub_addon",
+            "amount_paid": 500,
+        }
+
+        BillingService.handle_payment_success(invoice_data)
+
+        self.workspace.refresh_from_db()
+        self.assertEqual(self.workspace.subscription_status, "cancelled")
+        mock_sync.assert_not_called()
+
+    @patch.object(BillingService, "sync_workspace_from_stripe")
+    def test_handle_payment_success_zero_amount_does_not_activate(self, mock_sync):
+        """The $0 trial-start invoice must not flip a trial to active"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            subscription_status="trial",
+            subscription_plan="pro",
+            stripe_subscription_id="sub_test123",
+        )
+        invoice_data = {
+            "customer": "cus_test123",
+            "subscription": "sub_test123",
+            "amount_paid": 0,
+            "period_end": 1234567890,
+        }
+
+        BillingService.handle_payment_success(invoice_data)
+
+        self.workspace.refresh_from_db()
+        self.assertEqual(self.workspace.subscription_status, "trial")
+        self.assertFalse(self.workspace.payment_method_added)
+        # Sync still runs to derive the authoritative state
+        mock_sync.assert_called_once_with("cus_test123")
 
     @patch("webhooks.services.billing.logger")
     def test_handle_payment_success_missing_customer(self, mock_logger):
@@ -264,12 +367,17 @@ class BillingServiceTest(TestCase):
 
         BillingService.handle_payment_success(invoice_data)
 
-        mock_logger.error.assert_called_once_with("Missing customer ID in invoice data")
+        mock_logger.error.assert_called_once_with(
+            "Missing customer ID in payment_success invoice data"
+        )
 
     @patch("webhooks.services.billing.logger")
     def test_handle_payment_failed(self, mock_logger):
-        """Test failed payment handling"""
-        invoice_data = {"customer": "cus_test123"}
+        """Test failed payment handling for a subscription invoice"""
+        Workspace.objects.filter(id=self.workspace.id).update(
+            stripe_subscription_id="sub_test123"
+        )
+        invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
         BillingService.handle_payment_failed(invoice_data)
 
@@ -290,9 +398,8 @@ class BillingServiceTest(TestCase):
         mock_logger.error.assert_called_once_with("Missing customer ID in invoice data")
 
     @patch("webhooks.services.billing.Workspace.objects")
-    @patch("webhooks.services.billing.logger")
-    def test_handle_subscription_created_exception(self, mock_logger, mock_objects):
-        """Test exception handling in subscription creation"""
+    def test_handle_subscription_created_exception(self, mock_objects):
+        """Unexpected DB errors propagate so the webhook view returns 5xx"""
         mock_objects.filter.side_effect = Exception("Database error")
 
         subscription_data = {
@@ -300,39 +407,28 @@ class BillingServiceTest(TestCase):
             "items": {"data": [{"plan": {"id": "plan_basic"}}]},
         }
 
-        BillingService.handle_subscription_created(subscription_data)
-
-        mock_logger.error.assert_called_once_with(
-            "Error handling subscription created: Database error"
-        )
+        with self.assertRaisesMessage(Exception, "Database error"):
+            BillingService.handle_subscription_created(subscription_data)
 
     @patch("webhooks.services.billing.Workspace.objects")
-    @patch("webhooks.services.billing.logger")
-    def test_handle_payment_success_exception(self, mock_logger, mock_objects):
-        """Test exception handling in payment success"""
+    def test_handle_payment_success_exception(self, mock_objects):
+        """Unexpected DB errors propagate so the webhook view returns 5xx"""
         mock_objects.filter.side_effect = Exception("Database error")
 
-        invoice_data = {"customer": "cus_test123"}
+        invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
-        BillingService.handle_payment_success(invoice_data)
-
-        mock_logger.error.assert_called_once_with(
-            "Error handling payment success: Database error"
-        )
+        with self.assertRaisesMessage(Exception, "Database error"):
+            BillingService.handle_payment_success(invoice_data)
 
     @patch("webhooks.services.billing.Workspace.objects")
-    @patch("webhooks.services.billing.logger")
-    def test_handle_payment_failed_exception(self, mock_logger, mock_objects):
-        """Test exception handling in payment failure"""
+    def test_handle_payment_failed_exception(self, mock_objects):
+        """Unexpected DB errors propagate so the webhook view returns 5xx"""
         mock_objects.filter.side_effect = Exception("Database error")
 
-        invoice_data = {"customer": "cus_test123"}
+        invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
-        BillingService.handle_payment_failed(invoice_data)
-
-        mock_logger.error.assert_called_once_with(
-            "Error handling payment failure: Database error"
-        )
+        with self.assertRaisesMessage(Exception, "Database error"):
+            BillingService.handle_payment_failed(invoice_data)
 
     @patch("webhooks.services.billing.BillingService.sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
@@ -395,10 +491,11 @@ class BillingServiceTest(TestCase):
             "Missing customer ID in subscription data"
         )
 
+    @patch("webhooks.services.billing.BillingService.sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
-    def test_handle_subscription_deleted_success(self, mock_logger):
+    def test_handle_subscription_deleted_success(self, mock_logger, mock_sync):
         """Test successful subscription deletion handling"""
-        subscription_data = {"customer": "cus_test123"}
+        subscription_data = {"id": "sub_test123", "customer": "cus_test123"}
 
         BillingService.handle_subscription_deleted(subscription_data)
 
@@ -408,6 +505,8 @@ class BillingServiceTest(TestCase):
         mock_logger.info.assert_called_once_with(
             "Marked subscription as cancelled for customer cus_test123"
         )
+        # Deletion reconciles against Stripe in case another live sub exists
+        mock_sync.assert_called_once_with("cus_test123")
 
     @patch("webhooks.services.billing.logger")
     def test_handle_subscription_deleted_missing_customer(self, mock_logger):
@@ -464,7 +563,7 @@ class StripeAPITest(TestCase):
         }
 
         self.assertEqual(result, expected)
-        mock_create.assert_called_once_with(**customer_data)
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key", **customer_data)
 
     @patch("core.services.stripe.stripe.Customer.create")
     def test_create_stripe_customer_stripe_error(self, mock_create: Mock) -> None:
@@ -491,7 +590,7 @@ class StripeAPITest(TestCase):
         result = api.create_stripe_customer({})
 
         self.assertEqual(result, {"id": "cus_empty"})
-        mock_create.assert_called_once_with()
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key")
 
 
 class DashboardServiceTest(TestCase):
@@ -545,6 +644,11 @@ class DashboardServiceTest(TestCase):
         self.assertIn("usage_data", result)
         self.assertIn("trial_info", result)
 
+        # Verify workspace_id is passed to get_recent_webhook_activity
+        mock_db_instance.get_recent_webhook_activity.assert_called_once_with(
+            workspace_id=str(self.workspace.uuid), days=7, limit=100
+        )
+
     @patch("core.services.dashboard.rate_limiter")
     @patch("core.services.dashboard.DatabaseLookupService")
     def test_get_dashboard_data_no_profile(self, mock_db_service, mock_rate_limiter):
@@ -586,6 +690,104 @@ class DashboardServiceTest(TestCase):
         self.assertTrue(result["has_shopify"])
         self.assertFalse(result["has_chargify"])
         self.assertFalse(result["has_stripe"])
+
+    def test_setup_progress_starts_partially_done_for_bare_workspace(self) -> None:
+        """A workspace with no integrations shows 2 of 5 steps done.
+
+        Account and workspace are genuinely complete by the time the
+        dashboard renders — the checklist counts them instead of
+        starting at zero, and never counts anything else unearned.
+        Plan choice is not a setup step: workspaces start on the free
+        plan and upgrading is a later decision.
+        """
+        from core.services.dashboard import DashboardService
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        self.assertEqual(progress["done_count"], 2)
+        self.assertEqual(progress["total"], 5)
+        self.assertEqual(progress["percent"], 40)
+        self.assertFalse(progress["complete"])
+        done_keys = {s["key"] for s in progress["steps"] if s["done"]}
+        self.assertEqual(done_keys, {"account", "workspace"})
+
+    def test_setup_progress_counts_slack_and_source(self) -> None:
+        """Connecting Slack and a source completes those steps only.
+
+        The first-event step stays open until a webhook is verified.
+        """
+        from core.services.dashboard import DashboardService
+
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="slack_notifications",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="stripe_customer",
+            is_active=True,
+        )
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        self.assertEqual(progress["done_count"], 4)
+        self.assertFalse(progress["complete"])
+        open_keys = {s["key"] for s in progress["steps"] if not s["done"]}
+        self.assertEqual(open_keys, {"first_event"})
+
+    def test_setup_progress_completes_on_first_verified_webhook(self) -> None:
+        """A verified webhook on a source integration completes setup."""
+        from core.services.dashboard import DashboardService
+        from django.utils import timezone
+
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="slack_notifications",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="chargify",
+            is_active=True,
+            webhook_verified_at=timezone.now(),
+        )
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        self.assertEqual(progress["done_count"], 5)
+        self.assertEqual(progress["percent"], 100)
+        self.assertTrue(progress["complete"])
+
+    def test_setup_progress_ignores_non_source_integrations(self) -> None:
+        """Enrichment and inactive integrations earn no source credit.
+
+        Hunter.io is not an event source, and an inactive source must
+        not count as connected.
+        """
+        from core.services.dashboard import DashboardService
+        from django.utils import timezone
+
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="hunter_enrichment",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=self.workspace,
+            integration_type="shopify",
+            is_active=False,
+            webhook_verified_at=timezone.now(),
+        )
+
+        service = DashboardService()
+        progress = service._get_integration_data(self.workspace)["setup_progress"]
+
+        open_keys = {s["key"] for s in progress["steps"] if not s["done"]}
+        self.assertEqual(open_keys, {"slack", "source", "first_event"})
 
     def test_get_trial_info_active_trial(self) -> None:
         """Test trial info for active trial."""
@@ -630,10 +832,31 @@ class DashboardServiceTest(TestCase):
         mock_rate_limiter.get_usage_stats.return_value = {"monthly": []}
 
         service = DashboardService()
-        result = service._get_usage_data(self.workspace)
+        result = service.get_usage_data(self.workspace)
 
         self.assertTrue(result["is_allowed"])
         self.assertEqual(result["usage_percentage"], 50.0)
+
+    @patch("core.services.dashboard.rate_limiter")
+    def test_get_usage_data_includes_pause_point(self, mock_rate_limiter) -> None:
+        """Usage data carries the count at which delivery actually stops.
+
+        The default grace multiplier is 2x the plan limit, so upgrade
+        prompts can state the real consequence instead of a vague
+        warning.
+        """
+        from core.services.dashboard import DashboardService
+
+        mock_rate_limiter.check_rate_limit.return_value = (
+            True,
+            {"current_usage": 18, "limit": 20, "remaining": 2},
+        )
+        mock_rate_limiter.get_usage_stats.return_value = {"monthly": []}
+
+        service = DashboardService()
+        result = service.get_usage_data(self.workspace)
+
+        self.assertEqual(result["pause_at"], 40)
 
     @patch("core.services.dashboard.rate_limiter")
     def test_get_usage_data_error_handling(self, mock_rate_limiter):
@@ -643,11 +866,12 @@ class DashboardServiceTest(TestCase):
         mock_rate_limiter.check_rate_limit.side_effect = Exception("Redis error")
 
         service = DashboardService()
-        result = service._get_usage_data(self.workspace)
+        result = service.get_usage_data(self.workspace)
 
         # Should return default values on error
         self.assertTrue(result["is_allowed"])
         self.assertEqual(result["usage_percentage"], 0)
+        self.assertIsNone(result["pause_at"])
 
     @patch("core.services.dashboard.DatabaseLookupService")
     def test_transform_activity_data(self, mock_db_service):
@@ -962,3 +1186,52 @@ class DashboardServiceTest(TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["event_count"], 2)
+
+    @patch("core.services.dashboard.rate_limiter")
+    @patch("core.services.dashboard.DatabaseLookupService")
+    def test_recent_activity_passes_workspace_id(
+        self, mock_db_service, mock_rate_limiter
+    ):
+        """Test that _get_recent_activity passes workspace_id to db service."""
+        from core.services.dashboard import DashboardService
+
+        mock_db_instance = Mock()
+        mock_db_instance.get_recent_webhook_activity.return_value = []
+        mock_db_service.return_value = mock_db_instance
+
+        service = DashboardService()
+        service._get_recent_activity(self.workspace)
+
+        mock_db_instance.get_recent_webhook_activity.assert_called_once_with(
+            workspace_id=str(self.workspace.uuid), days=7, limit=100
+        )
+
+    @patch("core.services.dashboard.rate_limiter")
+    @patch("core.services.dashboard.DatabaseLookupService")
+    def test_recent_activity_isolates_workspaces(
+        self, mock_db_service, mock_rate_limiter
+    ):
+        """Test that each workspace queries with its own workspace_id."""
+        from core.services.dashboard import DashboardService
+
+        workspace_b = Workspace.objects.create(
+            name="Other Workspace",
+            shop_domain="other.myshopify.com",
+        )
+
+        mock_db_instance = Mock()
+        mock_db_instance.get_recent_webhook_activity.return_value = []
+        mock_db_service.return_value = mock_db_instance
+
+        service = DashboardService()
+
+        service._get_recent_activity(self.workspace)
+        service._get_recent_activity(workspace_b)
+
+        calls = mock_db_instance.get_recent_webhook_activity.call_args_list
+        self.assertEqual(len(calls), 2)
+
+        # First call uses workspace A's UUID
+        self.assertEqual(calls[0].kwargs["workspace_id"], str(self.workspace.uuid))
+        # Second call uses workspace B's UUID
+        self.assertEqual(calls[1].kwargs["workspace_id"], str(workspace_b.uuid))

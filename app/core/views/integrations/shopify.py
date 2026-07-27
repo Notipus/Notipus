@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+from typing import Any
 from urllib.parse import urlencode
 
 import requests
@@ -56,9 +57,10 @@ SHOPIFY_EVENT_CATEGORIES: dict[str, dict[str, str | list[str] | bool]] = {
 }
 
 # All available webhook topics (for backward compatibility)
-SHOPIFY_WEBHOOK_TOPICS = [
+SHOPIFY_WEBHOOK_TOPICS: list[str] = [
     topic
     for category in SHOPIFY_EVENT_CATEGORIES.values()
+    if isinstance(category["topics"], list)
     for topic in category["topics"]
 ]
 
@@ -72,10 +74,12 @@ def _get_topics_for_categories(enabled_categories: list[str]) -> list[str]:
     Returns:
         List of webhook topic strings.
     """
-    topics = []
+    topics: list[str] = []
     for category_key in enabled_categories:
         if category_key in SHOPIFY_EVENT_CATEGORIES:
-            topics.extend(SHOPIFY_EVENT_CATEGORIES[category_key]["topics"])
+            category_topics = SHOPIFY_EVENT_CATEGORIES[category_key]["topics"]
+            if isinstance(category_topics, list):
+                topics.extend(category_topics)
     return topics
 
 
@@ -203,6 +207,11 @@ def shopify_connect(request: HttpRequest) -> HttpResponseRedirect:
         "state": state,
     }
 
+    # Defense-in-depth: re-validate domain before constructing redirect URL
+    if not _is_valid_shop_domain(shop_domain):
+        messages.error(request, "Invalid Shopify store URL format")
+        return redirect("core:integrate_shopify")
+
     auth_url = f"https://{shop_domain}/admin/oauth/authorize?{urlencode(auth_params)}"
 
     logger.info(f"Redirecting to Shopify OAuth for shop: {shop_domain}")
@@ -278,7 +287,10 @@ def shopify_connect_callback(
         messages.error(request, "OAuth verification failed. Please try again.")
         return redirect("core:integrations")
 
-    # Exchange authorization code for access token
+    # Exchange authorization code for access token. This fails early
+    # (before the integration is stored) when SHOPIFY_CLIENT_SECRET is
+    # not configured, so an existing integration's webhook_secret is
+    # never overwritten with an empty value.
     token_data = _exchange_code_for_token(request, shop, code)
     if token_data is None:
         return redirect("core:integrations")
@@ -292,6 +304,7 @@ def shopify_connect_callback(
         return redirect("core:integrations")
 
     # Create webhook subscriptions for enabled categories
+    assert workspace is not None
     webhook_result = _create_webhook_subscriptions(
         request, workspace, shop, access_token, enabled_categories
     )
@@ -304,11 +317,15 @@ def shopify_connect_callback(
     else:
         webhook_ids = webhook_result
 
-    # Store or update Shopify integration
+    # Store or update Shopify integration.
+    # Webhooks created via the Admin API are signed with the app's client
+    # secret, so store it as the webhook secret for HMAC validation.
+    # SHOPIFY_CLIENT_SECRET is guaranteed non-empty by the check above.
     integration, created = Integration.objects.update_or_create(
         workspace=workspace,
         integration_type=INTEGRATION_TYPE,
         defaults={
+            "webhook_secret": settings.SHOPIFY_CLIENT_SECRET,
             "oauth_credentials": {
                 "access_token": access_token,
                 "scope": scope,
@@ -319,6 +336,7 @@ def shopify_connect_callback(
                 "enabled_categories": enabled_categories,
             },
             "is_active": True,
+            "webhook_verified_at": None,
         },
     )
 
@@ -425,6 +443,7 @@ def update_shopify_events(request: HttpRequest) -> HttpResponseRedirect:
         return redirect("core:integrate_shopify")
 
     # Update webhooks if categories changed
+    assert workspace is not None
     if set(new_categories) != set(old_categories):
         # Create new webhooks first (before deleting old ones) to minimize downtime
         # and avoid losing webhooks if creation fails
@@ -510,8 +529,7 @@ def _normalize_shop_domain(shop_url: str) -> tuple[str | None, str | None]:
     # Validate the shop name
     if not shop or not shop.replace("-", "").replace("_", "").isalnum():
         return None, (
-            "Invalid store name. "
-            "Use only letters, numbers, hyphens, and underscores."
+            "Invalid store name. Use only letters, numbers, hyphens, and underscores."
         )
 
     return f"{shop}.myshopify.com", None
@@ -577,8 +595,25 @@ def _exchange_code_for_token(request: HttpRequest, shop: str, code: str) -> dict
         code: The authorization code from Shopify.
 
     Returns:
-        Token data dict or None if exchange failed.
+        Token data dict or None if exchange failed (including when
+        SHOPIFY_CLIENT_SECRET is not configured).
     """
+    # The client secret is required both for the token exchange and as
+    # the stored webhook HMAC secret. Treat a missing secret as a failed
+    # connect instead of proceeding and persisting an empty
+    # webhook_secret (which would break validation of every webhook).
+    if not settings.SHOPIFY_CLIENT_SECRET:
+        logger.error("SHOPIFY_CLIENT_SECRET not configured")
+        messages.error(
+            request, "Shopify integration is not configured. Please contact support."
+        )
+        return None
+
+    if not _is_valid_shop_domain(shop):
+        logger.error(f"Invalid shop domain in token exchange: {shop}")
+        messages.error(request, "Invalid shop domain. Please try again.")
+        return None
+
     token_url = f"https://{shop}/admin/oauth/access_token"
 
     try:
@@ -612,7 +647,8 @@ def _exchange_code_for_token(request: HttpRequest, shop: str, code: str) -> dict
         messages.error(request, f"Shopify connection failed: {error_detail}")
         return None
 
-    return token_data
+    result: dict[str, Any] = token_data
+    return result
 
 
 def _create_webhook_subscriptions(
@@ -635,6 +671,11 @@ def _create_webhook_subscriptions(
     Returns:
         List of created webhook IDs or None if failed.
     """
+    if not _is_valid_shop_domain(shop):
+        logger.error(f"Invalid shop domain in webhook creation: {shop}")
+        messages.error(request, "Invalid shop domain. Please try again.")
+        return None
+
     if enabled_categories is None:
         enabled_categories = _get_default_categories()
 
@@ -708,7 +749,7 @@ def _delete_webhook_subscriptions(integration: Integration) -> None:
     access_token = integration.oauth_credentials.get("access_token")
     webhook_ids = integration.integration_settings.get("webhook_ids", [])
 
-    if not shop or not access_token:
+    if not shop or not access_token or not _is_valid_shop_domain(shop):
         return
 
     api_version = settings.SHOPIFY_API_VERSION

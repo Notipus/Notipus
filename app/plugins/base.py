@@ -22,7 +22,8 @@ class PluginType(Enum):
     Each type has a dedicated subpackage and base class.
     """
 
-    ENRICHMENT = "enrichment"
+    ENRICHMENT = "enrichment"  # Domain/company enrichment
+    EMAIL_ENRICHMENT = "email_enrichment"  # Person/email enrichment
     SOURCE = "source"
     DESTINATION = "destination"
 
@@ -34,7 +35,7 @@ class PluginCapability(Enum):
     they can retrieve, but can be extended for other plugin types.
     """
 
-    # Enrichment capabilities
+    # Domain enrichment capabilities (company data)
     LOGO = "logo"
     DESCRIPTION = "description"
     INDUSTRY = "industry"
@@ -43,6 +44,15 @@ class PluginCapability(Enum):
     FUNDING = "funding"
     COLORS = "colors"
     YEAR_FOUNDED = "year_founded"
+
+    # Email enrichment capabilities (person data)
+    PERSON_NAME = "person_name"
+    JOB_TITLE = "job_title"
+    SENIORITY = "seniority"
+    PERSON_LINKEDIN = "person_linkedin"
+    PERSON_TWITTER = "person_twitter"
+    PERSON_GITHUB = "person_github"
+    PERSON_LOCATION = "person_location"
 
     # Source capabilities
     WEBHOOK_VALIDATION = "webhook_validation"

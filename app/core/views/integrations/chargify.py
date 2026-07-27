@@ -43,9 +43,11 @@ def integrate_chargify(request: HttpRequest) -> HttpResponse | HttpResponseRedir
     ).first()
 
     if request.method == "POST":
+        assert workspace is not None
         return _handle_chargify_connect(request, workspace, existing_integration)
 
     # Generate webhook URL for this workspace
+    assert workspace is not None
     webhook_url = f"{settings.BASE_URL}/webhook/customer/{workspace.uuid}/chargify/"
 
     context: dict[str, Any] = {
@@ -80,6 +82,7 @@ def _handle_chargify_connect(
     if existing_integration:
         # Update existing integration
         existing_integration.webhook_secret = webhook_secret
+        existing_integration.webhook_verified_at = None
         existing_integration.save()
         logger.info(f"Chargify integration updated for workspace {workspace.name}")
         messages.success(request, "Chargify/Maxio integration updated successfully!")

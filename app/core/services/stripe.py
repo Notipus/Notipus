@@ -5,10 +5,11 @@ official Stripe SDK, including Checkout Sessions and Customer Portal.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import stripe
 from django.conf import settings
+from django.db import transaction
 
 if TYPE_CHECKING:
     from core.models import Workspace
@@ -38,6 +39,45 @@ def _safe_getattr(obj: Any, attr: str, default: Any = None) -> Any:
         return default
 
 
+def _metadata_to_dict(metadata: Any) -> dict[str, Any]:
+    """Convert Stripe metadata to a plain dictionary.
+
+    Stripe SDK metadata is a StripeObject, which is not a Mapping: passing
+    it to dict() or calling .get() on it raises at runtime. Plain mappings
+    (e.g. test doubles) are converted with dict().
+
+    Args:
+        metadata: Stripe metadata object, mapping, or None.
+
+    Returns:
+        A plain dictionary of the metadata, empty if metadata is falsy.
+    """
+    if not metadata:
+        return {}
+    if isinstance(metadata, stripe.StripeObject):
+        return metadata.to_dict()
+    return dict(metadata)
+
+
+def _product_to_dict(product: Any) -> dict[str, Any]:
+    """Serialize a Stripe product into a plain dictionary.
+
+    Args:
+        product: A Stripe product object.
+
+    Returns:
+        Dictionary with the product's id, name, description, metadata,
+        and active flag.
+    """
+    return {
+        "id": product.id,
+        "name": product.name,
+        "description": product.description,
+        "metadata": _metadata_to_dict(_safe_getattr(product, "metadata")),
+        "active": product.active,
+    }
+
+
 class StripeAPI:
     """API client for Stripe operations using the official Stripe SDK.
 
@@ -56,8 +96,11 @@ class StripeAPI:
                      settings.STRIPE_SECRET_KEY (for Notipus billing).
         """
         self.api_key = api_key or settings.STRIPE_SECRET_KEY
-        # Configure Stripe with the secret key and API version
-        stripe.api_key = self.api_key
+        # The key is passed per SDK call (api_key=self.api_key), never
+        # assigned to the module-global stripe.api_key: a global would
+        # leak this instance's key into concurrent requests using a
+        # different one. The API version is safe to set globally — it is
+        # identical for every caller.
         stripe.api_version = settings.STRIPE_API_VERSION
 
     def get_account_info(self) -> dict[str, Any] | None:
@@ -67,11 +110,8 @@ class StripeAPI:
             Dict with account info if successful, None if API key is invalid.
         """
         try:
-            # Temporarily set the API key for this request
-            stripe.api_key = self.api_key
-
             # Retrieve the connected account info
-            account = stripe.Account.retrieve()
+            account = stripe.Account.retrieve(api_key=self.api_key)
             return {
                 "id": account.id,
                 "business_profile": {
@@ -84,10 +124,10 @@ class StripeAPI:
                 "country": account.country,
                 "default_currency": account.default_currency,
             }
-        except stripe.error.AuthenticationError as e:
+        except stripe.AuthenticationError as e:
             logger.warning(f"Invalid Stripe API key: {e!s}")
             return None
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error retrieving account: {e!s}")
             return None
         except Exception as e:
@@ -108,12 +148,10 @@ class StripeAPI:
         """
         try:
             # Configure Stripe API key for this operation
-            stripe.api_key = self.api_key
-
             # Use Stripe SDK to create customer
-            customer = stripe.Customer.create(**customer_data)
+            customer = stripe.Customer.create(api_key=self.api_key, **customer_data)
             return customer.to_dict()
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating customer: {e!s}")
             return None
         except Exception as e:
@@ -135,19 +173,59 @@ class StripeAPI:
             Created customer data dictionary, or None on failure.
         """
         try:
-            # Configure Stripe API key and version for this operation
-            stripe.api_key = settings.STRIPE_SECRET_KEY
             stripe.api_version = settings.STRIPE_API_VERSION
 
-            # Use Stripe SDK to create customer
-            customer = stripe.Customer.create(**customer_data)
+            # Use Stripe SDK to create customer; key passed per call, not
+            # via the module-global (see __init__).
+            customer = stripe.Customer.create(
+                api_key=settings.STRIPE_SECRET_KEY, **customer_data
+            )
             return customer.to_dict()
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating customer: {e!s}")
             return None
         except Exception as e:
             logger.error(f"Unexpected error creating Stripe customer: {e!s}")
             return None
+
+    def _create_customer_idempotent(
+        self,
+        workspace_uuid: Any,
+        workspace_id: Any,
+        workspace_name: str,
+        member_email: str | None,
+    ) -> stripe.Customer:
+        """Create the Stripe customer with a stable idempotency key, then
+        apply mutable display fields (name, email) via a follow-up modify.
+
+        The idempotent payload is intentionally minimal — only the immutable
+        workspace identifiers. Stripe rejects an idempotency replay whose
+        params differ from the original (e.g. 24h ago "name=Old"; now
+        "name=New" after a rename), so mutable fields must NOT travel
+        through the create call. Modify failures are non-fatal: the customer
+        exists and is correctly linked via metadata.
+        """
+        customer = stripe.Customer.create(
+            api_key=self.api_key,
+            idempotency_key=f"workspace-customer-{workspace_uuid}",
+            metadata={
+                "workspace_id": str(workspace_id),
+                "workspace_uuid": str(workspace_uuid),
+            },
+        )
+
+        modify_params: dict[str, Any] = {"name": workspace_name}
+        if member_email:
+            modify_params["email"] = member_email
+        try:
+            stripe.Customer.modify(customer.id, api_key=self.api_key, **modify_params)
+        except stripe.StripeError as modify_err:
+            logger.warning(
+                f"Failed to set name/email on Stripe customer "
+                f"{customer.id}: {modify_err!s}"
+            )
+
+        return customer
 
     def get_or_create_customer(self, workspace: "Workspace") -> dict[str, Any] | None:
         """Get existing Stripe customer or create a new one for the workspace.
@@ -156,58 +234,101 @@ class StripeAPI:
         that customer. Otherwise, creates a new customer and updates
         the workspace with the new customer ID.
 
+        The Stripe.Customer.create call uses an idempotency key derived
+        from the workspace UUID, so two concurrent callers always get
+        the same Stripe customer back even though Stripe sees two requests.
+        DB locks are kept to short read-then-check and short write-then-check
+        windows; the network call to Stripe runs outside any row lock so a
+        slow Stripe response doesn't block unrelated traffic.
+
         Args:
             workspace: The Workspace instance.
 
         Returns:
             Customer data dictionary, or None on failure.
         """
-        try:
-            stripe.api_key = self.api_key
+        # Local import to avoid circular import at module load.
+        from core.models import Workspace as WorkspaceModel
 
-            # If workspace already has a Stripe customer, retrieve it
-            if workspace.stripe_customer_id:
+        try:
+            # Phase 1: short locked read. If a customer already exists,
+            # confirm it with Stripe and return early.
+            with transaction.atomic():
+                fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
+                existing_customer_id = fresh.stripe_customer_id
+                workspace_name = fresh.name
+                workspace_id = fresh.id
+                workspace_uuid = fresh.uuid
+                # Single JOINed query under the row lock instead of
+                # exists()+first()+lazy user fetch (3 queries) — keeps
+                # the select_for_update window small.
+                member_email: str | None = None
+                if hasattr(fresh, "members"):
+                    first_member = fresh.members.select_related("user").first()
+                    if first_member and first_member.user.email:
+                        member_email = first_member.user.email
+
+            if existing_customer_id:
                 try:
-                    customer = stripe.Customer.retrieve(workspace.stripe_customer_id)
-                    # Check if customer was deleted
+                    customer = stripe.Customer.retrieve(
+                        existing_customer_id, api_key=self.api_key
+                    )
                     if not _safe_getattr(customer, "deleted", False):
+                        workspace.stripe_customer_id = existing_customer_id
                         return customer.to_dict()
                     logger.warning(
-                        f"Stripe customer {workspace.stripe_customer_id} was deleted"
+                        f"Stripe customer {existing_customer_id} was deleted"
                     )
-                except stripe.error.InvalidRequestError:
-                    logger.warning(
-                        f"Stripe customer {workspace.stripe_customer_id} not found"
-                    )
+                except stripe.InvalidRequestError:
+                    logger.warning(f"Stripe customer {existing_customer_id} not found")
 
-            # Create new customer
-            customer_data = {
-                "name": workspace.name,
-                "metadata": {
-                    "workspace_id": str(workspace.id),
-                    "workspace_uuid": str(workspace.uuid),
-                },
-            }
+            # Phase 2: create the customer outside any DB lock. Two concurrent
+            # callers send the same idempotency key, so Stripe creates exactly
+            # one customer and returns the same id to both. Mutable fields
+            # (name/email) are applied in a separate non-idempotent call to
+            # keep the idempotent payload stable across retries.
+            customer = self._create_customer_idempotent(
+                workspace_uuid=workspace_uuid,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                member_email=member_email,
+            )
 
-            # Add email if workspace has members
-            if hasattr(workspace, "members") and workspace.members.exists():
-                first_member = workspace.members.first()
-                if first_member and first_member.user.email:
-                    customer_data["email"] = first_member.user.email
-
-            customer = stripe.Customer.create(**customer_data)
-
-            # Update workspace with new customer ID
-            workspace.stripe_customer_id = customer.id
-            workspace.save(update_fields=["stripe_customer_id"])
+            # Phase 3: short locked write. Overwrite if either (a) the row
+            # is empty, or (b) it still points at the known-bad id we saw
+            # in Phase 1 (deleted/missing on Stripe). A concurrent racer
+            # that already wrote a different id wins — the idempotency key
+            # ensures their id is the same Stripe customer as ours.
+            with transaction.atomic():
+                fresh = WorkspaceModel.objects.select_for_update().get(pk=workspace.pk)
+                if (
+                    not fresh.stripe_customer_id
+                    or fresh.stripe_customer_id == existing_customer_id
+                ):
+                    fresh.stripe_customer_id = customer.id
+                    fresh.save(update_fields=["stripe_customer_id"])
+                persisted_customer_id = fresh.stripe_customer_id
+                workspace.stripe_customer_id = persisted_customer_id
 
             logger.info(
-                f"Created Stripe customer {customer.id} "
-                f"for workspace {workspace.id}"
+                f"Created Stripe customer {customer.id} for workspace {workspace_id}"
             )
-            return customer.to_dict()
 
-        except stripe.error.StripeError as e:
+            # Return the customer that was actually persisted on the
+            # workspace, not necessarily the one we created in Phase 2.
+            # In the common case the idempotency key guarantees the two
+            # ids match; defending here keeps the contract honest if a
+            # concurrent racer ever wrote a different id (e.g. if the
+            # idempotency-key derivation is changed in the future) so
+            # callers can't end up using a customer id that doesn't
+            # match what's stored on the workspace.
+            if customer.id == persisted_customer_id:
+                return customer.to_dict()
+            return stripe.Customer.retrieve(
+                persisted_customer_id, api_key=self.api_key
+            ).to_dict()
+
+        except stripe.StripeError as e:
             logger.error(f"Stripe error in get_or_create_customer: {e!s}")
             return None
         except Exception as e:
@@ -222,6 +343,7 @@ class StripeAPI:
         cancel_url: str | None = None,
         metadata: dict[str, str] | None = None,
         trial_period_days: int | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any] | None:
         """Create a Stripe Checkout Session for subscription.
 
@@ -233,13 +355,15 @@ class StripeAPI:
             metadata: Additional metadata to attach to the session.
             trial_period_days: Number of days for trial period. If set,
                 the subscription will start with a trial period.
+            idempotency_key: Stripe idempotency key. Repeated calls with
+                the same key (within Stripe's 24h window) return the
+                existing session instead of creating a new one. Recommended
+                whenever the caller can derive a stable key per intent.
 
         Returns:
             Checkout session data with 'url' for redirect, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             # Append session_id to success URL for retrieval after redirect
             # This avoids session cookie issues with cross-site redirects
             from urllib.parse import urlparse
@@ -277,7 +401,12 @@ class StripeAPI:
             if subscription_data:
                 session_params["subscription_data"] = subscription_data
 
-            session = stripe.checkout.Session.create(**session_params)
+            if idempotency_key:
+                session_params["idempotency_key"] = idempotency_key
+
+            session = stripe.checkout.Session.create(
+                api_key=self.api_key, **session_params
+            )
 
             logger.info(
                 f"Created checkout session {session.id} for customer {customer_id}"
@@ -289,7 +418,7 @@ class StripeAPI:
                 "status": session.status,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating checkout session: {e!s}")
             return None
         except Exception as e:
@@ -311,23 +440,88 @@ class StripeAPI:
             return None
 
         try:
-            stripe.api_key = self.api_key
-            session = stripe.checkout.Session.retrieve(session_id)
+            session = stripe.checkout.Session.retrieve(session_id, api_key=self.api_key)
 
             return {
                 "id": session.id,
                 "customer": session.customer,
                 "status": session.status,
-                "metadata": dict(session.metadata) if session.metadata else {},
+                "metadata": _metadata_to_dict(_safe_getattr(session, "metadata")),
                 "subscription": session.subscription,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error retrieving checkout session: {e!s}")
             return None
         except Exception as e:
             logger.error(f"Unexpected error retrieving checkout session: {e!s}")
             return None
+
+    def get_price(self, price_id: str) -> dict[str, Any] | None:
+        """Retrieve a Stripe price by id.
+
+        Args:
+            price_id: The Stripe price ID.
+
+        Returns:
+            Dict with id, unit_amount, and currency, or None on failure.
+        """
+        try:
+            price = stripe.Price.retrieve(price_id, api_key=self.api_key)
+            return {
+                "id": price.id,
+                "unit_amount": _safe_getattr(price, "unit_amount"),
+                "currency": _safe_getattr(price, "currency"),
+            }
+        except stripe.StripeError as e:
+            logger.warning(f"Stripe error retrieving price {price_id}: {e!s}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error retrieving price {price_id}: {e!s}")
+            return None
+
+    def expire_open_checkout_sessions(self, customer_id: str) -> int:
+        """Expire all open Checkout Sessions for a customer.
+
+        Called before creating a new checkout session so a customer can
+        never hold two live sessions at once — completing a stale
+        session after paying a newer one would create a second
+        subscription (double-billing). Best-effort: failures are logged
+        and must not block the new checkout.
+
+        Args:
+            customer_id: The Stripe customer ID.
+
+        Returns:
+            Number of sessions expired.
+        """
+        expired = 0
+        try:
+            sessions = stripe.checkout.Session.list(
+                customer=customer_id, status="open", limit=100, api_key=self.api_key
+            )
+            # auto_paging_iter follows has_more so no open session can
+            # hide beyond the first page.
+            for session in sessions.auto_paging_iter():
+                session_id = _safe_getattr(session, "id")
+                if not session_id:
+                    continue
+                try:
+                    stripe.checkout.Session.expire(session_id, api_key=self.api_key)
+                    expired += 1
+                except stripe.StripeError as e:
+                    logger.warning(
+                        f"Could not expire checkout session {session_id}: {e!s}"
+                    )
+        except stripe.StripeError as e:
+            logger.warning(
+                f"Could not list open checkout sessions for {customer_id}: {e!s}"
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error expiring checkout sessions: {e!s}")
+        if expired:
+            logger.info(f"Expired {expired} open checkout session(s) for {customer_id}")
+        return expired
 
     def create_portal_session(
         self,
@@ -347,9 +541,8 @@ class StripeAPI:
             Portal session data with 'url' for redirect, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             session = stripe.billing_portal.Session.create(
+                api_key=self.api_key,
                 customer=customer_id,
                 return_url=return_url or settings.STRIPE_PORTAL_RETURN_URL,
             )
@@ -361,7 +554,7 @@ class StripeAPI:
                 "customer": session.customer,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating portal session: {e!s}")
             return None
         except Exception as e:
@@ -386,7 +579,8 @@ class StripeAPI:
 
         features_raw = metadata.get("features", "")
         try:
-            return json.loads(features_raw)
+            result: list[str] = json.loads(features_raw)
+            return result
         except (json.JSONDecodeError, TypeError):
             # Features might be comma-separated string
             return [f.strip() for f in str(features_raw).split(",") if f.strip()]
@@ -401,6 +595,7 @@ class StripeAPI:
         Returns:
             Formatted price data dictionary.
         """
+        metadata = _metadata_to_dict(_safe_getattr(product, "metadata"))
         price_data: dict[str, Any] = {
             "id": price.id,
             "product_id": product.id,
@@ -409,8 +604,8 @@ class StripeAPI:
             "unit_amount": price.unit_amount,
             "currency": price.currency,
             "recurring": None,
-            "metadata": dict(product.metadata) if product.metadata else {},
-            "features": self._extract_features_from_metadata(product.metadata),
+            "metadata": metadata,
+            "features": self._extract_features_from_metadata(metadata),
         }
 
         if price.recurring:
@@ -438,8 +633,6 @@ class StripeAPI:
             List of price dictionaries with product info.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {
                 "limit": limit,
                 "expand": ["data.product"],
@@ -448,13 +641,13 @@ class StripeAPI:
             if active_only:
                 params["active"] = True
 
-            prices = stripe.Price.list(**params)
+            prices = stripe.Price.list(api_key=self.api_key, **params)
 
             result = []
             for price in prices.data:
                 product = price.product
                 if isinstance(product, str):
-                    product = stripe.Product.retrieve(product)
+                    product = stripe.Product.retrieve(product, api_key=self.api_key)
 
                 # Apply filters
                 if product_ids and product.id not in product_ids:
@@ -467,7 +660,7 @@ class StripeAPI:
             logger.info(f"Retrieved {len(result)} prices from Stripe")
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error listing prices: {e!s}")
             return []
         except Exception as e:
@@ -532,12 +725,15 @@ class StripeAPI:
             if isinstance(product, str):
                 # Product is not expanded, fetch it from Stripe
                 try:
-                    fetched_product = stripe.Product.retrieve(product)
+                    fetched_product = stripe.Product.retrieve(
+                        product, api_key=self.api_key
+                    )
                     product_name = fetched_product.name
                     # Prefer metadata.plan_name if available (more reliable)
-                    if hasattr(fetched_product, "metadata"):
-                        plan_name = fetched_product.metadata.get("plan_name")
-                except stripe.error.StripeError:
+                    plan_name = _metadata_to_dict(
+                        _safe_getattr(fetched_product, "metadata")
+                    ).get("plan_name")
+                except stripe.StripeError:
                     product_name = None
             elif product:
                 # Product is expanded as a dict or object
@@ -559,37 +755,114 @@ class StripeAPI:
 
         return items
 
+    def has_live_subscription(
+        self,
+        customer_id: str,
+        raise_on_error: bool = False,
+    ) -> bool:
+        """Return True if the customer has any live subscription on Stripe.
+
+        "Live" = active, trialing, or past_due. Queries each live status
+        with limit=1 and short-circuits on the first hit, so a customer
+        with a long history of canceled subscriptions doesn't force the
+        caller to paginate the entire history just to answer yes/no.
+        Use this in checkout-time guards instead of
+        get_customer_subscriptions(status="all"), which materializes the
+        full list.
+
+        Args:
+            customer_id: Stripe customer ID.
+            raise_on_error: If True, propagate Stripe errors instead of
+                returning False. Use this from callers that must not
+                conflate "no live sub" with "couldn't check" — e.g. the
+                duplicate-subscription guard during checkout.
+
+        Raises:
+            stripe.StripeError: When raise_on_error=True and the Stripe
+                API call fails. Default callers continue to receive False
+                on error.
+        """
+        live_statuses: tuple[Literal["active", "trialing", "past_due"], ...] = (
+            "active",
+            "trialing",
+            "past_due",
+        )
+        try:
+            for status in live_statuses:
+                response = stripe.Subscription.list(
+                    customer=customer_id,
+                    status=status,
+                    limit=1,
+                    api_key=self.api_key,
+                )
+                if response.data:
+                    return True
+            return False
+        except stripe.StripeError as e:
+            logger.error(f"Stripe error checking live subscriptions: {e!s}")
+            if raise_on_error:
+                raise
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error checking live subscriptions: {e!s}")
+            if raise_on_error:
+                raise
+            return False
+
     def get_customer_subscriptions(
         self,
         customer_id: str,
         status: str = "all",
+        raise_on_error: bool = False,
+        max_results: int | None = None,
     ) -> list[dict[str, Any]]:
         """Get subscriptions for a customer.
 
         Args:
             customer_id: Stripe customer ID.
             status: Filter by status ('all', 'active', 'canceled', etc.).
+            raise_on_error: If True, propagate Stripe errors instead of
+                swallowing them and returning []. Use this from callers
+                that need to fail closed — e.g. the duplicate-subscription
+                guard, where "no subs" and "couldn't check" must not be
+                conflated or a transient Stripe outage will let a second
+                live subscription through.
+            max_results: Stop after collecting this many subscriptions.
+                Default (None) walks the full history via auto_paging_iter
+                — necessary for callers that need exhaustive coverage.
+                Latency-sensitive callers (sync, dashboard) can cap the
+                walk to avoid paying N Stripe round-trips on customers
+                with long churn histories.
 
         Returns:
             List of subscription dictionaries.
+
+        Raises:
+            stripe.StripeError: When raise_on_error=True and the Stripe API
+                call fails. Default callers continue to receive [] on error.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {
                 "customer": customer_id,
                 # Note: Can't expand data.items.data.price.product (5 levels > 4 max)
                 # Expand only to price level, fetch product separately if needed
                 "expand": ["data.items.data.price"],
+                # max page size; auto_paging_iter still pages beyond this
+                "limit": 100,
+                # Always pass status through, including "all". Omitting it on
+                # Stripe means "any status except canceled", which silently
+                # hides canceled subs from callers that asked for "all" — and
+                # defeats the duplicate-sub guard's auto_paging_iter, whose
+                # whole point was to surface canceled-history pages too.
+                "status": status,
             }
 
-            if status != "all":
-                params["status"] = status
-
-            subscriptions = stripe.Subscription.list(**params)
-
+            # auto_paging_iter walks every page, so a customer with more
+            # subscriptions than fits on one page (e.g. an account with many
+            # canceled ones) doesn't hide an off-page live one from callers.
             result = []
-            for sub in subscriptions.data:
+            subscription_list = stripe.Subscription.list(api_key=self.api_key, **params)
+            for sub in subscription_list.auto_paging_iter():
                 # Use _safe_getattr for attributes that may be missing
                 # on canceled/incomplete subscriptions. Stripe SDK's __getattr__
                 # raises KeyError (not AttributeError) for missing attributes.
@@ -598,6 +871,10 @@ class StripeAPI:
                     "status": sub.status,
                     "current_period_start": _safe_getattr(sub, "current_period_start"),
                     "current_period_end": _safe_getattr(sub, "current_period_end"),
+                    # trial_end can diverge from current_period_end (support
+                    # extends a trial, custom billing_cycle_anchor), so callers
+                    # that compute trial expiry must get the real field.
+                    "trial_end": _safe_getattr(sub, "trial_end"),
                     "cancel_at_period_end": _safe_getattr(
                         sub, "cancel_at_period_end", False
                     ),
@@ -605,14 +882,20 @@ class StripeAPI:
                     "items": self._extract_subscription_items(sub),
                 }
                 result.append(sub_data)
+                if max_results is not None and len(result) >= max_results:
+                    break
 
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error getting subscriptions: {e!s}")
+            if raise_on_error:
+                raise
             return []
         except Exception as e:
             logger.error(f"Unexpected error getting subscriptions: {e!s}")
+            if raise_on_error:
+                raise
             return []
 
     def get_invoices(
@@ -630,11 +913,10 @@ class StripeAPI:
             List of invoice dictionaries.
         """
         try:
-            stripe.api_key = self.api_key
-
             invoices = stripe.Invoice.list(
                 customer=customer_id,
                 limit=limit,
+                api_key=self.api_key,
             )
 
             result = []
@@ -657,7 +939,7 @@ class StripeAPI:
 
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error getting invoices: {e!s}")
             return []
         except Exception as e:
@@ -676,11 +958,10 @@ class StripeAPI:
             Price data dictionary, or None if not found.
         """
         try:
-            stripe.api_key = self.api_key
-
             prices = stripe.Price.list(
                 lookup_keys=[lookup_key],
                 expand=["data.product"],
+                api_key=self.api_key,
             )
 
             if not prices.data:
@@ -699,7 +980,7 @@ class StripeAPI:
                 "lookup_key": price.lookup_key,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error getting price by lookup key: {e!s}")
             return None
         except Exception as e:
@@ -723,8 +1004,6 @@ class StripeAPI:
             Created product data dictionary, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             product_params: dict[str, Any] = {
                 "name": name,
             }
@@ -735,18 +1014,12 @@ class StripeAPI:
             if metadata:
                 product_params["metadata"] = metadata
 
-            product = stripe.Product.create(**product_params)
+            product = stripe.Product.create(api_key=self.api_key, **product_params)
 
             logger.info(f"Created Stripe product {product.id}: {name}")
-            return {
-                "id": product.id,
-                "name": product.name,
-                "description": product.description,
-                "metadata": dict(product.metadata) if product.metadata else {},
-                "active": product.active,
-            }
+            return _product_to_dict(product)
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating product: {e!s}")
             return None
         except Exception as e:
@@ -774,8 +1047,6 @@ class StripeAPI:
             Created price data dictionary, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             price_params: dict[str, Any] = {
                 "product": product_id,
                 "unit_amount": unit_amount,
@@ -788,7 +1059,7 @@ class StripeAPI:
                 # Transfer lookup key if it already exists on another price
                 price_params["transfer_lookup_key"] = True
 
-            price = stripe.Price.create(**price_params)
+            price = stripe.Price.create(api_key=self.api_key, **price_params)
 
             logger.info(
                 f"Created Stripe price {price.id} for product {product_id}: "
@@ -802,12 +1073,14 @@ class StripeAPI:
                 "recurring": {
                     "interval": price.recurring.interval,
                     "interval_count": price.recurring.interval_count,
-                },
+                }
+                if price.recurring
+                else None,
                 "lookup_key": price.lookup_key,
                 "active": price.active,
             }
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error creating price: {e!s}")
             return None
         except Exception as e:
@@ -829,31 +1102,19 @@ class StripeAPI:
             List of product dictionaries.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {"limit": limit}
 
             if active_only:
                 params["active"] = True
 
-            products = stripe.Product.list(**params)
+            products = stripe.Product.list(api_key=self.api_key, **params)
 
-            result = []
-            for product in products.data:
-                result.append(
-                    {
-                        "id": product.id,
-                        "name": product.name,
-                        "description": product.description,
-                        "metadata": dict(product.metadata) if product.metadata else {},
-                        "active": product.active,
-                    }
-                )
+            result = [_product_to_dict(product) for product in products.data]
 
             logger.info(f"Retrieved {len(result)} products from Stripe")
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error listing products: {e!s}")
             return []
         except Exception as e:
@@ -875,27 +1136,20 @@ class StripeAPI:
             Product data dictionary if found, None otherwise.
         """
         try:
-            stripe.api_key = self.api_key
-
             # Stripe doesn't support direct metadata filtering in list,
             # so we need to fetch all and filter
-            products = stripe.Product.list(limit=100, active=True)
+            products = stripe.Product.list(limit=100, active=True, api_key=self.api_key)
 
             for product in products.data:
-                if product.metadata and product.metadata.get(key) == value:
+                metadata = _metadata_to_dict(_safe_getattr(product, "metadata"))
+                if metadata.get(key) == value:
                     logger.info(f"Found product {product.id} with {key}={value}")
-                    return {
-                        "id": product.id,
-                        "name": product.name,
-                        "description": product.description,
-                        "metadata": dict(product.metadata),
-                        "active": product.active,
-                    }
+                    return _product_to_dict(product)
 
             logger.info(f"No product found with metadata {key}={value}")
             return None
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error searching products: {e!s}")
             return None
         except Exception as e:
@@ -921,8 +1175,6 @@ class StripeAPI:
             Updated product data dictionary, or None on failure.
         """
         try:
-            stripe.api_key = self.api_key
-
             update_params: dict[str, Any] = {}
 
             if name is not None:
@@ -936,18 +1188,14 @@ class StripeAPI:
                 logger.warning("No update parameters provided for product")
                 return None
 
-            product = stripe.Product.modify(product_id, **update_params)
+            product = stripe.Product.modify(
+                product_id, api_key=self.api_key, **update_params
+            )
 
             logger.info(f"Updated Stripe product {product.id}")
-            return {
-                "id": product.id,
-                "name": product.name,
-                "description": product.description,
-                "metadata": dict(product.metadata) if product.metadata else {},
-                "active": product.active,
-            }
+            return _product_to_dict(product)
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Stripe error updating product: {e!s}")
             return None
         except Exception as e:
@@ -967,11 +1215,10 @@ class StripeAPI:
             True if successfully archived, False otherwise.
         """
         try:
-            stripe.api_key = self.api_key
-            stripe.Product.modify(product_id, active=False)
+            stripe.Product.modify(product_id, active=False, api_key=self.api_key)
             logger.info(f"Archived Stripe product: {product_id}")
             return True
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Failed to archive product {product_id}: {e!s}")
             return False
         except Exception as e:
@@ -991,11 +1238,10 @@ class StripeAPI:
             True if successfully archived, False otherwise.
         """
         try:
-            stripe.api_key = self.api_key
-            stripe.Price.modify(price_id, active=False)
+            stripe.Price.modify(price_id, active=False, api_key=self.api_key)
             logger.info(f"Archived Stripe price: {price_id}")
             return True
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Failed to archive price {price_id}: {e!s}")
             return False
         except Exception as e:
@@ -1017,8 +1263,6 @@ class StripeAPI:
             List of price dictionaries.
         """
         try:
-            stripe.api_key = self.api_key
-
             params: dict[str, Any] = {
                 "product": product_id,
                 "limit": 100,
@@ -1026,7 +1270,7 @@ class StripeAPI:
             if active_only:
                 params["active"] = True
 
-            prices = stripe.Price.list(**params)
+            prices = stripe.Price.list(api_key=self.api_key, **params)
 
             result = []
             for price in prices.data:
@@ -1050,7 +1294,7 @@ class StripeAPI:
             logger.info(f"Retrieved {len(result)} prices for product {product_id}")
             return result
 
-        except stripe.error.StripeError as e:
+        except stripe.StripeError as e:
             logger.error(f"Failed to list prices for {product_id}: {e!s}")
             return []
         except Exception as e:

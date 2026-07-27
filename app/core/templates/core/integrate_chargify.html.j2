@@ -28,8 +28,8 @@
 
         <!-- Main content -->
         <div class="max-w-4xl mx-auto py-8 sm:px-6 lg:px-8">
-            {% if existing_integration %}
-                <!-- Already Connected -->
+            {% if existing_integration and existing_integration.is_webhook_verified %}
+                <!-- Verified Connected -->
                 <div class="bg-green-50 border border-green-200 rounded-xl p-6 mb-8">
                     <div class="flex">
                         <div class="flex-shrink-0">
@@ -44,6 +44,26 @@
                             <h3 class="text-sm font-medium text-green-800">Chargify is connected!</h3>
                             <div class="mt-2 text-sm text-green-700">
                                 <p>Your Chargify account is successfully connected. You can update your webhook secret below if needed.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% elif existing_integration %}
+                <!-- Awaiting Webhook Verification -->
+                <div class="bg-amber-50 border border-amber-200 rounded-xl p-6 mb-8">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-amber-400"
+                                 fill="currentColor"
+                                 viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.828a1 1 0 101.415-1.414L11 9.586V6z" clip-rule="evenodd">
+                                </path>
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-amber-800">Awaiting webhook verification</h3>
+                            <div class="mt-2 text-sm text-amber-700">
+                                <p>Your Chargify credentials have been saved. Send a test webhook from Chargify to verify the connection.</p>
                             </div>
                         </div>
                     </div>
@@ -78,8 +98,7 @@
                             <input type="password"
                                    name="webhook_secret"
                                    id="webhook_secret"
-                                   value="{% if existing_integration %}{{ existing_integration.webhook_secret }}{% endif %}"
-                                   class="shadow-sm focus:ring-primary-500 focus:border-primary-500 block w-full sm:text-sm border-gray-300 rounded-md"
+                                   class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 block w-full p-2.5"
                                    placeholder="Enter your Chargify webhook secret"
                                    required>
                         </div>
@@ -191,6 +210,31 @@
                 </div>
             </div>
 
+            <!-- Email instructions to a colleague -->
+            <div class="mt-8 bg-white shadow-lg rounded-xl border border-gray-100 p-8">
+                <h3 class="text-lg font-semibold text-gray-900 mb-2">✉️ Not the person with Chargify access?</h3>
+                <p class="text-sm text-gray-600 mb-4">
+                    Email these instructions to the teammate who manages your Chargify/Maxio account.
+                    They'll add the webhook and send you back the secret to paste above.
+                </p>
+                <form method="post"
+                      action="{% url 'core:email_setup_instructions' 'chargify' %}"
+                      class="flex flex-col sm:flex-row gap-3">
+                    {% csrf_token %}
+                    <input type="email"
+                           name="recipient_email"
+                           required
+                           autocomplete="email"
+                           aria-label="Colleague's email address"
+                           placeholder="colleague@yourcompany.com"
+                           class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-primary-500 focus:border-primary-500 block w-full p-2.5">
+                    <button type="submit"
+                            class="inline-flex items-center justify-center px-4 py-2.5 text-sm font-medium rounded-lg text-primary-600 bg-primary-100 hover:bg-primary-200 transition-colors">
+                        Send instructions
+                    </button>
+                </form>
+            </div>
+
             <!-- Benefits -->
             <div class="mt-8 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-6 border border-blue-200">
                 <h3 class="text-lg font-semibold text-blue-900 mb-4">🎯 What you'll get with Chargify/Maxio integration:</h3>
@@ -239,12 +283,7 @@
     <!-- JavaScript for copy to clipboard -->
     <script>
         function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(function() {
-                // You could add a toast notification here
-                alert('Webhook URL copied to clipboard!');
-            }, function(err) {
-                console.error('Could not copy text: ', err);
-            });
+            NotipusUI.copyToClipboard(text);
         }
     </script>
 {% endblock content %}

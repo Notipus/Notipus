@@ -1,0 +1,296 @@
+{% extends "core/base.html.j2" %}
+
+{% block title %}
+    Connect Hunter.io - Notipus
+{% endblock title %}
+
+{% block content %}
+    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-orange-50">
+        <!-- Header -->
+        <div class="bg-white shadow-sm">
+            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                <div class="md:flex md:items-center md:justify-between">
+                    <div class="flex-1 min-w-0">
+                        <h2 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl flex items-center gap-3">
+                            <div class="w-10 h-10 bg-[#ff5722] rounded-lg flex items-center justify-center">
+                                <i class="ti ti-mail-search text-white text-xl"></i>
+                            </div>
+                            Connect Hunter.io
+                        </h2>
+                        <p class="mt-1 text-lg text-gray-600">Enrich customer data with person information from Hunter.io</p>
+                    </div>
+                    <div class="mt-4 flex md:mt-0 md:ml-4">
+                        <a href="{% url 'core:integrations' %}"
+                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
+                            <i class="ti ti-arrow-left mr-2"></i>
+                            Back to Integrations
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main content -->
+        <div class="max-w-4xl mx-auto py-8 sm:px-6 lg:px-8">
+            {% if existing_integration and has_api_key %}
+                <!-- Already Connected -->
+                <div class="bg-green-50 border border-green-200 rounded-xl p-6 mb-8">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-green-400"
+                                 fill="currentColor"
+                                 viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
+                                </path>
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-green-800">Hunter.io is connected!</h3>
+                            <div class="mt-2 text-sm text-green-700">
+                                <p>Email enrichment is active. Customer emails will be enriched with person data from Hunter.io.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            <!-- Privacy Notice -->
+            <div class="bg-amber-50 border border-amber-200 rounded-xl p-6 mb-8">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <i class="ti ti-alert-triangle text-amber-500 text-xl"></i>
+                    </div>
+                    <div class="ml-3">
+                        <h3 class="text-sm font-medium text-amber-800">Privacy Notice</h3>
+                        <div class="mt-2 text-sm text-amber-700">
+                            <p>
+                                By enabling this integration, customer email addresses from your webhooks will be sent to Hunter.io for enrichment. Hunter.io is GDPR compliant and will not return data for individuals who have opted out.
+                            </p>
+                            <p class="mt-2">Please ensure your privacy policy reflects this data processing activity.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- What is Hunter.io -->
+            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
+                <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <i class="ti ti-info-circle text-[#ff5722]"></i>
+                    What is Hunter.io Email Enrichment?
+                </h3>
+                <p class="text-sm text-gray-600 mb-6">
+                    Hunter.io provides professional information about people based on their email addresses. When a customer makes a payment or starts a subscription, we can automatically look up their profile to give you more context.
+                </p>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                        <i class="ti ti-user text-[#ff5722] text-lg mt-0.5"></i>
+                        <div>
+                            <h4 class="text-sm font-medium text-gray-900">Person Name</h4>
+                            <p class="text-xs text-gray-500">Full name from professional profiles</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                        <i class="ti ti-briefcase text-[#ff5722] text-lg mt-0.5"></i>
+                        <div>
+                            <h4 class="text-sm font-medium text-gray-900">Job Title & Seniority</h4>
+                            <p class="text-xs text-gray-500">Current position and level</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                        <i class="ti ti-brand-linkedin text-[#ff5722] text-lg mt-0.5"></i>
+                        <div>
+                            <h4 class="text-sm font-medium text-gray-900">LinkedIn Profile</h4>
+                            <p class="text-xs text-gray-500">Direct link to their profile</p>
+                        </div>
+                    </div>
+                    <div class="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                        <i class="ti ti-map-pin text-[#ff5722] text-lg mt-0.5"></i>
+                        <div>
+                            <h4 class="text-sm font-medium text-gray-900">Location</h4>
+                            <p class="text-xs text-gray-500">City and region information</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Get API Key Instructions -->
+            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
+                <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <i class="ti ti-key text-[#ff5722]"></i>
+                    Get Your API Key
+                </h3>
+                <p class="text-sm text-gray-600 mb-6">
+                    You need to provide your own Hunter.io API key. This keeps your usage separate and gives you control over your API credits.
+                </p>
+
+                <div class="space-y-4">
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#ff5722]/10 text-[#ff5722] font-medium text-sm">
+                                1
+                            </div>
+                        </div>
+                        <div class="ml-3">
+                            <h4 class="text-sm font-medium text-gray-900">Create a Hunter.io account</h4>
+                            <p class="text-sm text-gray-500">
+                                Go to <a href="https://hunter.io/users/sign_up"
+    target="_blank"
+    rel="noopener"
+    class="text-[#ff5722] hover:underline">hunter.io/users/sign_up</a> to create a free account.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#ff5722]/10 text-[#ff5722] font-medium text-sm">
+                                2
+                            </div>
+                        </div>
+                        <div class="ml-3">
+                            <h4 class="text-sm font-medium text-gray-900">Navigate to API section</h4>
+                            <p class="text-sm text-gray-500">
+                                Go to <a href="https://hunter.io/api_keys"
+    target="_blank"
+    rel="noopener"
+    class="text-[#ff5722] hover:underline">hunter.io/api_keys</a> to find your API key.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#ff5722]/10 text-[#ff5722] font-medium text-sm">
+                                3
+                            </div>
+                        </div>
+                        <div class="ml-3">
+                            <h4 class="text-sm font-medium text-gray-900">Copy your API key</h4>
+                            <p class="text-sm text-gray-500">Copy the API key and paste it in the form below.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
+                    <p class="text-sm text-blue-800">
+                        <strong>Note:</strong> Hunter.io offers a free plan with 25 searches per month. Paid plans start at $49/month for more searches. Each customer email enrichment uses one search.
+                    </p>
+                </div>
+            </div>
+
+            <!-- API Key Form -->
+            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
+                <div class="flex items-center mb-6">
+                    <div class="h-12 w-12 bg-[#ff5722]/10 rounded-xl flex items-center justify-center">
+                        <i class="ti ti-mail-search text-[#ff5722] text-2xl"></i>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="text-xl font-semibold text-gray-900">
+                            {% if existing_integration %}
+                                Update
+                            {% else %}
+                                Connect
+                            {% endif %}
+                            Hunter.io
+                        </h3>
+                        <p class="text-gray-600">Enter your Hunter.io API key to enable email enrichment</p>
+                    </div>
+                </div>
+
+                <form method="post" class="space-y-6">
+                    {% csrf_token %}
+
+                    <!-- API Key Input -->
+                    <div>
+                        <label for="api_key" class="block text-sm font-medium text-gray-700">Hunter.io API Key</label>
+                        <div class="mt-1">
+                            <input type="password"
+                                   name="api_key"
+                                   id="api_key"
+                                   class="shadow-sm focus:ring-[#ff5722] focus:border-[#ff5722] block w-full sm:text-sm border-gray-300 rounded-md"
+                                   placeholder="Enter your Hunter.io API key"
+                                   {% if existing_integration and has_api_key %}value="••••••••••••••••••••"{% endif %}
+                                   required>
+                        </div>
+                        <p class="mt-2 text-sm text-gray-500">
+                            Find this at <a href="https://hunter.io/api_keys"
+    target="_blank"
+    rel="noopener"
+    class="text-[#ff5722] hover:underline">hunter.io/api_keys</a>
+                        </p>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <div class="flex justify-end">
+                        <button type="submit"
+                                class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#ff5722] hover:bg-[#e64a19] transition-all duration-200">
+                            <i class="ti ti-plug-connected mr-2"></i>
+                            {% if existing_integration %}
+                                Update
+                            {% else %}
+                                Connect
+                            {% endif %}
+                            Hunter.io
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Benefits -->
+            <div class="mt-8 bg-gradient-to-r from-[#ff5722]/5 to-orange-50 rounded-xl p-6 border border-[#ff5722]/20">
+                <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <i class="ti ti-sparkles text-[#ff5722]"></i>
+                    What you'll get with Hunter.io:
+                </h3>
+                <ul class="space-y-2 text-gray-700">
+                    <li class="flex items-center">
+                        <svg class="h-4 w-4 text-[#ff5722] mr-2"
+                             fill="currentColor"
+                             viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
+                            </path>
+                        </svg>
+                        Person name and job title in Slack notifications
+                    </li>
+                    <li class="flex items-center">
+                        <svg class="h-4 w-4 text-[#ff5722] mr-2"
+                             fill="currentColor"
+                             viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
+                            </path>
+                        </svg>
+                        Direct links to LinkedIn, Twitter, and GitHub profiles
+                    </li>
+                    <li class="flex items-center">
+                        <svg class="h-4 w-4 text-[#ff5722] mr-2"
+                             fill="currentColor"
+                             viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
+                            </path>
+                        </svg>
+                        Seniority level to prioritize high-value customers
+                    </li>
+                    <li class="flex items-center">
+                        <svg class="h-4 w-4 text-[#ff5722] mr-2"
+                             fill="currentColor"
+                             viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
+                            </path>
+                        </svg>
+                        Works with all emails including Gmail and free providers
+                    </li>
+                    <li class="flex items-center">
+                        <svg class="h-4 w-4 text-[#ff5722] mr-2"
+                             fill="currentColor"
+                             viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
+                            </path>
+                        </svg>
+                        Results cached to minimize API usage
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+{% endblock content %}

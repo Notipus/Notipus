@@ -1,16 +1,25 @@
-# Notipus - Webhook to Slack Notifier
+# Notipus — Enriched Slack Notifications for Payment Events
 
-A webhook-driven notification service that sends enriched payment and subscription events from Shopify and Chargify to Slack. The service provides meaningful, actionable insights for customer success teams with a fun and engaging tone.
+Notipus turns payment and subscription webhooks from **Stripe**, **Shopify**, and **Maxio (formerly Chargify)** into enriched Slack notifications. It's more than a webhook relay: every alert tells you who the customer is, what they're worth, and whether they need attention — company background, contact name and role, lifetime value, tenure, and churn-risk flags, delivered where your team actually looks.
+
+Managed service: [notipus.com](https://notipus.com) · Self-hosting: [see below](#self-hosting)
 
 ## Features
 
-- 🎯 **Smart Event Processing**: Automatically categorizes and prioritizes events based on type and customer value
-- 💡 **Rich Context**: Enriches notifications with customer history, metrics, and actionable insights
-- 🎨 **Engaging Messages**: Uses whimsical language and emojis to make notifications fun and memorable
-- 📊 **Business Metrics**: Includes relevant business metrics like lifetime value and payment history
-- 🔄 **Event Analysis**: Analyzes events to provide actionable recommendations
-- ⚡ **Multiple Payment Providers**: Supports Shopify, Chargify, and Stripe webhooks
-- 🔗 **One-Click Integrations**: OAuth-based connections for Slack and Stripe (no manual token copying)
+- **Three payment sources**: Stripe, Shopify, and Maxio (Chargify) webhooks, with signature validation on every request
+- **One-click setup**: OAuth-based connections for Slack, Stripe (Stripe Connect creates the webhook endpoint for you), and Shopify — no manual token copying
+- **Automatic enrichment**: company data (logo, industry, size) via Brandfetch and person data (name, job title, seniority, LinkedIn) via Hunter.io
+- **Email domain badges**: customer emails are tagged as education, government, military, healthcare, free-provider, or disposable — so you see at a glance who's paying
+- **Insight detection**: VIP and at-risk flags, lifetime-value milestones ($1k–$100k), trial start/conversion, upgrade and downgrade detection, payment-retry tracking, customer anniversaries. Insights are emitted only when the webhook data supports them — lifetime-spend insights come from Maxio and Shopify payloads (Stripe events carry no lifetime spend, so Notipus never guesses)
+- **Noise reduction**: related events are consolidated and deduplicated into a single message instead of five pings
+- **Reliable delivery**: queued notifications are retried automatically for up to 6 hours with bounded attempts and duplicate suppression — a Slack hiccup doesn't mean a missed or doubled alert
+- **Full event coverage**: new subscriptions, payment success/failure, refunds, cancellations and reactivations, Shopify orders, fulfillment with real carrier status, and carrier-confirmed delivery
+- **Correct in every currency**: amounts respect each currency's real minor unit, including zero-decimal (JPY, KRW) and three-decimal (BHD, KWD) currencies
+- **Engaging messages**: Slack Block Kit formatting with action buttons that deep-link back to the originating dashboard
+
+## Self-Hosting
+
+Notipus is source-available and free to self-host. The full stack (Django, PostgreSQL, Redis) runs with Docker — follow the [Installation](#installation) steps below. Prefer not to run it yourself? Use the managed service at [notipus.com](https://notipus.com).
 
 ## Tech Stack
 
@@ -46,6 +55,13 @@ The application reads configuration from environment variables. Set these before
 ```bash
 export SECRET_DJANGO_KEY=your-secure-secret-key-here
 export DEBUG=True
+
+# Encryption at rest for tenant credentials (REQUIRED in production).
+# Comma-separated base64url-encoded 32-byte keys (ChaCha20-Poly1305); the
+# first is the primary encryption key. See "Security: encryption at rest"
+# below. Generate with:
+#   python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+export FIELD_ENCRYPTION_KEYS=your-base64url-32byte-key-here
 
 # Notipus billing (for subscription revenue)
 export NOTIPUS_STRIPE_SECRET_KEY=sk_test_your_stripe_key
@@ -111,6 +127,10 @@ export DB_NAME=notipus_dev
 export DB_USER=postgres
 export DB_PASSWORD=postgres
 export DB_HOST=localhost
+
+# Optional in dev: with DEBUG=True a deterministic key is derived from
+# SECRET_DJANGO_KEY if FIELD_ENCRYPTION_KEYS is unset (dev only, see below).
+# export FIELD_ENCRYPTION_KEYS=your-base64url-32byte-key-here
 ```
 
 5. **Start PostgreSQL and Redis** (using Docker)
@@ -240,6 +260,100 @@ uv run python app/manage.py setup_stripe_plans --force
 
 **Note:** Free and trial plans (price = $0) are automatically skipped.
 
+## Security: encryption at rest
+
+Sensitive tenant credentials are encrypted at rest in PostgreSQL using
+**ChaCha20-Poly1305** with a **256-bit key** (an AEAD cipher from the
+`cryptography` library). ChaCha20-Poly1305 is symmetric *at-rest* encryption:
+a 256-bit key keeps a ~128-bit post-quantum security margin against Grover's
+algorithm, and the cipher is fast and constant-time in pure software with no
+dependency on AES-NI hardware. Encryption/decryption happens transparently in
+custom Django model fields (`core.fields.EncryptedTextField` /
+`EncryptedJSONField`), so application code reads and writes the same
+`str`/`dict` values as before. Stored values use the token format
+`pqc1:<base64url(nonce || ciphertext+tag)>`.
+
+**Encrypted fields:**
+
+- `Integration.oauth_credentials` (OAuth tokens, Slack bot tokens, etc.)
+- `Integration.webhook_secret`
+- `GlobalBillingIntegration.oauth_credentials`
+- `GlobalBillingIntegration.webhook_secret`
+
+### Required environment variable: `FIELD_ENCRYPTION_KEYS`
+
+`FIELD_ENCRYPTION_KEYS` is a comma-separated list of base64url-encoded 32-byte
+keys; the first key encrypts new data, all keys are tried on decrypt (rotation).
+
+**Generate a key** (prints a ~44-character base64url string):
+
+```bash
+python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+```
+
+**Single-key `.env` example** (paste the generated key):
+
+```bash
+FIELD_ENCRYPTION_KEYS=<paste-generated-key>
+```
+
+**Rotation example** (new key first, old key retained for decryption):
+
+```bash
+FIELD_ENCRYPTION_KEYS=<new-key>,<old-key>
+```
+
+**Key validation.** Each key is validated on first use: if any provided key is
+not valid base64url, or does not decode to exactly 32 bytes,
+`ImproperlyConfigured` is raised with a message pointing back to the generate
+command above.
+
+> ⚠️ **Set the secret BEFORE running `migrate`.** The data migration encrypts
+> existing rows and must use the **real** key. Key resolution is lazy: build
+> steps that never touch encrypted fields (e.g. `collectstatic`) run without
+> the key, but `migrate` and normal request handling both demand it.
+>
+> - **Production fails fast:** when `DEBUG=False` and `FIELD_ENCRYPTION_KEYS`
+>   is unset, the first encrypt/decrypt raises `ImproperlyConfigured` — there
+>   is **no** production fallback to a derived key.
+> - **Dev/CI auto-derive:** when `DEBUG=True` and the var is unset, a
+>   deterministic 32-byte key is derived from `SECRET_DJANGO_KEY` (sha256) so
+>   local development and the test suite run with no env var. This is **dev
+>   only** — always set an explicit key in production.
+
+> **Wrong/rotated key is not silently ignored.** A stored value carrying the
+> `pqc1:` ciphertext prefix that cannot be decrypted with any configured key
+> raises `InvalidToken` rather than being returned as if it were the plaintext
+> secret. Only genuine pre-migration plaintext (no `pqc1:` prefix) is read
+> through untouched.
+
+### Key rotation
+
+1. Generate a new key and **prepend** it to `FIELD_ENCRYPTION_KEYS`
+   (`FIELD_ENCRYPTION_KEYS=<new-key>,<old-key>`). Deploy. New writes use the
+   new key; existing values still decrypt with the old key.
+2. Re-encrypt existing rows so everything uses the new key — load and re-save
+   each `Integration` / `GlobalBillingIntegration` row (a management command
+   or re-running the data-migration approach both work).
+3. Once every row is re-encrypted, **drop** the old key
+   (`FIELD_ENCRYPTION_KEYS=<new-key>`). Deploy again.
+
+### Migration of existing data
+
+The schema migration changes the affected columns to `text`, and a follow-up
+data migration re-saves existing rows so previously-plaintext values become
+ChaCha20-Poly1305 ciphertext. The encrypted fields read legacy plaintext
+transparently (values without the `pqc1:` prefix; a one-time warning is logged)
+so there is no downtime window where old rows are unreadable.
+
+### Redis PII at rest (follow-up)
+
+This change covers the **PostgreSQL** database only. PII cached in Redis is
+tracked separately: enable managed-Redis encryption at rest at the
+infrastructure layer now; application-level encryption of Redis values (reusing
+the same `core.encryption` helper) will be layered in under issue #100 / the
+Redis rework (#101).
+
 ## Architecture
 
 The service is built with a modular, multi-tenant architecture that separates concerns and makes it easy to extend:
@@ -323,7 +437,7 @@ PLUGINS = {
         "brandfetch": {
             "enabled": True,
             "priority": 100,
-            "config": {"api_key": "...", "timeout": 10}
+            "config": {"api_key": "...", "timeout": 10},
         }
     },
     "sources": {
@@ -590,21 +704,27 @@ Customer webhook integrations are configured per-tenant through the web interfac
 
 **Shopify**:
 
-- `orders/paid` - New order payments
+- `orders/create`, `orders/paid`, `orders/cancelled`, `orders/fulfilled` - Order lifecycle
+- `fulfillments/create`, `fulfillments/update` - Fulfillment progress with the carrier's real shipment status; a carrier-reported `shipment_status: delivered` becomes an order-delivered notification
 - `customers/create`, `customers/update` - Customer lifecycle events
 
 **Chargify/Maxio**:
 
-- `payment_success`, `payment_failure` - Payment outcomes
-- `subscription_created`, `subscription_updated` - Subscription lifecycle
+- `payment_success`, `payment_failure` - Payment outcomes (with retry tracking)
 - `renewal_success`, `renewal_failure` - Renewal events
+- `refund_success` - Refunds
+- `subscription_state_change`, `subscription_product_change`, `billing_date_change` - Plan, state, and billing changes (upgrades/downgrades include the previous plan)
+- `signup_success`, `signup_failure` - Signups
+- `customer_create`, `customer_update`, `customer_delete` - Customer lifecycle events
+- `component_allocation_change` - Usage component changes
+- Invoice and statement events
 
 **Stripe**:
 
-- `customer.subscription.created` - New subscription created
+- `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted` - Subscription lifecycle (upgrades/downgrades include the previous plan)
 - `customer.subscription.trial_will_end` - Trial ending notification (3 days before)
-- `invoice.payment_succeeded` - Invoice payment successful
-- `invoice.payment_failed` - Invoice payment failed
+- `invoice.payment_succeeded` - Invoice payment successful (trial conversions called out)
+- `invoice.payment_failed` - Invoice payment failed (decline reason, retry count, next retry date)
 - `invoice.paid` - Invoice paid confirmation
 - `invoice.payment_action_required` - Payment requires customer action (3DS)
 - `checkout.session.completed` - Checkout completion

@@ -7,14 +7,55 @@ including Company enrichment data with search, filters, and bulk actions.
 import json
 from typing import TYPE_CHECKING
 
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.contrib.admin import helpers
+from django.contrib.admin.exceptions import NotRegistered
+from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
+from django.contrib.auth.models import User
+from django.template.response import TemplateResponse
+from django.utils import timezone
 from django.utils.html import format_html
 
+from . import analytics
 from .models import Company
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
     from django.http import HttpRequest
+
+
+try:
+    admin.site.unregister(User)
+except NotRegistered:
+    # Import order or another app may already have unregistered it;
+    # re-registering below is all that matters.
+    pass
+
+
+@admin.register(User)
+class UserAdmin(DjangoUserAdmin):
+    """Stock user admin plus the pseudonymous GA4 user id.
+
+    GA4 only ever receives the salted hash (never the pk or email), so
+    this column is the one place a GA4 ``user_id`` can be mapped back
+    to an account: copy the id from a GA4 report and search for it on
+    this page with the browser's find-in-page.
+    """
+
+    # mypy: Django declares these as per-instance generics, so extending
+    # them via the class is flagged as ambiguous; it's the documented way
+    # to extend a ModelAdmin.
+    list_display = (*DjangoUserAdmin.list_display, "ga4_user_id")  # type: ignore[misc]
+    readonly_fields = (*DjangoUserAdmin.readonly_fields, "ga4_user_id")  # type: ignore[misc]
+    fieldsets = (
+        *(DjangoUserAdmin.fieldsets or ()),
+        ("Analytics", {"fields": ("ga4_user_id",)}),
+    )
+
+    @admin.display(description="GA4 user ID")
+    def ga4_user_id(self, obj: User) -> str:
+        """Return the GA4 user_id hash this user appears as in reports."""
+        return analytics.hashed_user_id(obj)
 
 
 @admin.register(Company)
@@ -67,10 +108,13 @@ class CompanyAdmin(admin.ModelAdmin):
         ),
     ]
 
+    # Cap on how many rows the purge confirmation page will enumerate, to
+    # bound the response size (and avoid timeouts) on huge "select all" sets.
+    PURGE_CONFIRM_LIMIT = 500
+
     actions = [
         "purge_enrichment_data",
         "refresh_enrichment",
-        "delete_selected_companies",
     ]
 
     @admin.display(boolean=True, description="Has Logo")
@@ -124,7 +168,7 @@ class CompanyAdmin(admin.ModelAdmin):
         blended_at = obj.brand_info.get("_blended_at", "Unknown")
 
         return format_html(
-            "<strong>Sources:</strong> {}<br>" "<strong>Last blended:</strong> {}",
+            "<strong>Sources:</strong> {}<br><strong>Last blended:</strong> {}",
             ", ".join(source_names),
             blended_at,
         )
@@ -134,15 +178,58 @@ class CompanyAdmin(admin.ModelAdmin):
         self,
         request: "HttpRequest",
         queryset: "QuerySet[Company]",
-    ) -> None:
-        """Clear enrichment data but keep the domain record."""
-        count = queryset.update(
-            name="",
-            brand_info={},
-            logo_data=None,
-            logo_content_type="",
+    ) -> "TemplateResponse | None":
+        """Clear enrichment data but keep the domain record.
+
+        Shows an intermediate confirmation page before applying the
+        (irreversible) purge, mirroring Django's built-in ``delete_selected``
+        flow. The purge only runs once the confirmation form is submitted.
+        """
+        # Enforce the safety cap FIRST, before the confirm short-circuit, so a
+        # crafted confirmed submission (e.g. select_across) can't bypass it.
+        # Detect over-limit cheaply with a LIMITed PK fetch rather than a full
+        # COUNT(*) over a potentially large table.
+        limit = self.PURGE_CONFIRM_LIMIT
+        over_limit = len(queryset.values_list("pk", flat=True)[: limit + 1]) > limit
+        if over_limit:
+            self.message_user(
+                request,
+                (
+                    f"Too many companies selected to purge at once "
+                    f"(limit is {limit}). "
+                    "Please narrow your selection and try again."
+                ),
+                level=messages.WARNING,
+            )
+            return None
+
+        if request.POST.get("confirm_purge") == "yes":
+            count = queryset.update(
+                name="",
+                brand_info={},
+                logo_url="",
+                logo_data=None,
+                logo_content_type="",
+                # .update() bypasses auto_now, so set updated_at explicitly.
+                updated_at=timezone.now(),
+            )
+            self.message_user(request, f"Purged enrichment data for {count} companies.")
+            return None
+
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Purge enrichment data",
+            "queryset": queryset,
+            "companies": queryset,
+            "opts": self.model._meta,
+            "action_checkbox_name": helpers.ACTION_CHECKBOX_NAME,
+            "media": self.media,
+        }
+        return TemplateResponse(
+            request,
+            "admin/core/company/purge_enrichment_confirmation.html",
+            context,
         )
-        self.message_user(request, f"Purged enrichment data for {count} companies.")
 
     @admin.action(description="Refresh enrichment (re-fetch from sources)")
     def refresh_enrichment(
@@ -166,14 +253,3 @@ class CompanyAdmin(admin.ModelAdmin):
             request,
             f"Marked {len(companies_to_update)} companies for re-enrichment.",
         )
-
-    @admin.action(description="Delete selected companies")
-    def delete_selected_companies(
-        self,
-        request: "HttpRequest",
-        queryset: "QuerySet[Company]",
-    ) -> None:
-        """Delete company records entirely."""
-        count = queryset.count()
-        queryset.delete()
-        self.message_user(request, f"Deleted {count} companies.")

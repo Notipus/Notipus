@@ -1,13 +1,14 @@
 """Event processor for webhook notifications.
 
 This module handles processing events from various providers and
-formatting them into RichNotification objects with company enrichment.
+formatting them into RichNotification objects with company and person enrichment.
 """
 
 import logging
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from core.models import Company
+from core.models import Company, Person
+from core.services.email_enrichment import get_email_enrichment_service
 from core.services.enrichment import DomainEnrichmentService
 from core.utils.email_domain import extract_domain, is_enrichable_domain
 from plugins import PluginRegistry, PluginType
@@ -16,6 +17,9 @@ from plugins.destinations.base import BaseDestinationPlugin
 from ..models.rich_notification import RichNotification
 from .database_lookup import DatabaseLookupService
 from .notification_builder import NotificationBuilder
+
+if TYPE_CHECKING:
+    from core.models import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,10 @@ class EventProcessor:
         "payment_success",
         "payment_failure",
         "refund_issued",
+        "invoice_paid",
+        "payment_action_required",
+        "checkout_completed",
+        "checkout_started",
         # Subscription events
         "subscription_created",
         "subscription_updated",
@@ -63,6 +71,7 @@ class EventProcessor:
         "webhook_received",
         # Logistics events
         "order_created",
+        "order_cancelled",
         "order_fulfilled",
         "fulfillment_created",
         "fulfillment_updated",
@@ -73,6 +82,7 @@ class EventProcessor:
         """Initialize the event processor with services."""
         self.db_lookup = DatabaseLookupService()
         self.enrichment_service = DomainEnrichmentService()
+        self.email_enrichment_service = get_email_enrichment_service()
         self.notification_builder = NotificationBuilder()
 
     def process_event_rich(
@@ -80,6 +90,7 @@ class EventProcessor:
         event_data: dict[str, Any],
         customer_data: dict[str, Any],
         target: str = "slack",
+        workspace: "Workspace | None" = None,
     ) -> dict[str, Any]:
         """Process an event and return formatted output for target platform.
 
@@ -91,6 +102,7 @@ class EventProcessor:
             event_data: Dictionary containing event type and metadata.
             customer_data: Dictionary containing customer information.
             target: Target platform identifier (default: "slack").
+            workspace: Optional workspace for email enrichment (Pro/Enterprise).
 
         Returns:
             Formatted notification dict for the target platform.
@@ -114,28 +126,32 @@ class EventProcessor:
         # Enrich with cross-references
         enriched_event_data = self._enrich_with_cross_references(event_data)
 
-        # Enrich company data
+        # Enrich company data (domain-based)
         company = self._enrich_company(customer_data)
+
+        # Enrich person data (email-based, requires workspace with Hunter.io)
+        person = self._enrich_person(customer_data, workspace)
 
         # Build target-agnostic notification
         notification = self.notification_builder.build(
-            enriched_event_data, customer_data, company
+            enriched_event_data, customer_data, company, person
         )
 
         # Store enriched record for dashboard display
-        self._store_enriched_record(enriched_event_data, notification)
+        self._store_enriched_record(enriched_event_data, notification, workspace)
 
         # Format for target platform using destination plugin
         registry = PluginRegistry.instance()
         plugin = registry.get(PluginType.DESTINATION, target)
         if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
             raise ValueError(f"No destination plugin found for target: {target}")
-        return plugin.format(notification)
+        return cast("dict[str, Any]", plugin.format(notification))
 
     def build_rich_notification(
         self,
         event_data: dict[str, Any],
         customer_data: dict[str, Any],
+        workspace: "Workspace | None" = None,
     ) -> RichNotification:
         """Build a RichNotification without formatting.
 
@@ -145,6 +161,7 @@ class EventProcessor:
         Args:
             event_data: Dictionary containing event type and metadata.
             customer_data: Dictionary containing customer information.
+            workspace: Optional workspace for email enrichment (Pro/Enterprise).
 
         Returns:
             RichNotification object.
@@ -166,15 +183,18 @@ class EventProcessor:
         # Enrich with cross-references
         enriched_event_data = self._enrich_with_cross_references(event_data)
 
-        # Enrich company data
+        # Enrich company data (domain-based)
         company = self._enrich_company(customer_data)
 
-        notification = self.notification_builder.build(
-            enriched_event_data, customer_data, company
+        # Enrich person data (email-based, requires workspace with Hunter.io)
+        person = self._enrich_person(customer_data, workspace)
+
+        notification: RichNotification = self.notification_builder.build(
+            enriched_event_data, customer_data, company, person
         )
 
         # Store enriched record for dashboard display
-        self._store_enriched_record(enriched_event_data, notification)
+        self._store_enriched_record(enriched_event_data, notification, workspace)
 
         return notification
 
@@ -182,12 +202,14 @@ class EventProcessor:
         self,
         event_data: dict[str, Any],
         notification: RichNotification,
+        workspace: "Workspace | None" = None,
     ) -> None:
         """Store enriched event record for dashboard display.
 
         Args:
             event_data: The event data dictionary.
             notification: The built RichNotification.
+            workspace: Optional workspace for tenant-scoped storage.
         """
         # Determine which events should be stored for activity tracking
         storable_event_types = {
@@ -198,9 +220,11 @@ class EventProcessor:
             "subscription_deleted",
             "checkout_completed",
             "invoice_paid",
+            "trial_started",
             "trial_ending",
             "payment_action_required",
             "order_created",
+            "order_cancelled",
             "order_fulfilled",
             "fulfillment_created",
             "fulfillment_updated",
@@ -209,8 +233,11 @@ class EventProcessor:
         event_type = event_data.get("type")
 
         if event_type in storable_event_types:
+            workspace_id = str(workspace.uuid) if workspace else "global"
             try:
-                self.db_lookup.store_enriched_record(event_data, notification)
+                self.db_lookup.store_enriched_record(
+                    event_data, notification, workspace_id=workspace_id
+                )
             except Exception as e:
                 # Don't fail event processing if storage fails
                 logger.warning(f"Failed to store enriched record: {e}")
@@ -305,4 +332,42 @@ class EventProcessor:
         except Exception as e:
             # Don't fail webhook processing if enrichment fails
             logger.warning(f"Failed to enrich company for {domain}: {e}")
+            return None
+
+    def _enrich_person(
+        self,
+        customer_data: dict[str, Any],
+        workspace: "Workspace | None",
+    ) -> Person | None:
+        """Enrich customer data with person information from Hunter.io.
+
+        Unlike company enrichment, email enrichment:
+        - Works for ALL emails (including Gmail/free providers)
+        - Requires Pro or Enterprise plan
+        - Requires workspace-specific Hunter.io API key
+
+        Args:
+            customer_data: Customer data dictionary with email.
+            workspace: The workspace requesting enrichment (for API key and tier check).
+
+        Returns:
+            Person model with enrichment data, or None if not available.
+        """
+        if not workspace:
+            return None
+
+        customer_email = customer_data.get("email")
+        if not customer_email:
+            return None
+
+        try:
+            person = self.email_enrichment_service.enrich_email(
+                customer_email, workspace
+            )
+            if person:
+                logger.info(f"Enriched person data for email: {customer_email}")
+            return person
+        except Exception as e:
+            # Don't fail webhook processing if enrichment fails
+            logger.warning(f"Failed to enrich person for {customer_email}: {e}")
             return None

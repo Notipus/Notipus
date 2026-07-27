@@ -4,9 +4,13 @@ This module tests Chargify, Shopify, and Stripe webhook handling
 including signature validation, data parsing, and deduplication.
 """
 
+import hashlib
 import json
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, Mock, patch
+from urllib.parse import urlencode
 
 import pytest
 from plugins.sources.base import BaseSourcePlugin, InvalidDataError
@@ -64,6 +68,7 @@ def test_chargify_payment_failure_parsing() -> None:
         "payload[transaction][failure_message]": "Card was declined",
         "created_at": "2024-03-15T10:00:00Z",
     }
+    mock_request.body = urlencode(mock_request.POST.dict.return_value).encode()
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
@@ -152,12 +157,13 @@ def test_shopify_order_parsing() -> None:
     mock_request.get_json.return_value = shopify_data
     # Ensure request.data is JSON in byte format
     mock_request.data = json.dumps(shopify_data).encode("utf-8")
+    mock_request.body = mock_request.data
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
     assert event["type"] == "payment_success"
     assert event["customer_id"] == "456"
-    assert event["amount"] == 29.99
+    assert event["amount"] == Decimal("29.99")
     assert event["status"] == "success"
     assert event["metadata"]["order_number"] == 1001
     assert event["metadata"]["financial_status"] == "paid"
@@ -176,6 +182,10 @@ def test_chargify_webhook_validation() -> None:
     mock_request.headers = {
         "X-Chargify-Webhook-Signature-Hmac-Sha-256": "1234567890abcdef",
         "X-Chargify-Webhook-Id": "webhook_123",
+        # A current timestamp header is now required (replay protection).
+        "X-Chargify-Webhook-Timestamp": (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        ),
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Chargify Webhooks",
     }
@@ -332,7 +342,6 @@ def test_chargify_subscription_state_change() -> None:
     Tests that subscription cancellation events are correctly parsed.
     """
     provider = ChargifySourcePlugin(webhook_secret="test_secret")
-    provider._webhook_cache.clear()  # Clear cache before test
 
     mock_request = MagicMock()
     mock_request.content_type = "application/x-www-form-urlencoded"
@@ -354,12 +363,16 @@ def test_chargify_subscription_state_change() -> None:
         "payload[subscription][total_revenue_in_cents]": "299900",
         "created_at": "2024-03-15T10:00:00Z",
     }
+    mock_request.body = urlencode(mock_request.POST.dict.return_value).encode()
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
-    assert event["type"] == "subscription_state_change"
+    # A change into the canceled state is normalized to the
+    # subscription_canceled type the event processor understands
+    assert event["type"] == "subscription_canceled"
     assert event["customer_id"] == "cust_456"
     assert event["status"] == "canceled"
+    assert event["metadata"]["new_state"] == "canceled"
     assert event["metadata"]["subscription_id"] == "sub_12345"
     assert event["metadata"]["cancel_at_period_end"]
     assert event["customer_data"]["company_name"] == "Test Company"
@@ -416,6 +429,7 @@ def test_shopify_customer_data_update() -> None:
     }
     mock_request.get_json.return_value = mock_data
     mock_request.data = json.dumps(mock_data).encode("utf-8")
+    mock_request.body = mock_request.data
 
     event = provider.parse_webhook(mock_request)
     assert event is not None
@@ -425,15 +439,15 @@ def test_shopify_customer_data_update() -> None:
 
 
 def test_chargify_webhook_deduplication() -> None:
-    """Verify Chargify webhook deduplication logic.
+    """Verify Chargify webhook dedup key handling.
 
-    Tests that duplicate webhook IDs are rejected while
-    different webhook IDs are processed.
+    The plugin surfaces the SHA-256 of the signed request body as
+    ``content_hash`` so the router can deduplicate via the event
+    consolidation service. The unsigned webhook-id header must not
+    influence the key (a replayed body with a minted id dedupes to the
+    same key), but its absence is still rejected (Chargify contract).
     """
     provider = ChargifySourcePlugin("")
-    provider._DEDUP_WINDOW_SECONDS = (
-        60  # Set deduplication window to 60 seconds for testing
-    )
 
     # Create a mock request with payment_success event
     mock_request = MagicMock()
@@ -456,30 +470,26 @@ def test_chargify_webhook_deduplication() -> None:
         "created_at": "2024-03-15T10:00:00Z",
     }
     mock_request.POST.dict.return_value = form_data
-    # First event should process
+    mock_request.body = urlencode(form_data).encode()
+    # Event parses and surfaces the signed body hash as the dedup key
     event1 = provider.parse_webhook(mock_request)
     assert event1 is not None
     assert event1["type"] == "payment_success"
     assert event1["customer_id"] == "cust_123"
+    assert event1["content_hash"] == hashlib.sha256(mock_request.body).hexdigest()
+    assert "event_id" not in event1
 
-    # Same webhook ID should be considered duplicate
-    mock_request.headers["X-Chargify-Webhook-Id"] = "test_webhook_1"  # Same webhook ID
-    form_data["event"] = "renewal_success"  # change event type
-    mock_request.POST.dict.return_value = form_data
-    with pytest.raises(InvalidDataError, match="Duplicate webhook"):
-        provider.parse_webhook(mock_request)
-
-    # Different webhook ID should be allowed (proper idempotency)
+    # A different (attacker-minted) webhook ID header does NOT change
+    # the dedup key: the body is identical, so the hash is identical
     mock_request.headers["X-Chargify-Webhook-Id"] = "different_webhook_id"
-    form_data["event"] = "payment_success"
-    form_data["payload[subscription][customer][id]"] = "cust_123"  # Same customer
-    mock_request.POST.dict.return_value = form_data
-
-    # Should process successfully since it's a different webhook ID
     event2 = provider.parse_webhook(mock_request)
     assert event2 is not None
-    assert event2["type"] == "payment_success"
-    assert event2["customer_id"] == "cust_123"
+    assert event2["content_hash"] == event1["content_hash"]
+
+    # Missing webhook ID must not bypass dedup - it is a validation error
+    mock_request.headers = {}
+    with pytest.raises(InvalidDataError, match="X-Chargify-Webhook-Id"):
+        provider.parse_webhook(mock_request)
 
 
 def test_event_processor_notification_formatting() -> None:
@@ -604,10 +614,11 @@ def test_chargify_payment_success_with_shopify_ref() -> None:
         "payload[transaction][id]": "tr_123",
         "payload[transaction][amount_in_cents]": "10000",
         "payload[transaction][memo]": (
-            "Wire payment received for $100.00\n" "Allocated to Shopify Order 1234"
+            "Wire payment received for $100.00\nAllocated to Shopify Order 1234"
         ),
         "created_at": "2024-03-15T10:00:00Z",
     }
+    mock_request.body = urlencode(mock_request.POST.dict.return_value).encode()
 
     event = provider.parse_webhook(mock_request)
     assert event is not None

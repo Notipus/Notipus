@@ -41,11 +41,13 @@
                     </div>
 
                     <!-- OAuth Buttons -->
-                    <a href="{% provider_login_url 'slack' %}"
-                       class="btn-secondary w-full touch-target">
-                        <i class="fab fa-slack mr-2" aria-hidden="true"></i>
-                        Continue with Slack
-                    </a>
+                    <form method="post" action="{% provider_login_url 'slack' %}">
+                        {% csrf_token %}
+                        <button type="submit" class="btn-secondary w-full touch-target">
+                            <i class="ti ti-brand-slack mr-2" aria-hidden="true"></i>
+                            Continue with Slack
+                        </button>
+                    </form>
 
                     <!-- Login Link -->
                     <div class="mt-6 text-center">
@@ -166,6 +168,11 @@
 
                 const options = beginData.options;
 
+                // Keep the original base64url challenge: options aliases
+                // beginData.options, so the ArrayBuffer conversion below
+                // would otherwise clobber the string the server expects back.
+                const challengeB64url = options.challenge;
+
                 // Convert base64url strings to ArrayBuffers for WebAuthn API
                 options.challenge = base64urlToArrayBuffer(options.challenge);
                 options.user.id = base64urlToArrayBuffer(options.user.id);
@@ -188,7 +195,7 @@
                         clientDataJSON: arrayBufferToBase64url(credential.response.clientDataJSON),
                     },
                     type: credential.type,
-                    challenge: beginData.options.challenge
+                    challenge: challengeB64url
                 };
 
                 const completeResponse = await fetch('/webauthn/signup/complete/', {

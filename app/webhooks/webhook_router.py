@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, cast
 
 from core.models import Integration, Workspace
 from django.conf import settings
@@ -11,10 +11,32 @@ from django.views.decorators.http import require_http_methods
 
 from .exceptions import WebhookError, WebhookSignatureError
 from .services.event_consolidation import event_consolidation_service
+from .services.pending_event_queue import pending_event_queue
 from .services.rate_limiter import RateLimitException, rate_limiter
 from .services.webhook_storage import webhook_storage_service
 
 logger = logging.getLogger(__name__)
+
+# Event types that benefit from aggregation even without idempotency_key.
+# Subscription events need invoice events for customer email.
+_AGGREGATABLE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "subscription_created",
+        "trial_started",
+        "invoice_paid",
+        "payment_success",
+    }
+)
+
+# Providers that send complete data in one webhook and don't need aggregation.
+# Process these immediately instead of queuing with in-memory timers that
+# die on worker recycling.
+_IMMEDIATE_PROCESSING_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "customer_shopify",
+        "customer_chargify",
+    }
+)
 
 
 def _log_webhook_payload(
@@ -86,7 +108,20 @@ def create_success_response(message: str) -> dict:
 
 
 def create_error_response(error: Exception, status_code: int = 500) -> dict:
-    """Create standardized error response"""
+    """Create standardized error response.
+
+    For 5xx errors, returns a generic message to avoid leaking internal
+    details (stack traces, exception messages) to external clients.
+    For 4xx errors, includes the error type and message since those are
+    intentional client-facing feedback.
+    """
+    if status_code >= 500:
+        return {
+            "status": "error",
+            "error": "InternalError",
+            "message": "Internal error processing webhook",
+            "code": status_code,
+        }
     return {
         "status": "error",
         "error": type(error).__name__,
@@ -95,21 +130,78 @@ def create_error_response(error: Exception, status_code: int = 500) -> dict:
     }
 
 
-def _handle_rate_limiting(workspace: Workspace) -> Optional[JsonResponse]:
+def _check_workspace_access(workspace: Optional[Workspace]) -> Optional[JsonResponse]:
+    """Reject webhooks for workspaces that are not entitled to service.
+
+    Suspended, past_due (dunning), cancelled, and expired-trial workspaces
+    must not consume service. Returns 403 so providers eventually disable
+    the endpoint instead of retrying forever; access is restored as soon
+    as the billing webhook/sync handlers mark the workspace active again.
+
+    Args:
+        workspace: The workspace the webhook is addressed to, or None for
+            global (billing) endpoints, which are exempt.
+
+    Returns:
+        A 403 JsonResponse when access is denied, None otherwise.
+    """
+    if workspace is None or workspace.has_active_access:
+        return None
+
+    logger.warning(
+        f"Rejecting webhook for workspace {workspace.uuid}: "
+        f"subscription_status={workspace.subscription_status}, "
+        f"trial_end_date={workspace.trial_end_date}"
+    )
+    return JsonResponse(
+        {
+            "status": "error",
+            "error": "SubscriptionInactive",
+            "message": (
+                "Workspace subscription is not active. "
+                "Update billing to resume webhook processing."
+            ),
+            "code": 403,
+        },
+        status=403,
+    )
+
+
+def _handle_rate_limiting(
+    workspace: Optional[Workspace],
+) -> tuple[Optional[JsonResponse], Optional[Dict[str, Any]]]:
     """
     Handle rate limiting for workspace.
-    Returns response if rate limited, None otherwise.
+
+    Returns a tuple of (error_response, rate_limit_info). error_response
+    is a 429 JsonResponse if the workspace is rate limited, None otherwise.
+    rate_limit_info is returned when the request is allowed so callers can
+    reuse it for response headers without consuming additional quota.
     """
     if not workspace:
-        return None
+        return None, None
 
     try:
         rate_limit_info = rate_limiter.enforce_rate_limit(workspace)
-        logger.info(
-            f"Rate limit check passed for workspace {workspace.uuid}: "
-            f"{rate_limit_info['current_usage']}/{rate_limit_info['limit']}"
-        )
-        return None  # No rate limiting
+        if rate_limit_info.get("over_limit"):
+            # WARNING only on the crossing; over-limit traffic can be
+            # sustained and per-request WARNINGs would drown the log.
+            log = (
+                logger.warning
+                if rate_limit_info["current_usage"] == rate_limit_info["limit"] + 1
+                else logger.info
+            )
+            log(
+                f"Workspace {workspace.uuid} is over its plan limit "
+                f"({rate_limit_info['current_usage']}/{rate_limit_info['limit']}); "
+                f"delivering within the grace window"
+            )
+        else:
+            logger.info(
+                f"Rate limit check passed for workspace {workspace.uuid}: "
+                f"{rate_limit_info['current_usage']}/{rate_limit_info['limit']}"
+            )
+        return None, rate_limit_info  # No rate limiting
     except RateLimitException as e:
         logger.warning(f"Rate limit exceeded for workspace {workspace.uuid}: {str(e)}")
         error_response = create_error_response(e, 429)
@@ -128,18 +220,7 @@ def _handle_rate_limiting(workspace: Workspace) -> Optional[JsonResponse]:
         for header_name, header_value in rate_limit_headers.items():
             response[header_name] = header_value
 
-        return response
-
-
-def _validate_and_parse_webhook(
-    request: HttpRequest, provider: Any
-) -> Optional[Dict[str, Any]]:
-    """Validate and parse webhook. Returns None for test webhooks."""
-    if not provider.validate_webhook(request):
-        raise WebhookSignatureError()
-
-    event_data = provider.parse_webhook(request)
-    return event_data
+        return response, None
 
 
 def _add_rate_limit_headers(
@@ -167,7 +248,7 @@ def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
         incoming_webhook = slack_integration.oauth_credentials.get(
             "incoming_webhook", {}
         )
-        return incoming_webhook.get("url")
+        return cast("str | None", incoming_webhook.get("url"))
     except Integration.DoesNotExist:
         logger.debug(
             f"No active Slack integration found for workspace {workspace.uuid}"
@@ -205,90 +286,49 @@ def _get_telegram_credentials(
         return None
 
 
-def _send_to_slack(
-    workspace: Optional[Workspace],
-    notification: Any,
-    registry: Any,
-) -> bool:
-    """Send notification to Slack if configured.
+def _get_dedup_key(event_data: Dict[str, Any]) -> str:
+    """Build the deduplication key for a parsed webhook event.
 
-    Args:
-        workspace: The workspace to send for.
-        notification: RichNotification object.
-        registry: PluginRegistry instance.
+    Prefers ``content_hash``: the SHA-256 of the raw, HMAC-signed request
+    body, set by source plugins whose provider event id only travels in
+    an unsigned header (Chargify, Shopify). Keying on signed content
+    means a legitimate provider retry (identical body) dedupes to the
+    same key, while a captured body replayed with a freshly minted
+    ``X-*-Webhook-Id`` header cannot mint a new key. The hash is
+    namespaced by provider so equal bodies from different providers
+    cannot collide within a workspace (the consolidation service already
+    scopes keys per workspace); events missing a ``provider`` field fall
+    back to the "unknown" namespace so the key is never un-namespaced.
 
-    Returns:
-        True if sent successfully or not configured, False on error.
+    Falls back to ``event_id`` for providers whose unique event id is
+    inside the signed payload (Stripe's ``evt_...``), then to a
+    composite of event type and object id so distinct events for the
+    same object (e.g. subscription.created and subscription.updated for
+    one subscription) don't collide.
     """
-    from plugins.base import PluginType
-    from plugins.destinations.base import BaseDestinationPlugin
-
-    slack_webhook_url = _get_slack_webhook_url(workspace)
-    if not slack_webhook_url:
-        return True  # Not configured is not an error
-
-    slack_plugin = registry.get(PluginType.DESTINATION, "slack")
-    if slack_plugin is None or not isinstance(slack_plugin, BaseDestinationPlugin):
-        logger.error("Slack destination plugin not found or not configured")
-        return False
-
-    try:
-        formatted = slack_plugin.format(notification)
-        slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
-        logger.debug(
-            f"Sent Slack notification for workspace "
-            f"{workspace.uuid if workspace else 'unknown'}"
-        )
-        return True
-    except Exception as e:
-        logger.error(
-            f"Failed to send Slack notification for workspace "
-            f"{workspace.uuid if workspace else 'unknown'}: {str(e)}"
-        )
-        return False
+    content_hash = event_data.get("content_hash")
+    if content_hash:
+        provider = event_data.get("provider") or "unknown"
+        return f"{provider}:sha256:{content_hash}"
+    event_id = event_data.get("event_id")
+    if event_id:
+        return str(event_id)
+    external_id = event_data.get("external_id", "")
+    if external_id:
+        return f"{event_data.get('type', '')}:{external_id}"
+    return ""
 
 
-def _send_to_telegram(
-    workspace: Optional[Workspace],
-    notification: Any,
-    registry: Any,
-) -> bool:
-    """Send notification to Telegram if configured.
-
-    Args:
-        workspace: The workspace to send for.
-        notification: RichNotification object.
-        registry: PluginRegistry instance.
-
-    Returns:
-        True if sent successfully or not configured, False on error.
-    """
-    from plugins.base import PluginType
-    from plugins.destinations.base import BaseDestinationPlugin
-
-    telegram_credentials = _get_telegram_credentials(workspace)
-    if not telegram_credentials:
-        return True  # Not configured is not an error
-
-    telegram_plugin = registry.get(PluginType.DESTINATION, "telegram")
-    if not telegram_plugin or not isinstance(telegram_plugin, BaseDestinationPlugin):
-        logger.error("Telegram destination plugin not found or not configured")
-        return False
-
-    try:
-        formatted = telegram_plugin.format(notification)
-        telegram_plugin.send(formatted, telegram_credentials)
-        logger.debug(
-            f"Sent Telegram notification for workspace "
-            f"{workspace.uuid if workspace else 'unknown'}"
-        )
-        return True
-    except Exception as e:
-        logger.error(
-            f"Failed to send Telegram notification for workspace "
-            f"{workspace.uuid if workspace else 'unknown'}: {str(e)}"
-        )
-        return False
+def _record_dedup_marker(
+    event_data: Dict[str, Any], workspace_id: str, dedup_key: str
+) -> None:
+    """Record the dedup marker for a successfully queued/dispatched event."""
+    event_consolidation_service.record_event(
+        event_type=event_data.get("type", ""),
+        customer_id=event_data.get("customer_id", ""),
+        workspace_id=workspace_id,
+        external_id=dedup_key,
+    )
 
 
 def _process_webhook_data(
@@ -299,47 +339,25 @@ def _process_webhook_data(
 ) -> JsonResponse:
     """Process webhook data and return success response.
 
-    Includes event consolidation to prevent notification spam when
-    multiple related events fire in quick succession.
+    For events with an idempotency_key (Stripe), queues the event for
+    delayed processing to allow related events to arrive first.
+    Events without idempotency_key are processed immediately.
 
-    Sends notifications to all configured destinations (Slack, Telegram).
-    Each destination operates independently - failure in one doesn't block others.
+    The delayed processing ensures we have complete data (like customer
+    email from invoice events) before sending notifications.
     """
-    from plugins.registry import PluginRegistry
-
     # Get customer data from webhook payload
-    # (We can't call provider APIs - we only have the webhook data)
-    customer_data = provider.get_customer_data(event_data["customer_id"])
+    customer_data = provider.get_customer_data(event_data.get("customer_id", ""))
 
-    # Check event consolidation - should we send a notification?
     event_type = event_data.get("type", "")
-    customer_id = event_data.get("customer_id", "")
-    workspace_id = str(workspace.uuid) if workspace else ""
-    external_id = event_data.get("external_id", "")
+    workspace_id = str(workspace.uuid) if workspace else "global"
     idempotency_key = event_data.get("idempotency_key")
+    dedup_key = _get_dedup_key(event_data)
 
-    # Check for idempotency-based duplicate (same Stripe API request)
-    # This catches multiple events from the same action (e.g., subscription.created
-    # and invoice.paid from the same subscription creation)
-    if event_consolidation_service.is_duplicate_by_idempotency(
-        workspace_id, idempotency_key
-    ):
+    # Check for exact duplicate (same provider event) - applies to all events
+    if event_consolidation_service.is_duplicate(workspace_id, dedup_key):
         logger.info(
-            f"Skipping event {event_type} with idempotency key {idempotency_key} "
-            f"for workspace {workspace_id} (already processed different event "
-            f"from same action)"
-        )
-        return JsonResponse(
-            create_success_response(
-                f"{provider_name} webhook processed (idempotency duplicate)"
-            ),
-            status=200,
-        )
-
-    # Check for exact duplicate (same external_id)
-    if event_consolidation_service.is_duplicate(workspace_id, external_id):
-        logger.info(
-            f"Skipping duplicate event {external_id} for workspace {workspace_id}"
+            f"Skipping duplicate event {dedup_key} for workspace {workspace_id}"
         )
         return JsonResponse(
             create_success_response(
@@ -348,27 +366,93 @@ def _process_webhook_data(
             status=200,
         )
 
-    # Check if this event should be suppressed due to consolidation
-    # Pass amount to filter out $0 payment events (trial invoices)
+    # NOTE: the dedup marker is recorded only AFTER the event has been
+    # successfully queued or dispatched. Recording it earlier would make a
+    # failed dispatch (which returns 5xx) suppress the provider's retry,
+    # permanently losing the event.
+
+    # Providers with complete data in one webhook - process immediately
+    if provider_name in _IMMEDIATE_PROCESSING_PROVIDERS:
+        response = _process_immediately(
+            event_data, customer_data, provider_name, workspace
+        )
+        _record_dedup_marker(event_data, workspace_id, dedup_key)
+        return response
+
+    # Queue Stripe for delayed processing (needs invoice + subscription aggregation)
+    should_aggregate = event_type in _AGGREGATABLE_EVENT_TYPES
+    customer_id = event_data.get("customer_id", "")
+
+    if idempotency_key or (should_aggregate and customer_id):
+        if idempotency_key:
+            aggregation_key = idempotency_key
+        else:
+            aggregation_key = f"customer:{customer_id}"
+
+        pending_event_queue.queue_event(
+            idempotency_key=aggregation_key,
+            workspace_id=workspace_id,
+            event_data=event_data,
+            customer_data=customer_data,
+            provider_name=provider_name,
+            workspace=workspace,
+        )
+        # Queued events are owned by our system now (orphan recovery retries
+        # failed sends), so it is safe to suppress provider retries.
+        _record_dedup_marker(event_data, workspace_id, dedup_key)
+
+        # Log with truncated key for readability
+        if len(aggregation_key) > 20:
+            key_preview = f"{aggregation_key[:20]}..."
+        else:
+            key_preview = aggregation_key
+        logger.info(f"Queued {event_type} for delayed processing (key: {key_preview})")
+
+        return JsonResponse(
+            create_success_response(f"{provider_name} webhook queued for processing"),
+            status=200,
+        )
+
+    # Events WITHOUT idempotency_key that don't benefit from aggregation
+    response = _process_immediately(event_data, customer_data, provider_name, workspace)
+    _record_dedup_marker(event_data, workspace_id, dedup_key)
+    return response
+
+
+def _process_immediately(
+    event_data: Dict[str, Any],
+    customer_data: Dict[str, Any],
+    provider_name: str,
+    workspace: Optional[Workspace] = None,
+) -> JsonResponse:
+    """Process webhook immediately (for events without idempotency_key).
+
+    This is the fallback for non-Stripe webhooks or Stripe events
+    that don't have an idempotency_key.
+    """
+    from plugins.base import PluginType
+    from plugins.destinations.base import BaseDestinationPlugin
+    from plugins.registry import PluginRegistry
+
+    event_type = event_data.get("type", "")
+    customer_id = event_data.get("customer_id", "")
+    workspace_id = str(workspace.uuid) if workspace else ""
+
+    # Add workspace_id to event_data for insight detection
+    event_data["workspace_id"] = workspace_id
+
+    # Check if this event should be suppressed due to consolidation.
+    # Suppression is scoped to the transaction-level correlator so an
+    # unrelated second transaction for the same customer is never suppressed.
     should_notify = event_consolidation_service.should_send_notification(
         event_type=event_type,
         customer_id=customer_id,
         workspace_id=workspace_id,
         amount=event_data.get("amount"),
+        correlation_id=event_consolidation_service.extract_correlation_id(event_data),
     )
 
     if not should_notify:
-        # Record the event for deduplication, but don't send notification
-        event_consolidation_service.record_event(
-            event_type=event_type,
-            customer_id=customer_id,
-            workspace_id=workspace_id,
-            external_id=external_id,
-        )
-        # Also record idempotency key to suppress related events
-        event_consolidation_service.record_idempotency_key(
-            workspace_id, idempotency_key
-        )
         return JsonResponse(
             create_success_response(
                 f"{provider_name} webhook processed (consolidated)"
@@ -376,53 +460,62 @@ def _process_webhook_data(
             status=200,
         )
 
-    # Build rich notification once (target-agnostic)
+    # Build the target-agnostic notification once (this also stores the
+    # enriched record for the dashboard). Each destination formats it
+    # itself, so the event is never built or re-enriched twice.
     notification = settings.EVENT_PROCESSOR.build_rich_notification(
-        event_data, customer_data
+        event_data, customer_data, workspace=workspace
     )
 
-    # Get plugin registry for destination lookups
     registry = PluginRegistry.instance()
 
-    # Send to all configured destinations
-    # Each destination operates independently - failure in one doesn't block others
-    slack_sent = _send_to_slack(workspace, notification, registry)
-    telegram_sent = _send_to_telegram(workspace, notification, registry)
+    # Every destination this workspace has enabled, as (name, credentials).
+    slack_webhook_url = _get_slack_webhook_url(workspace)
+    telegram_credentials = _get_telegram_credentials(workspace)
+    destinations: list[tuple[str, dict[str, Any]]] = []
+    if slack_webhook_url:
+        destinations.append(("slack", {"webhook_url": slack_webhook_url}))
+    if telegram_credentials:
+        destinations.append(("telegram", telegram_credentials))
 
-    # Check if at least one destination was configured
-    slack_configured = _get_slack_webhook_url(workspace) is not None
-    telegram_configured = _get_telegram_credentials(workspace) is not None
-
-    if not slack_configured and not telegram_configured:
+    if not destinations:
         logger.warning(
             f"No notification destinations configured for workspace "
-            f"{workspace.uuid if workspace else 'unknown'}"
+            f"{workspace.uuid if workspace else 'unknown'}, skipping notification"
         )
-    else:
-        # Record the event after attempting to send
-        # (even if some destinations failed, we don't want to retry)
-        event_consolidation_service.record_event(
-            event_type=event_type,
-            customer_id=customer_id,
-            workspace_id=workspace_id,
-            external_id=external_id,
-        )
-        # Record idempotency key to suppress related events from same action
-        event_consolidation_service.record_idempotency_key(
-            workspace_id, idempotency_key
+        return JsonResponse(
+            create_success_response(f"{provider_name} webhook processed successfully"),
+            status=200,
         )
 
-    # Log summary of send results
-    if slack_configured or telegram_configured:
-        destinations_summary = []
-        if slack_configured:
-            destinations_summary.append(f"Slack={'ok' if slack_sent else 'failed'}")
-        if telegram_configured:
-            destinations_summary.append(
-                f"Telegram={'ok' if telegram_sent else 'failed'}"
+    # Deliver to each configured destination independently. A missing
+    # plugin is a deploy-time misconfiguration a retry can't fix, so we log
+    # and skip it. A send failure may be transient, so we record it and,
+    # after attempting every destination, raise — the router then returns
+    # 5xx and the provider retries, re-attempting all destinations, rather
+    # than silently losing the notification. A possible duplicate on a
+    # destination that already succeeded is preferable to a lost one, and
+    # content-based dedup guards against genuine double-sends.
+    delivery_errors: list[str] = []
+    for name, credentials in destinations:
+        plugin = registry.get(PluginType.DESTINATION, name)
+        if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
+            logger.error(f"{name} destination plugin not found or not configured")
+            continue
+        try:
+            formatted = plugin.format(notification)
+            plugin.send(formatted, credentials)
+        except Exception as e:
+            logger.error(
+                f"Failed to deliver {name} notification for workspace "
+                f"{workspace.uuid if workspace else 'unknown'}: {e!s}"
             )
-        summary = ", ".join(destinations_summary)
-        logger.info(f"Notification dispatch for {provider_name}: {summary}")
+            delivery_errors.append(name)
+
+    if delivery_errors:
+        raise RuntimeError(
+            f"notification delivery failed for: {', '.join(delivery_errors)}"
+        )
 
     return JsonResponse(
         create_success_response(f"{provider_name} webhook processed successfully"),
@@ -432,6 +525,7 @@ def _process_webhook_data(
 
 def _handle_webhook_exceptions(e: Exception, provider_name: str) -> JsonResponse:
     """Handle different types of webhook exceptions."""
+    from plugins.sources.base import WebhookError as PluginWebhookError
     from webhooks.services.rate_limiter import RateLimitException
 
     if isinstance(e, WebhookSignatureError):
@@ -443,7 +537,8 @@ def _handle_webhook_exceptions(e: Exception, provider_name: str) -> JsonResponse
         logger.info(f"Rate limit exceeded for {provider_name} webhook: {e!s}")
         error_response = create_error_response(e, 429)
         return JsonResponse(error_response, status=429)
-    elif isinstance(e, WebhookError):
+    elif isinstance(e, (WebhookError, PluginWebhookError)):
+        # Malformed/invalid webhook data - retrying won't help, return 4xx
         logger.warning(f"Webhook validation error for {provider_name}: {str(e)}")
         error_response = create_error_response(e, 400)
         return JsonResponse(error_response, status=400)
@@ -457,32 +552,68 @@ def _process_webhook(
     request: HttpRequest,
     provider: Any,
     provider_name: str,
-    workspace: Workspace = None,
+    workspace: Workspace | None = None,
+    integration: Integration | None = None,
+    log_provider_name: str | None = None,
 ) -> JsonResponse:
     """
     Common webhook processing logic with standardized error handling
     and rate limiting.
 
+    Validates the webhook signature FIRST - before rate limiting, payload
+    logging, and storage - so unauthenticated requests cannot consume
+    workspace quota or persist attacker-controlled data.
+
     Uses workspace-specific Slack integration for notifications.
     """
     try:
-        # Handle rate limiting
-        rate_limit_response = _handle_rate_limiting(workspace)
+        # Validate webhook signature before any side effects
+        if not provider.validate_webhook(request):
+            raise WebhookSignatureError()
+
+        # Entitlement check on authenticated requests: suspended/past_due/
+        # cancelled/expired-trial workspaces don't consume service or quota.
+        access_denied = _check_workspace_access(workspace)
+        if access_denied is not None:
+            return access_denied
+
+        # Enforce workspace rate limits on authenticated requests only.
+        # A single enforce_rate_limit call increments usage once and
+        # returns the info reused for response headers.
+        rate_limit_response, rate_limit_info = _handle_rate_limiting(workspace)
         if rate_limit_response:
             return rate_limit_response
 
-        # Get rate limit info for headers
-        rate_limit_info = None
-        if workspace:
-            rate_limit_info = rate_limiter.enforce_rate_limit(workspace)
+        # Log/store raw webhook payload only for authenticated,
+        # non-rate-limited requests
+        _log_webhook_payload(
+            request,
+            log_provider_name or provider_name,
+            str(workspace.uuid) if workspace else None,
+        )
 
-        # Validate and parse webhook
-        event_data = _validate_and_parse_webhook(request, provider)
+        # Parse webhook (returns None for test webhooks)
+        event_data = cast("Dict[str, Any] | None", provider.parse_webhook(request))
 
-        # Handle test webhooks
+        # Stamp first successful webhook verification
+        if integration is not None and integration.webhook_verified_at is None:
+            from django.utils import timezone
+
+            integration.webhook_verified_at = timezone.now()
+            integration.save(update_fields=["webhook_verified_at"])
+
+        # A None parse means no processing is needed: either a provider
+        # test ping (Stripe/Shopify) or an event the plugin deliberately
+        # acknowledges without processing (e.g. Chargify's logged-and-
+        # skipped event types). Both must be acknowledged with a 200.
         if not event_data:
+            logger.info(
+                f"{provider_name} webhook acknowledged without processing "
+                "(test ping or intentionally skipped event type)"
+            )
             response = JsonResponse(
-                create_success_response("Test webhook received"), status=200
+                create_success_response("Webhook received (no notification required)"),
+                status=200,
             )
             _add_rate_limit_headers(response, rate_limit_info)
             return response
@@ -520,9 +651,6 @@ def customer_shopify_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
     """Handle customer-specific Shopify webhook requests with rate limiting"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "shopify", organization_uuid)
-
     logger.info(
         f"Processing customer Shopify webhook for workspace {organization_uuid}",
         extra={
@@ -547,7 +675,14 @@ def customer_shopify_webhook(
 
         provider = ShopifySourcePlugin(webhook_secret=integration.webhook_secret)
 
-        return _process_webhook(request, provider, "customer_shopify", workspace)
+        return _process_webhook(
+            request,
+            provider,
+            "customer_shopify",
+            workspace,
+            integration,
+            log_provider_name="shopify",
+        )
 
     except Exception as e:
         logger.error(f"Error in customer Shopify webhook: {str(e)}", exc_info=True)
@@ -561,12 +696,8 @@ def customer_chargify_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
     """Handle customer-specific Chargify/Maxio webhook requests with rate limiting"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "chargify", organization_uuid)
-
     logger.info(
-        f"Processing customer Chargify/Maxio webhook "
-        f"for workspace {organization_uuid}",
+        f"Processing customer Chargify/Maxio webhook for workspace {organization_uuid}",
         extra={
             "workspace_uuid": organization_uuid,
             "content_type": request.content_type,
@@ -586,7 +717,14 @@ def customer_chargify_webhook(
 
         provider = ChargifySourcePlugin(webhook_secret=integration.webhook_secret)
 
-        return _process_webhook(request, provider, "customer_chargify", workspace)
+        return _process_webhook(
+            request,
+            provider,
+            "customer_chargify",
+            workspace,
+            integration,
+            log_provider_name="chargify",
+        )
 
     except Exception as e:
         logger.error(
@@ -602,9 +740,6 @@ def customer_stripe_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
     """Handle customer-specific Stripe webhook requests with rate limiting"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "stripe", organization_uuid)
-
     logger.info(
         f"Processing customer Stripe webhook for workspace {organization_uuid}",
         extra={
@@ -629,7 +764,14 @@ def customer_stripe_webhook(
 
         provider = StripeSourcePlugin(webhook_secret=integration.webhook_secret)
 
-        return _process_webhook(request, provider, "customer_stripe", workspace)
+        return _process_webhook(
+            request,
+            provider,
+            "customer_stripe",
+            workspace,
+            integration,
+            log_provider_name="stripe",
+        )
 
     except Exception as e:
         logger.error(f"Error in customer Stripe webhook: {str(e)}", exc_info=True)
@@ -644,9 +786,6 @@ def customer_stripe_webhook(
 @require_http_methods(["POST"])
 def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
     """Handle global Stripe billing webhooks for Notipus revenue"""
-    # Log raw webhook payload before any processing
-    _log_webhook_payload(request, "stripe_billing")
-
     logger.info(
         "Processing global billing Stripe webhook",
         extra={"content_type": request.content_type},
@@ -656,30 +795,66 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
         from core.models import GlobalBillingIntegration
         from plugins.sources.stripe import StripeSourcePlugin
 
+        if settings.DISABLE_BILLING:
+            # Self-hosted deployments without Notipus billing: the endpoint
+            # doesn't exist. Deliberately NOT enforced in the Stripe plugin
+            # itself, which also serves tenant notification webhooks.
+            return JsonResponse(
+                {"status": "error", "message": "Billing is disabled"},
+                status=404,
+            )
+
         billing_integration = GlobalBillingIntegration.objects.filter(
             integration_type="stripe_billing", is_active=True
         ).first()
 
         if not billing_integration:
-            # Return 200 to acknowledge receipt - don't trigger Stripe retries
-            # Log error so we know configuration is missing
+            # Server-side misconfiguration: return 5xx so Stripe retries
+            # (with its own backoff) instead of the event being lost.
             logger.error(
                 "GlobalBillingIntegration not configured for stripe_billing. "
                 "Create record with integration_type='stripe_billing', is_active=True."
             )
             return JsonResponse(
                 {"status": "error", "message": "Billing integration not configured"},
-                status=200,  # 200 to prevent Stripe retries
+                status=500,
             )
 
-        provider = StripeSourcePlugin(webhook_secret=billing_integration.webhook_secret)
+        if not billing_integration.webhook_secret:
+            # An empty secret would make every signature check fail with an
+            # opaque 400; surface the misconfiguration explicitly instead
+            # (migration 0017 seeds the secret from
+            # NOTIPUS_STRIPE_WEBHOOK_SECRET, which may have been unset).
+            logger.error(
+                "GlobalBillingIntegration for stripe_billing has an empty "
+                "webhook_secret. Set it to the whsec_... value from the "
+                "Stripe webhook endpoint configuration."
+            )
+            return JsonResponse(
+                {"status": "error", "message": "Billing integration not configured"},
+                status=500,
+            )
 
-        return _process_webhook(request, provider, "billing_stripe")
+        # This is the ONLY place process_billing_events may be True: events
+        # here are signed by Notipus's own Stripe account. Tenant endpoints
+        # validate against tenant-supplied secrets and must never mutate
+        # workspace billing state.
+        provider = StripeSourcePlugin(
+            webhook_secret=billing_integration.webhook_secret,
+            process_billing_events=True,
+        )
+
+        return _process_webhook(
+            request, provider, "billing_stripe", log_provider_name="stripe_billing"
+        )
 
     except Exception as e:
         logger.error(f"Error in billing Stripe webhook: {str(e)}", exc_info=True)
-        # Return 200 to acknowledge receipt - prevents infinite retries
+        # Transient/unknown errors must return 5xx so Stripe redelivers.
+        # Stripe has its own exponential backoff and max-attempt policy,
+        # so this does not cause infinite retries. Signature and validation
+        # errors are mapped to 4xx inside _process_webhook.
         return JsonResponse(
             {"status": "error", "message": "Internal error processing webhook"},
-            status=200,
+            status=500,
         )

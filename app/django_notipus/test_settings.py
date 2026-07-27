@@ -17,6 +17,14 @@ MIDDLEWARE = [m for m in MIDDLEWARE if "whitenoise" not in m]
 
 # Override settings for tests
 DISABLE_BILLING = True
+
+# Keep GA4 off in tests regardless of the developer's environment;
+# individual tests opt in via override_settings.
+GA4_MEASUREMENT_ID = ""
+GA4_API_SECRET = ""
+# Pin client-side mode off too, so a developer's GA4_CLIENT_SIDE=true in
+# the environment can't flip server-side page_view behaviour under test.
+GA4_CLIENT_SIDE = False
 # Note: Webhook secrets now managed per-tenant, not globally
 
 

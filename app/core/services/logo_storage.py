@@ -8,6 +8,11 @@ import logging
 
 import requests
 from core.models import Company
+from core.utils.url_safety import (
+    UnsafeUrlError,
+    create_pinned_session,
+    is_safe_public_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,51 +89,96 @@ class LogoStorageService:
         Returns:
             Tuple of (logo_data, content_type) or (None, "") on failure.
         """
+        # Resolve and validate the host, then pin the connection to a
+        # validated public IP. This rejects non-public hosts (SSRF guard) and
+        # is resistant to DNS rebinding: requests cannot silently re-resolve
+        # the hostname to an internal address between validation and connect.
         try:
-            # Make request with timeout and size limit
-            response = requests.get(
-                url,
-                timeout=REQUEST_TIMEOUT,
-                stream=True,
-                headers={
-                    "User-Agent": "Notipus/1.0 (Logo Fetcher)",
-                    "Accept": "image/*",
-                },
-            )
-            response.raise_for_status()
+            session = create_pinned_session(url)
+        except UnsafeUrlError:
+            logger.warning("Refusing to download logo from unsafe URL: %r", url)
+            return None, ""
 
-            # Check content type
-            raw_content_type = response.headers.get("Content-Type", "")
-            content_type = raw_content_type.split(";")[0].strip()
-            if content_type not in ALLOWED_CONTENT_TYPES:
-                logger.warning(f"Invalid content type for logo: {content_type}")
-                return None, ""
+        try:
+            with session:
+                # Redirects are disabled so an attacker cannot bypass the SSRF
+                # check by redirecting to an internal host after validation.
+                response = session.get(
+                    url,
+                    timeout=REQUEST_TIMEOUT,
+                    stream=True,
+                    allow_redirects=False,
+                    headers={
+                        "User-Agent": "Notipus/1.0 (Logo Fetcher)",
+                        "Accept": "image/*",
+                    },
+                )
 
-            # Check content length if available
-            content_length = response.headers.get("Content-Length")
-            if content_length and int(content_length) > MAX_LOGO_SIZE:
-                logger.warning(f"Logo too large: {content_length} bytes")
-                return None, ""
-
-            # Download with size limit
-            data = b""
-            for chunk in response.iter_content(chunk_size=8192):
-                data += chunk
-                if len(data) > MAX_LOGO_SIZE:
-                    logger.warning("Logo exceeded size limit during download")
+                # Treat any 3xx redirect as a failed download rather than
+                # following it to a potentially internal host.
+                if 300 <= response.status_code < 400:
+                    logger.warning(
+                        "Refusing to follow redirect while downloading logo from %r",
+                        url,
+                    )
                     return None, ""
 
-            if not data:
-                return None, ""
+                response.raise_for_status()
 
-            return data, content_type
+                # Check content type
+                raw_content_type = response.headers.get("Content-Type", "")
+                content_type = raw_content_type.split(";")[0].strip()
+                if content_type not in ALLOWED_CONTENT_TYPES:
+                    logger.warning("Invalid content type for logo: %r", content_type)
+                    return None, ""
+
+                data = self._read_capped_body(response)
+                if not data:
+                    return None, ""
+
+                return data, content_type
 
         except requests.exceptions.Timeout:
-            logger.warning(f"Timeout downloading logo from {url}")
+            logger.warning("Timeout downloading logo from %r", url)
             return None, ""
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Error downloading logo from {url}: {e}")
+            logger.warning("Error downloading logo from %r: %s", url, e)
             return None, ""
+
+    def _read_capped_body(self, response: requests.Response) -> bytes | None:
+        """Read a response body, enforcing the maximum logo size.
+
+        Rejects up front if the Content-Length header declares a size over the
+        cap (a malformed header is treated as unknown length), then streams the
+        body into a bytearray and aborts if it exceeds the cap.
+
+        Args:
+            response: Streaming response to read from.
+
+        Returns:
+            The body bytes, or None if the size cap is exceeded.
+        """
+        # A malformed Content-Length is treated as unknown length rather than
+        # crashing; the streamed cap below is the authoritative limit.
+        content_length = response.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                declared_size = int(content_length)
+            except (ValueError, TypeError):
+                declared_size = None
+            if declared_size is not None and declared_size > MAX_LOGO_SIZE:
+                logger.warning("Logo too large: %s bytes", content_length)
+                return None
+
+        # Accumulate into a bytearray to avoid quadratic-time concatenation.
+        buffer = bytearray()
+        for chunk in response.iter_content(chunk_size=8192):
+            buffer.extend(chunk)
+            if len(buffer) > MAX_LOGO_SIZE:
+                logger.warning("Logo exceeded size limit during download")
+                return None
+
+        return bytes(buffer)
 
     def refresh_logo(self, company: Company) -> bool:
         """Refresh logo from original URL.
@@ -140,6 +190,17 @@ class LogoStorageService:
             True if logo was refreshed successfully.
         """
         if not company.logo_url:
+            return False
+
+        # Reject URLs that resolve to non-public hosts (SSRF guard). The
+        # authoritative, rebinding-safe check happens in _download_logo; this
+        # is a cheap early rejection.
+        if not is_safe_public_url(company.logo_url):
+            logger.warning(
+                "Refusing to refresh logo for %r from unsafe URL: %r",
+                company.domain,
+                company.logo_url,
+            )
             return False
 
         return self.download_and_store(company, company.logo_url)

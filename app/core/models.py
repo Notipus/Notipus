@@ -7,8 +7,10 @@ users, integrations, billing, and authentication-related models.
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, ClassVar
+from decimal import Decimal
+from typing import Any, ClassVar, cast
 
+from core.fields import EncryptedJSONField, EncryptedTextField
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -22,7 +24,7 @@ def get_trial_end_date() -> datetime:
     Returns:
         datetime: Trial end date.
     """
-    return timezone.now() + timezone.timedelta(days=14)
+    return cast(datetime, timezone.now() + timedelta(days=14))
 
 
 def get_invitation_expiry() -> datetime:
@@ -49,42 +51,73 @@ class Workspace(models.Model):
         subscription_status: Current subscription state.
     """
 
+    # Labels deliberately contain no prices: pricing lives in Stripe and
+    # the Plan model, and stale prices baked into choice labels drift.
     STRIPE_PLANS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("free", "Free Plan"),
-        ("basic", "Basic Plan - $29/month"),
-        ("pro", "Pro Plan - $99/month"),
-        ("enterprise", "Enterprise Plan - $299/month"),
+        ("basic", "Basic Plan"),
+        ("pro", "Pro Plan"),
+        ("enterprise", "Enterprise Plan"),
     )
 
     STATUS_CHOICES: ClassVar[tuple[tuple[str, str], ...]] = (
         ("active", "Active"),
         ("trial", "Trial"),
         ("suspended", "Suspended"),
+        # Dunning state, written by billing webhook handlers when a
+        # subscription invoice fails (Stripe past_due/unpaid).
+        # Deliberately NOT in is_active's allowed list: access is
+        # suspended while dunning and restored by the payment-success /
+        # sync handlers once Stripe reports the subscription active.
+        ("past_due", "Past Due"),
         ("cancelled", "Cancelled"),
     )
 
     # Basic fields
-    uuid = models.UUIDField(
+    uuid: models.UUIDField = models.UUIDField(
         default=uuid.uuid4, editable=False, unique=True, db_index=True
     )
-    name = models.CharField(max_length=200)
-    slug = models.SlugField(max_length=200, unique=True, blank=True)
-    shop_domain = models.CharField(max_length=255, unique=True, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    name: models.CharField = models.CharField(max_length=200)
+    slug: models.SlugField = models.SlugField(max_length=200, unique=True, blank=True)
+    shop_domain: models.CharField = models.CharField(
+        max_length=255, unique=True, null=True, blank=True
+    )
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
     # Billing and subscription
     # max_length=100 to accommodate Stripe price IDs (e.g., price_1NvT4OJADkUcvxXxx)
-    subscription_plan = models.CharField(
+    subscription_plan: models.CharField = models.CharField(
         max_length=100, choices=STRIPE_PLANS, default="free"
     )
-    subscription_status = models.CharField(
+    subscription_status: models.CharField = models.CharField(
         max_length=20, choices=STATUS_CHOICES, default="active"
     )
-    trial_end_date = models.DateTimeField(default=get_trial_end_date)
-    billing_cycle_anchor = models.IntegerField(null=True, blank=True)
-    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
-    payment_method_added = models.BooleanField(default=False)
+    trial_end_date: models.DateTimeField = models.DateTimeField(
+        default=get_trial_end_date
+    )
+    billing_cycle_anchor: models.IntegerField = models.IntegerField(
+        null=True, blank=True
+    )
+    stripe_customer_id: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
+    # The Stripe subscription this workspace's billing state is derived from.
+    # Lets webhook handlers ignore events for other subscriptions on the same
+    # customer (e.g. add-ons, one-off invoices) instead of cancelling or
+    # flagging the workspace on any subscription-shaped event.
+    stripe_subscription_id: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
+    payment_method_added: models.BooleanField = models.BooleanField(default=False)
+    # GA4 client id of the browser that started the Stripe checkout,
+    # captured from checkout session metadata. Lets webhook-driven
+    # billing events attribute to the purchaser's GA4 user instead of a
+    # synthetic workspace-uuid client; empty when billing never went
+    # through our checkout (e.g. Stripe-dashboard subscriptions).
+    ga4_client_id: models.CharField = models.CharField(
+        max_length=64, blank=True, default=""
+    )
 
     class Meta:
         app_label = "core"
@@ -184,7 +217,7 @@ class Workspace(models.Model):
         Returns:
             True if on trial, False otherwise.
         """
-        return self.subscription_status == "trial"
+        return cast(bool, self.subscription_status == "trial")
 
     @property
     def is_active(self) -> bool:
@@ -193,7 +226,27 @@ class Workspace(models.Model):
         Returns:
             True if active or on trial, False otherwise.
         """
-        return self.subscription_status in ["active", "trial"]
+        return cast(bool, self.subscription_status in ["active", "trial"])
+
+    @property
+    def has_active_access(self) -> bool:
+        """Whether this workspace is currently entitled to service.
+
+        Unlike is_active, an expired trial does not grant access: a
+        workspace created for a paid plan stays in "trial" status if
+        checkout is never completed, and without this check it would
+        retain paid-plan service indefinitely. Suspended, past_due
+        (dunning), and cancelled workspaces are excluded per
+        STATUS_CHOICES semantics.
+
+        Returns:
+            True if the workspace should receive service.
+        """
+        if self.subscription_status == "active":
+            return True
+        if self.subscription_status == "trial":
+            return self.trial_end_date is None or self.trial_end_date > timezone.now()
+        return False
 
 
 class WorkspaceMember(models.Model):
@@ -215,13 +268,15 @@ class WorkspaceMember(models.Model):
         ("user", "User"),
     )
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    workspace = models.ForeignKey(
+    user: Any = models.ForeignKey(User, on_delete=models.CASCADE)
+    workspace: Any = models.ForeignKey(
         Workspace, on_delete=models.CASCADE, related_name="members"
     )
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default="user")
-    joined_at = models.DateTimeField(auto_now_add=True)
-    is_active = models.BooleanField(default=True)
+    role: models.CharField = models.CharField(
+        max_length=20, choices=ROLE_CHOICES, default="user"
+    )
+    joined_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    is_active: models.BooleanField = models.BooleanField(default=True)
 
     class Meta:
         app_label = "core"
@@ -239,12 +294,12 @@ class WorkspaceMember(models.Model):
     @property
     def is_owner(self) -> bool:
         """Check if member is an owner."""
-        return self.role == "owner"
+        return cast(bool, self.role == "owner")
 
     @property
     def is_admin(self) -> bool:
         """Check if member is an admin or owner."""
-        return self.role in ("owner", "admin")
+        return cast(bool, self.role in ("owner", "admin"))
 
 
 class WorkspaceInvitation(models.Model):
@@ -263,24 +318,40 @@ class WorkspaceInvitation(models.Model):
         accepted_at: When the invitation was accepted (null if pending).
     """
 
-    workspace = models.ForeignKey(
+    workspace: Any = models.ForeignKey(
         Workspace, on_delete=models.CASCADE, related_name="invitations"
     )
-    email = models.EmailField(db_index=True)  # Indexed for faster invitation lookups
-    role = models.CharField(
+    email: models.EmailField = models.EmailField(
+        db_index=True
+    )  # Indexed for faster invitation lookups
+    role: models.CharField = models.CharField(
         max_length=20, choices=WorkspaceMember.ROLE_CHOICES, default="user"
     )
-    token = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    invited_by = models.ForeignKey(
+    token: models.UUIDField = models.UUIDField(
+        default=uuid.uuid4, unique=True, db_index=True
+    )
+    invited_by: Any = models.ForeignKey(
         User, on_delete=models.CASCADE, related_name="sent_invitations"
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField(default=get_invitation_expiry)
-    accepted_at = models.DateTimeField(null=True, blank=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    expires_at: models.DateTimeField = models.DateTimeField(
+        default=get_invitation_expiry
+    )
+    accepted_at: models.DateTimeField = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         app_label = "core"
         db_table = "core_workspaceinvitation"
+        constraints = [
+            # At most one pending (not yet accepted) invitation per
+            # (workspace, email). Accepted invitations are kept as history
+            # and do not block re-inviting the same address later.
+            models.UniqueConstraint(
+                fields=["workspace", "email"],
+                condition=models.Q(accepted_at__isnull=True),
+                name="uniq_pending_invite_workspace_email",
+            ),
+        ]
 
     def __str__(self) -> str:
         """Return string representation of the invitation.
@@ -293,7 +364,7 @@ class WorkspaceInvitation(models.Model):
     @property
     def is_expired(self) -> bool:
         """Check if invitation has expired."""
-        return timezone.now() > self.expires_at
+        return cast(bool, timezone.now() > self.expires_at)
 
     @property
     def is_pending(self) -> bool:
@@ -323,27 +394,46 @@ class Integration(models.Model):
         # Notification integrations (workspace-specific)
         ("slack_notifications", "Slack Notifications"),
         ("telegram_notifications", "Telegram Notifications"),
+        # Enrichment integrations (workspace-specific, user-provided API keys)
+        ("hunter_enrichment", "Hunter.io Email Enrichment"),
     )
 
-    workspace = models.ForeignKey(
+    # The subset of INTEGRATION_TYPES that send events into Notipus.
+    # Keep in sync when adding a provider above — the dashboard setup
+    # checklist derives "source" state from it. (The integrations page
+    # overview keeps its own richer display list in
+    # IntegrationService.get_integration_overview.)
+    SOURCE_INTEGRATION_TYPES: ClassVar[tuple[str, ...]] = (
+        "stripe_customer",
+        "shopify",
+        "chargify",
+    )
+
+    workspace: Any = models.ForeignKey(
         Workspace, on_delete=models.CASCADE, related_name="integrations"
     )
-    integration_type = models.CharField(max_length=50, choices=INTEGRATION_TYPES)
+    integration_type: models.CharField = models.CharField(
+        max_length=50, choices=INTEGRATION_TYPES
+    )
 
     # OAuth and authentication data
-    oauth_credentials = models.JSONField(default=dict, blank=True)
-    webhook_secret = models.CharField(max_length=255, blank=True)
+    # Encrypted at rest (ChaCha20-Poly1305). Same Python API as JSON/CharField.
+    oauth_credentials: EncryptedJSONField = EncryptedJSONField(default=dict, blank=True)
+    webhook_secret: EncryptedTextField = EncryptedTextField(blank=True, default="")
 
     # Integration-specific settings
-    integration_settings = models.JSONField(default=dict, blank=True)
+    integration_settings: models.JSONField = models.JSONField(default=dict, blank=True)
 
     # Status
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    is_active: models.BooleanField = models.BooleanField(default=True)
+    webhook_verified_at: models.DateTimeField = models.DateTimeField(
+        null=True, blank=True
+    )
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
     # Legacy field for backward compatibility
-    auth_data = models.JSONField(default=dict, blank=True)
+    auth_data: models.JSONField = models.JSONField(default=dict, blank=True)
 
     class Meta:
         app_label = "core"
@@ -359,6 +449,10 @@ class Integration(models.Model):
         """
         return f"{self.workspace.name} - {self.get_integration_type_display()}"
 
+    def get_integration_type_display(self) -> str:  # type: ignore[empty-body]
+        """Return the display value for integration_type choice field."""
+        ...  # Django provides this method at runtime
+
     @property
     def slack_team_id(self) -> str | None:
         """Get Slack team ID from OAuth credentials.
@@ -366,7 +460,7 @@ class Integration(models.Model):
         Returns:
             Slack team ID or None if not available.
         """
-        return self.oauth_credentials.get("team", {}).get("id")
+        return cast(str | None, self.oauth_credentials.get("team", {}).get("id"))
 
     @property
     def slack_channel(self) -> str:
@@ -375,7 +469,7 @@ class Integration(models.Model):
         Returns:
             Slack channel name, defaults to #general.
         """
-        return self.integration_settings.get("channel", "#general")
+        return cast(str, self.integration_settings.get("channel", "#general"))
 
     @property
     def slack_bot_token(self) -> str | None:
@@ -384,7 +478,16 @@ class Integration(models.Model):
         Returns:
             Slack bot token or None if not available.
         """
-        return self.oauth_credentials.get("access_token")
+        return cast(str | None, self.oauth_credentials.get("access_token"))
+
+    @property
+    def is_webhook_verified(self) -> bool:
+        """Check if this integration has received a verified webhook.
+
+        Returns:
+            True if at least one webhook has been successfully validated.
+        """
+        return self.webhook_verified_at is not None
 
 
 class GlobalBillingIntegration(models.Model):
@@ -405,21 +508,22 @@ class GlobalBillingIntegration(models.Model):
         ("slack_auth", "Slack Authentication (Global)"),
     )
 
-    integration_type = models.CharField(
+    integration_type: models.CharField = models.CharField(
         max_length=50, choices=INTEGRATION_TYPES, unique=True
     )
 
     # OAuth and authentication data
-    oauth_credentials = models.JSONField(default=dict, blank=True)
-    webhook_secret = models.CharField(max_length=255, blank=True)
+    # Encrypted at rest (ChaCha20-Poly1305). Same Python API as JSON/CharField.
+    oauth_credentials: EncryptedJSONField = EncryptedJSONField(default=dict, blank=True)
+    webhook_secret: EncryptedTextField = EncryptedTextField(blank=True, default="")
 
     # Integration-specific settings
-    integration_settings = models.JSONField(default=dict, blank=True)
+    integration_settings: models.JSONField = models.JSONField(default=dict, blank=True)
 
     # Status
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    is_active: models.BooleanField = models.BooleanField(default=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name = "Global Billing Integration"
@@ -433,6 +537,10 @@ class GlobalBillingIntegration(models.Model):
             Integration type display name.
         """
         return f"Global {self.get_integration_type_display()}"
+
+    def get_integration_type_display(self) -> str:  # type: ignore[empty-body]
+        """Return the display value for integration_type choice field."""
+        ...  # Django provides this method at runtime
 
 
 def validate_domain(value: str) -> str:
@@ -467,11 +575,35 @@ def validate_domain(value: str) -> str:
     return domain
 
 
+def _validate_domain_for_field(value: str) -> None:
+    """Validator wrapper for Django model field validators.
+
+    Django validators must accept a value and return None (raising
+    ValidationError on invalid input). This wraps validate_domain
+    to conform to that protocol.
+
+    Args:
+        value: Raw domain input string.
+
+    Raises:
+        ValidationError: If domain format is invalid.
+    """
+    validate_domain(value)
+
+
 class Company(models.Model):
     """Company model for storing enriched brand/company data.
 
     Used by DomainEnrichmentService to cache brand information
     retrieved from enrichment providers like Brandfetch.
+
+    Note: This cache is intentionally shared across all workspaces (there is
+    no workspace foreign key). Domain enrichment holds only public brand
+    data - company name, logo, brand colors - fetched by domain, not
+    personal data, so no tenant PII can leak between workspaces and GDPR
+    erasure requests do not apply to it. Person-level enrichment
+    (``Person``) is the opposite: it contains PII and is scoped per
+    workspace.
 
     Attributes:
         name: Company display name.
@@ -484,14 +616,18 @@ class Company(models.Model):
         updated_at: When the record was last updated.
     """
 
-    name = models.CharField(max_length=255, blank=True, default="")
-    domain = models.CharField(max_length=255, unique=True, validators=[validate_domain])
-    logo_url = models.URLField(max_length=500, blank=True, default="")
-    logo_data = models.BinaryField(blank=True, null=True)
-    logo_content_type = models.CharField(max_length=50, blank=True, default="")
-    brand_info = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(default=timezone.now)
-    updated_at = models.DateTimeField(auto_now=True)
+    name: models.CharField = models.CharField(max_length=255, blank=True, default="")
+    domain: models.CharField = models.CharField(
+        max_length=255, unique=True, validators=[_validate_domain_for_field]
+    )
+    logo_url: models.URLField = models.URLField(max_length=500, blank=True, default="")
+    logo_data: models.BinaryField = models.BinaryField(blank=True, null=True)
+    logo_content_type: models.CharField = models.CharField(
+        max_length=50, blank=True, default=""
+    )
+    brand_info: models.JSONField = models.JSONField(default=dict, blank=True)
+    created_at: models.DateTimeField = models.DateTimeField(default=timezone.now)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
     class Meta:
         app_label = "core"
@@ -543,7 +679,7 @@ class Company(models.Model):
         """Check if company has a stored logo."""
         return bool(self.logo_data)
 
-    def get_logo_url(self, request=None, absolute: bool = True) -> str:
+    def get_logo_url(self, request: Any = None, absolute: bool = True) -> str:
         """Get URL to serve the logo.
 
         Args:
@@ -562,7 +698,7 @@ class Company(models.Model):
         url = reverse("core:company-logo", kwargs={"domain": self.domain})
 
         if request:
-            return request.build_absolute_uri(url)
+            return cast(str, request.build_absolute_uri(url))
 
         if absolute:
             # Use BASE_URL setting for absolute URLs (needed for Slack)
@@ -571,6 +707,117 @@ class Company(models.Model):
                 return f"{base_url}{url}"
 
         return url
+
+
+class Person(models.Model):
+    """Person model for storing enriched contact/person data from Hunter.io.
+
+    Used by EmailEnrichmentService to cache person information
+    retrieved from Hunter.io's email enrichment API.
+
+    This data is only collected when:
+    1. The workspace is on Pro or Enterprise plan
+    2. The workspace has configured their own Hunter.io API key
+    3. Hunter.io returns data for the email address
+
+    GDPR: This cache holds personal data (names, social profiles, location)
+    fetched under a specific workspace's Hunter.io contract, so it is scoped
+    per workspace. The same email enriched by two workspaces produces two
+    independent rows, one per workspace. This keeps tenant data isolated and
+    lets an erasure request be honored per tenant (delete that workspace's
+    rows without touching other tenants' caches). Unlike ``Company`` (public
+    brand data), Person data must never be shared across workspaces.
+
+    Note: Hunter.io respects GDPR - emails where the person has requested
+    data removal return a 451 status and are not enriched.
+
+    Attributes:
+        workspace: The workspace whose Hunter.io contract fetched this data.
+        email: Email identifier, unique per workspace (indexed for lookups).
+        first_name: Person's first/given name.
+        last_name: Person's last/family name.
+        position: Job title (e.g., "VP of Engineering").
+        seniority: Seniority level (e.g., "senior", "executive").
+        company_domain: Company domain from employment data.
+        linkedin_url: LinkedIn profile URL.
+        twitter_handle: Twitter/X handle (without @).
+        github_handle: GitHub username.
+        location: Location string (e.g., "San Francisco, CA").
+        hunter_data: Full Hunter.io API response for reference.
+        created_at: When the record was created.
+        updated_at: When the record was last updated.
+    """
+
+    workspace: Any = models.ForeignKey(
+        Workspace, on_delete=models.CASCADE, related_name="enriched_people"
+    )
+    email: models.EmailField = models.EmailField(db_index=True)
+    first_name: models.CharField = models.CharField(
+        max_length=100, blank=True, default=""
+    )
+    last_name: models.CharField = models.CharField(
+        max_length=100, blank=True, default=""
+    )
+    position: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
+    seniority: models.CharField = models.CharField(
+        max_length=50, blank=True, default=""
+    )
+    company_domain: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
+    linkedin_url: models.URLField = models.URLField(
+        max_length=500, blank=True, default=""
+    )
+    twitter_handle: models.CharField = models.CharField(
+        max_length=100, blank=True, default=""
+    )
+    github_handle: models.CharField = models.CharField(
+        max_length=100, blank=True, default=""
+    )
+    location: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
+    hunter_data: models.JSONField = models.JSONField(default=dict, blank=True)
+    created_at: models.DateTimeField = models.DateTimeField(default=timezone.now)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "core"
+        verbose_name_plural = "People"
+        indexes = [
+            models.Index(fields=["created_at"], name="person_created_at_idx"),
+            models.Index(fields=["-updated_at"], name="person_updated_at_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["workspace", "email"],
+                name="uniq_person_workspace_email",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        """Return string representation of the person.
+
+        Returns:
+            Person's full name or email.
+        """
+        if self.first_name or self.last_name:
+            return f"{self.first_name} {self.last_name}".strip()
+        return cast(str, self.email)
+
+    @property
+    def full_name(self) -> str | None:
+        """Get the person's full name if available."""
+        if self.first_name or self.last_name:
+            return f"{self.first_name} {self.last_name}".strip()
+        return None
+
+    @property
+    def has_enrichment(self) -> bool:
+        """Check if person has enrichment data from Hunter.io."""
+        return bool(self.hunter_data.get("_enriched_at"))
 
 
 class UsageLimit(models.Model):
@@ -585,9 +832,11 @@ class UsageLimit(models.Model):
         max_monthly_notifications: Maximum notifications per month.
     """
 
-    plan = models.CharField(max_length=20, choices=Workspace.STRIPE_PLANS)
-    max_monthly_registrations = models.IntegerField()
-    max_monthly_notifications = models.IntegerField()
+    plan: models.CharField = models.CharField(
+        max_length=20, choices=Workspace.STRIPE_PLANS
+    )
+    max_monthly_registrations: models.IntegerField = models.IntegerField()
+    max_monthly_notifications: models.IntegerField = models.IntegerField()
 
     def __str__(self) -> str:
         """Return string representation of the usage limit.
@@ -599,6 +848,10 @@ class UsageLimit(models.Model):
             f"{self.get_plan_display()} - "
             f"{self.max_monthly_registrations} registrations"
         )
+
+    def get_plan_display(self) -> str:  # type: ignore[empty-body]
+        """Return the display value for plan choice field."""
+        ...  # Django provides this method at runtime
 
 
 class UserProfile(models.Model):
@@ -616,9 +869,11 @@ class UserProfile(models.Model):
         workspace: Primary workspace membership (legacy).
     """
 
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    slack_user_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
-    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
+    user: Any = models.OneToOneField(User, on_delete=models.CASCADE)
+    slack_user_id: models.CharField = models.CharField(
+        max_length=255, unique=True, null=True, blank=True
+    )
+    workspace: Any = models.ForeignKey(Workspace, on_delete=models.CASCADE)
 
     class Meta:
         app_label = "core"
@@ -644,34 +899,40 @@ class NotificationSettings(models.Model):
         notify_*: Boolean flags for each notification type.
     """
 
-    workspace = models.OneToOneField(
+    workspace: Any = models.OneToOneField(
         Workspace, on_delete=models.CASCADE, related_name="notification_settings"
     )
 
     # Payment events
-    notify_payment_success = models.BooleanField(default=True)
-    notify_payment_failure = models.BooleanField(default=True)
+    notify_payment_success: models.BooleanField = models.BooleanField(default=True)
+    notify_payment_failure: models.BooleanField = models.BooleanField(default=True)
 
     # Subscription events
-    notify_subscription_created = models.BooleanField(default=True)
-    notify_subscription_updated = models.BooleanField(default=True)
-    notify_subscription_canceled = models.BooleanField(default=True)
+    notify_subscription_created: models.BooleanField = models.BooleanField(default=True)
+    notify_subscription_updated: models.BooleanField = models.BooleanField(default=True)
+    notify_subscription_canceled: models.BooleanField = models.BooleanField(
+        default=True
+    )
 
     # Trial events
-    notify_trial_ending = models.BooleanField(default=True)
-    notify_trial_expired = models.BooleanField(default=True)
+    notify_trial_ending: models.BooleanField = models.BooleanField(default=True)
+    notify_trial_expired: models.BooleanField = models.BooleanField(default=True)
 
     # Customer events
-    notify_customer_updated = models.BooleanField(default=True)
-    notify_signups = models.BooleanField(default=True)
+    notify_customer_updated: models.BooleanField = models.BooleanField(default=True)
+    notify_signups: models.BooleanField = models.BooleanField(default=True)
 
     # Shopify events
-    notify_shopify_order_created = models.BooleanField(default=True)
-    notify_shopify_order_updated = models.BooleanField(default=True)
-    notify_shopify_order_paid = models.BooleanField(default=True)
+    notify_shopify_order_created: models.BooleanField = models.BooleanField(
+        default=True
+    )
+    notify_shopify_order_updated: models.BooleanField = models.BooleanField(
+        default=True
+    )
+    notify_shopify_order_paid: models.BooleanField = models.BooleanField(default=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
     class Meta:
         app_label = "core"
@@ -698,31 +959,42 @@ class Plan(models.Model):
         price_monthly: Monthly price in USD.
         max_users: Maximum users allowed.
         max_integrations: Maximum integrations allowed.
+        grace_multiplier: Soft-limit grace factor; webhooks keep flowing
+            past the monthly event limit until limit * grace_multiplier.
         features: List of included features.
     """
 
-    name = models.CharField(max_length=50, unique=True)
-    display_name = models.CharField(max_length=100)
-    description = models.TextField(blank=True)
-    price_monthly = models.DecimalField(max_digits=10, decimal_places=2)
-    price_yearly = models.DecimalField(
+    name: models.CharField = models.CharField(max_length=50, unique=True)
+    display_name: models.CharField = models.CharField(max_length=100)
+    description: models.TextField = models.TextField(blank=True)
+    price_monthly: models.DecimalField = models.DecimalField(
+        max_digits=10, decimal_places=2
+    )
+    price_yearly: models.DecimalField = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True
     )
 
     # Limits
-    max_users = models.IntegerField(default=1)
-    max_integrations = models.IntegerField(default=1)
-    max_monthly_notifications = models.IntegerField(default=1000)
+    max_users: models.IntegerField = models.IntegerField(default=1)
+    max_integrations: models.IntegerField = models.IntegerField(default=1)
+    max_monthly_notifications: models.IntegerField = models.IntegerField(default=1000)
+    grace_multiplier: models.DecimalField = models.DecimalField(
+        max_digits=4, decimal_places=2, default=Decimal("2.00")
+    )
 
     # Features
-    features = models.JSONField(default=list)
+    features: models.JSONField = models.JSONField(default=list)
 
     # Stripe integration
-    stripe_price_id_monthly = models.CharField(max_length=100, blank=True)
-    stripe_price_id_yearly = models.CharField(max_length=100, blank=True)
+    stripe_price_id_monthly: models.CharField = models.CharField(
+        max_length=100, blank=True
+    )
+    stripe_price_id_yearly: models.CharField = models.CharField(
+        max_length=100, blank=True
+    )
 
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    is_active: models.BooleanField = models.BooleanField(default=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         app_label = "core"
@@ -733,7 +1005,7 @@ class Plan(models.Model):
         Returns:
             Plan display name.
         """
-        return self.display_name
+        return cast(str, self.display_name)
 
 
 class WebAuthnCredential(models.Model):
@@ -750,24 +1022,28 @@ class WebAuthnCredential(models.Model):
         name: User-friendly name for the credential.
     """
 
-    user = models.ForeignKey(
+    user: Any = models.ForeignKey(
         "auth.User", on_delete=models.CASCADE, related_name="webauthn_credentials"
     )
 
     # WebAuthn credential data
-    credential_id = models.TextField(unique=True)  # Base64 encoded credential ID
-    public_key = models.TextField()  # Base64 encoded public key
-    sign_count = models.BigIntegerField(default=0)  # Authentication counter
+    credential_id: models.TextField = models.TextField(
+        unique=True
+    )  # Base64 encoded credential ID
+    public_key: models.TextField = models.TextField()  # Base64 encoded public key
+    sign_count: models.BigIntegerField = models.BigIntegerField(
+        default=0
+    )  # Authentication counter
 
     # Credential metadata
-    name = models.CharField(
+    name: models.CharField = models.CharField(
         max_length=100, help_text="User-friendly name for this credential"
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    last_used = models.DateTimeField(null=True, blank=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    last_used: models.DateTimeField = models.DateTimeField(null=True, blank=True)
 
     # Device info (optional)
-    user_agent = models.TextField(blank=True)
+    user_agent: models.TextField = models.TextField(blank=True)
 
     class Meta:
         app_label = "core"
@@ -795,11 +1071,13 @@ class WebAuthnChallenge(models.Model):
         challenge_type: Type of challenge (registration or authentication).
     """
 
-    challenge = models.CharField(max_length=255, unique=True)  # Base64 encoded
-    user = models.ForeignKey(
+    challenge: models.CharField = models.CharField(
+        max_length=255, unique=True
+    )  # Base64 encoded
+    user: Any = models.ForeignKey(
         "auth.User", on_delete=models.CASCADE, null=True, blank=True
     )  # Null for registration challenges
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
 
     # Challenge type
     CHALLENGE_TYPES: ClassVar[tuple[tuple[str, str], ...]] = (
@@ -807,12 +1085,22 @@ class WebAuthnChallenge(models.Model):
         ("authentication", "Authentication"),
         ("signup_registration", "Signup Registration"),
     )
-    challenge_type = models.CharField(max_length=20, choices=CHALLENGE_TYPES)
+    challenge_type: models.CharField = models.CharField(
+        max_length=20, choices=CHALLENGE_TYPES
+    )
 
     class Meta:
         app_label = "core"
         verbose_name = "WebAuthn Challenge"
         verbose_name_plural = "WebAuthn Challenges"
+        indexes: ClassVar[list[models.Index]] = [
+            # Speeds up TTL cutoff lookups and opportunistic cleanup deletes,
+            # which filter on created_at (optionally with challenge_type).
+            models.Index(
+                fields=["created_at", "challenge_type"],
+                name="core_webauthn_created_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         """Return string representation of the challenge.

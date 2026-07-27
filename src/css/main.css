@@ -6,13 +6,7 @@
 @source "../app/**/*.html.j2";
 @source "../app/**/*.py";
 
-/* Import FontAwesome */
-@import "@fortawesome/fontawesome-free/css/fontawesome.css";
-@import "@fortawesome/fontawesome-free/css/solid.css";
-@import "@fortawesome/fontawesome-free/css/regular.css";
-@import "@fortawesome/fontawesome-free/css/brands.css";
-
-/* Import Tabler Icons */
+/* Import Tabler Icons (single icon library — keep FontAwesome out) */
 @import "@tabler/icons-webfont/dist/tabler-icons.css";
 
 /* Custom theme configuration for Tailwind v4 */
@@ -93,7 +87,8 @@
   }
 
   .btn-primary {
-    @apply border border-transparent text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 focus-visible:ring-primary-500 shadow-sm;
+    /* primary-700 base keeps white text at >= 4.5:1 contrast (WCAG AA) */
+    @apply border border-transparent text-white bg-gradient-to-r from-primary-700 to-primary-800 hover:from-primary-800 hover:to-primary-900 focus-visible:ring-primary-500 shadow-sm;
   }
 
   .btn-secondary {

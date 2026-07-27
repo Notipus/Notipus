@@ -458,6 +458,51 @@ class TestBrandfetchPlugin:
         plugin = BrandfetchPlugin()
         assert plugin.get_plugin_name() == "brandfetch"
 
+    @patch("plugins.enrichment.brandfetch.requests.get")
+    def test_enrich_domain_handles_404_gracefully(self, mock_get: MagicMock) -> None:
+        """Test that 404 responses are handled gracefully without error logging."""
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_get.return_value = mock_response
+
+        plugin = BrandfetchPlugin()
+        plugin.configure({"api_key": "test-key"})
+
+        result = plugin.enrich_domain("unknown-domain.gov")
+
+        assert result == {}
+        mock_get.assert_called_once()
+
+    @patch("plugins.enrichment.brandfetch.requests.get")
+    def test_enrich_domain_handles_429_rate_limit(self, mock_get: MagicMock) -> None:
+        """Test that 429 rate limit responses are handled with warning."""
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = {"Retry-After": "120"}
+        mock_get.return_value = mock_response
+
+        plugin = BrandfetchPlugin()
+        plugin.configure({"api_key": "test-key"})
+
+        result = plugin.enrich_domain("example.com")
+
+        assert result == {}
+        mock_get.assert_called_once()
+
+    @patch("plugins.enrichment.brandfetch.requests.get")
+    def test_enrich_domain_handles_timeout(self, mock_get: MagicMock) -> None:
+        """Test that timeout exceptions are handled gracefully."""
+        import requests
+
+        mock_get.side_effect = requests.exceptions.Timeout("Connection timed out")
+
+        plugin = BrandfetchPlugin()
+        plugin.configure({"api_key": "test-key"})
+
+        result = plugin.enrich_domain("slow-domain.com")
+
+        assert result == {}
+
 
 # ============================================================================
 # Data Blender Tests

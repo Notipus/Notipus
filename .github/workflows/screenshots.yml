@@ -1,0 +1,53 @@
+name: Marketing Screenshots
+
+# Manual-only: these captures exist for the marketing site and docs,
+# not for CI verification.
+on:
+  workflow_dispatch:
+    inputs:
+      screenshot:
+        description: 'Scenario to capture (e.g. dashboard.py, onboarding.py, or "all")'
+        required: false
+        default: 'all'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Capture Screenshots
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Install Playwright browser dependencies
+        run: uv run playwright install --with-deps chromium
+
+      - name: Capture screenshots
+        run: bin/record_screenshots.sh "${{ github.event.inputs.screenshot }}"
+
+      - name: Upload screenshots artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: screenshots
+          path: |
+            screenshots/output/*.png
+            screenshots/output/*.webm
+          if-no-files-found: warn

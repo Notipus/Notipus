@@ -4,8 +4,10 @@ Source plugins handle incoming webhooks from payment providers and other
 external services, validating signatures and parsing event data.
 """
 
+import hashlib
 import logging
 from abc import abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -14,6 +16,64 @@ from django.http import HttpRequest
 from plugins.base import BasePlugin, PluginMetadata
 
 logger = logging.getLogger(__name__)
+
+# Webhook signature headers whose values must never be logged.
+# Follows the same mask-as-[PRESENT] policy as
+# WebhookStorageService._extract_safe_headers, but covers a broader set
+# (e.g. the legacy X-Chargify-Webhook-Signature header).
+_SENSITIVE_HEADERS: frozenset[str] = frozenset(
+    {
+        "stripe-signature",
+        "x-chargify-webhook-signature",
+        "x-chargify-webhook-signature-hmac-sha-256",
+    }
+)
+_SENSITIVE_HEADER_PREFIXES: tuple[str, ...] = ("x-shopify-hmac",)
+
+
+def mask_sensitive_headers(headers: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy of request headers with signature values masked.
+
+    Signature headers (Stripe-Signature, X-Chargify-Webhook-Signature*,
+    X-Shopify-Hmac-*) are replaced with "[PRESENT]" so their values never
+    leak into log sinks.
+
+    Args:
+        headers: Request headers mapping (e.g. ``request.headers``).
+
+    Returns:
+        Dictionary of headers safe for logging.
+    """
+    masked: dict[str, Any] = {}
+    for name, value in headers.items():
+        lowered = name.lower()
+        if lowered in _SENSITIVE_HEADERS or lowered.startswith(
+            _SENSITIVE_HEADER_PREFIXES
+        ):
+            masked[name] = "[PRESENT]"
+        else:
+            masked[name] = value
+    return masked
+
+
+def signed_content_hash(request: HttpRequest) -> str:
+    """Return the SHA-256 hex digest of the raw request body.
+
+    For providers whose HMAC covers only the request body (Chargify,
+    Shopify), the body is the only signed content, so its hash is a
+    replay-safe deduplication discriminator: provider retries resend the
+    identical body (same hash), while attacker-mutable headers (webhook
+    id, timestamp) never influence the value. Plugins surface it as
+    ``content_hash`` in parsed event data; the router prefers it when
+    building the dedup key.
+
+    Args:
+        request: The incoming HTTP request.
+
+    Returns:
+        Hex-encoded SHA-256 digest of ``request.body``.
+    """
+    return hashlib.sha256(request.body).hexdigest()
 
 
 # Exceptions for source plugins
@@ -164,9 +224,6 @@ class BaseSourcePlugin(BasePlugin):
 
     Subclasses may override:
     - get_customer_data(): Retrieve customer information
-    - get_payment_history(): Get payment history for a customer
-    - get_usage_metrics(): Get usage metrics for a customer
-    - get_related_events(): Get related events for a customer
 
     Example:
         class MySourcePlugin(BaseSourcePlugin):
@@ -244,28 +301,6 @@ class BaseSourcePlugin(BasePlugin):
         """
         pass
 
-    def get_payment_history(self, customer_id: str) -> list[dict[str, Any]]:
-        """Get payment history for a customer.
-
-        Args:
-            customer_id: The customer's unique identifier.
-
-        Returns:
-            List of payment records.
-        """
-        return []
-
-    def get_usage_metrics(self, customer_id: str) -> dict[str, Any]:
-        """Get usage metrics for a customer.
-
-        Args:
-            customer_id: The customer's unique identifier.
-
-        Returns:
-            Dictionary of usage metrics.
-        """
-        return {}
-
     def get_customer_data(self, customer_id: str) -> dict[str, Any]:
         """Get customer data from the source provider.
 
@@ -273,17 +308,11 @@ class BaseSourcePlugin(BasePlugin):
             customer_id: The customer's unique identifier.
 
         Returns:
-            Dictionary of customer information.
+            Dictionary of customer information including:
+            - company_name: Company name
+            - email: Customer email
+            - first_name: Customer first name
+            - last_name: Customer last name
+            - customer_id: The customer identifier for fallback display
         """
-        return {}
-
-    def get_related_events(self, customer_id: str) -> list[dict[str, Any]]:
-        """Get related events for a customer.
-
-        Args:
-            customer_id: The customer's unique identifier.
-
-        Returns:
-            List of related event records.
-        """
-        return []
+        return {"customer_id": customer_id}

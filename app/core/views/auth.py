@@ -4,21 +4,34 @@ This module handles user authentication via Slack OpenID Connect.
 """
 
 import logging
-from typing import Any
+import secrets
+from typing import Any, cast
 
 import requests
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.models import User
+from django.db import models
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect
 
-from ..models import UserProfile
+from .. import analytics
+from ..constants import SLACK_TEAM_NAME_CLAIM, SLACK_TEAM_NAME_SESSION_KEY
+from ..models import UserProfile, Workspace
 
 logger = logging.getLogger(__name__)
 
 # Default timeout for external API requests (seconds)
 SLACK_API_TIMEOUT = 30
+
+# Session key for the Slack OAuth login state parameter (CSRF protection)
+SLACK_AUTH_STATE_SESSION_KEY = "slack_auth_oauth_state"
+
+# The captured team name prefills Workspace.name, so cap it to that
+# field's length ("or 200" only pacifies max_length's Optional typing).
+WORKSPACE_NAME_MAX_LENGTH: int = (
+    cast(models.CharField, Workspace._meta.get_field("name")).max_length or 200
+)
 
 
 def home(request: HttpRequest) -> HttpResponse:
@@ -56,6 +69,11 @@ def slack_auth(request: HttpRequest) -> HttpResponseRedirect:
     Returns:
         Redirect to Slack authorization URL.
     """
+    # Generate a state parameter and store it in the session for CSRF
+    # protection. It is validated on callback before the code is exchanged.
+    state = secrets.token_urlsafe(32)
+    request.session[SLACK_AUTH_STATE_SESSION_KEY] = state
+
     scopes = "openid,email,profile"
     auth_url = (
         f"https://slack.com/openid/connect/authorize"
@@ -63,6 +81,7 @@ def slack_auth(request: HttpRequest) -> HttpResponseRedirect:
         f"&scope={scopes}"
         f"&redirect_uri={settings.SLACK_REDIRECT_URI}"
         f"&response_type=code"
+        f"&state={state}"
     )
     return redirect(auth_url)
 
@@ -87,7 +106,7 @@ def _get_slack_token(code: str) -> dict[str, Any] | None:
             },
             timeout=SLACK_API_TIMEOUT,
         )
-        data = response.json()
+        data: dict[str, Any] = response.json()
         if not data.get("ok"):
             error = data.get("error", "unknown")
             logger.warning(f"Slack token exchange failed: {error}")
@@ -116,7 +135,7 @@ def _get_slack_user_info(access_token: str) -> dict[str, Any] | None:
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=SLACK_API_TIMEOUT,
         )
-        data = response.json()
+        data: dict[str, Any] = response.json()
         if not data.get("ok"):
             logger.warning(f"Slack userInfo failed: {data.get('error', 'unknown')}")
             return None
@@ -142,6 +161,19 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
     if not code:
         return HttpResponse("Authorization failed: No code provided", status=400)
 
+    # Validate the state parameter (CSRF protection) BEFORE exchanging the
+    # code. Read (do not pop) the stored state so a forged callback with a
+    # wrong/missing state cannot clear the legitimate in-progress state and
+    # DoS the real login flow. Only consume it after a successful match.
+    state = request.GET.get("state")
+    stored_state = request.session.get(SLACK_AUTH_STATE_SESSION_KEY)
+    if not state or not stored_state or not secrets.compare_digest(state, stored_state):
+        logger.warning("Slack auth OAuth state mismatch - possible CSRF attack")
+        return HttpResponse("Invalid OAuth state", status=400)
+
+    # State validated: consume it so it can't be replayed.
+    request.session.pop(SLACK_AUTH_STATE_SESSION_KEY, None)
+
     # Exchange code for token
     token_data = _get_slack_token(code)
     if not token_data:
@@ -160,13 +192,54 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
     if not slack_id or not email:
         return HttpResponse("Invalid user data from Slack", status=400)
 
+    # Reject login when Slack reports the email is not verified. Auto-creating
+    # or linking an account on an unverified email would allow account takeover.
+    if not user_info.get("email_verified", False):
+        # Log a non-PII identifier (Slack sub) instead of the email address.
+        logger.warning(f"Slack login rejected: email not verified (sub={slack_id})")
+        return HttpResponse("Email address is not verified", status=400)
+
+    user, created = _resolve_user(slack_id, email, name)
+
+    # Log the user in
+    analytics.set_login_method(request, "slack")
+    login(request, user)
+    if created:
+        analytics.track_event(request, "sign_up", {"method": "slack"})
+
+    # Remember the Slack team name so onboarding can prefill the workspace
+    # name instead of asking the user to retype it. Set after login():
+    # logging in as a different user flushes the session. Normalize
+    # defensively - the claim is external input destined for
+    # Workspace.name.
+    team_name = user_info.get(SLACK_TEAM_NAME_CLAIM)
+    if isinstance(team_name, str):
+        team_name = team_name.strip()[:WORKSPACE_NAME_MAX_LENGTH]
+        if team_name:
+            request.session[SLACK_TEAM_NAME_SESSION_KEY] = team_name
+
+    return redirect("core:dashboard")
+
+
+def _resolve_user(slack_id: str, email: str, name: str) -> tuple[User, bool]:
+    """Find or create the user and reconcile their Slack profile link.
+
+    Args:
+        slack_id: The Slack user identifier (``sub`` claim).
+        email: The user's verified email address.
+        name: The user's display name.
+
+    Returns:
+        Tuple of (resolved Django user, whether the user was created).
+    """
     # Find or create user
     user, created = User.objects.get_or_create(
         email=email, defaults={"username": email, "first_name": name}
     )
 
     if created:
-        logger.info(f"Created new user: {email}")
+        # Log the non-PII Slack sub instead of the email address.
+        logger.info(f"Created new user (sub={slack_id})")
 
     # Try to find existing UserProfile
     try:
@@ -186,7 +259,4 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
             # No profile exists - this is handled later when joining a team
             pass
 
-    # Log the user in
-    login(request, user)
-
-    return redirect("core:dashboard")
+    return user, created

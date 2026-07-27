@@ -3,7 +3,7 @@
 Tests cover:
 - CompanyAdmin list display
 - CompanyAdmin search and filter
-- CompanyAdmin actions (purge, refresh, delete)
+- CompanyAdmin actions (purge with confirmation, refresh)
 """
 
 from unittest.mock import patch
@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from core.admin import CompanyAdmin
 from core.models import Company
+from django.contrib import messages
 from django.contrib.admin.sites import AdminSite
 from django.test import RequestFactory
 
@@ -51,6 +52,7 @@ def sample_company(db: None) -> Company:
             },
             "_blended_at": "2025-01-24T10:00:00Z",
         },
+        logo_url="https://acme.com/logo.png",
         logo_data=b"fake logo data",
         logo_content_type="image/png",
     )
@@ -148,21 +150,25 @@ class TestCompanyAdminDisplayMethods:
 class TestCompanyAdminActions:
     """Tests for CompanyAdmin actions."""
 
-    def test_purge_enrichment_data(
+    def test_purge_enrichment_data_confirmed(
         self,
         company_admin: CompanyAdmin,
         sample_company: Company,
         request_factory: RequestFactory,
     ) -> None:
-        """Test purge_enrichment_data clears enrichment but keeps domain."""
-        request = request_factory.post("/admin/core/company/")
+        """Test confirmed purge clears enrichment but keeps the domain."""
+        request = request_factory.post("/admin/core/company/", {"confirm_purge": "yes"})
         request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
 
+        original_updated_at = sample_company.updated_at
         queryset = Company.objects.filter(pk=sample_company.pk)
 
         # Mock message_user to avoid middleware requirement
         with patch.object(company_admin, "message_user"):
-            company_admin.purge_enrichment_data(request, queryset)
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        # Confirmed purge applies immediately and redirects (returns None)
+        assert response is None
 
         # Refresh from database
         sample_company.refresh_from_db()
@@ -172,8 +178,122 @@ class TestCompanyAdminActions:
         # Enrichment data should be cleared
         assert sample_company.name == ""
         assert sample_company.brand_info == {}
+        assert sample_company.logo_url == ""
         assert sample_company.logo_data is None
         assert sample_company.logo_content_type == ""
+        # updated_at should advance even though .update() bypasses auto_now
+        assert sample_company.updated_at > original_updated_at
+
+    def test_purge_enrichment_data_requires_confirmation(
+        self,
+        company_admin: CompanyAdmin,
+        sample_company: Company,
+        request_factory: RequestFactory,
+    ) -> None:
+        """Test purge without confirmation shows a page and does not purge."""
+        request = request_factory.post("/admin/core/company/")
+        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+
+        queryset = Company.objects.filter(pk=sample_company.pk)
+
+        # Bypass admin site context (permission machinery) for this unit test.
+        with patch.object(company_admin.admin_site, "each_context", return_value={}):
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        # An intermediate confirmation page is returned instead of purging.
+        assert response is not None
+        assert response.template_name == (
+            "admin/core/company/purge_enrichment_confirmation.html"
+        )
+
+        # Data must remain untouched until the user confirms.
+        sample_company.refresh_from_db()
+        assert sample_company.name == "Acme Corporation"
+        assert sample_company.brand_info != {}
+
+    def test_purge_enrichment_data_ignores_wrong_confirm_value(
+        self,
+        company_admin: CompanyAdmin,
+        sample_company: Company,
+        request_factory: RequestFactory,
+    ) -> None:
+        """Test only the exact ``confirm_purge=yes`` sentinel triggers a purge."""
+        request = request_factory.post("/admin/core/company/", {"confirm_purge": "1"})
+        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+
+        queryset = Company.objects.filter(pk=sample_company.pk)
+
+        # A truthy-but-wrong value must show the confirmation page, not purge.
+        with patch.object(company_admin.admin_site, "each_context", return_value={}):
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        assert response is not None
+        assert response.template_name == (
+            "admin/core/company/purge_enrichment_confirmation.html"
+        )
+
+        sample_company.refresh_from_db()
+        assert sample_company.name == "Acme Corporation"
+        assert sample_company.brand_info != {}
+
+    def test_purge_enrichment_data_refuses_oversized_selection(
+        self,
+        company_admin: CompanyAdmin,
+        sample_company: Company,
+        request_factory: RequestFactory,
+    ) -> None:
+        """Test a selection above the cap is refused with a warning, no purge."""
+        # Lower the cap so a single-row queryset exceeds it.
+        company_admin.PURGE_CONFIRM_LIMIT = 0
+
+        request = request_factory.post("/admin/core/company/")
+        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+
+        queryset = Company.objects.filter(pk=sample_company.pk)
+
+        with patch.object(company_admin, "message_user") as mock_message:
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        # No confirmation page rendered; returns to the changelist.
+        assert response is None
+
+        # A warning was shown telling the admin to narrow the selection.
+        mock_message.assert_called_once()
+        assert mock_message.call_args.kwargs["level"] == messages.WARNING
+
+        # Data must be untouched.
+        sample_company.refresh_from_db()
+        assert sample_company.name == "Acme Corporation"
+        assert sample_company.brand_info != {}
+
+    def test_purge_enrichment_data_cap_applies_to_confirmed_submission(
+        self,
+        company_admin: CompanyAdmin,
+        sample_company: Company,
+        request_factory: RequestFactory,
+    ) -> None:
+        """Test the cap is enforced even on a confirmed (yes) submission."""
+        # Lower the cap so a single-row queryset exceeds it.
+        company_admin.PURGE_CONFIRM_LIMIT = 0
+
+        # A crafted confirmed POST must NOT bypass the safety cap.
+        request = request_factory.post("/admin/core/company/", {"confirm_purge": "yes"})
+        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+
+        queryset = Company.objects.filter(pk=sample_company.pk)
+
+        with patch.object(company_admin, "message_user") as mock_message:
+            response = company_admin.purge_enrichment_data(request, queryset)
+
+        # Refused: returns to changelist with a warning, no purge performed.
+        assert response is None
+        mock_message.assert_called_once()
+        assert mock_message.call_args.kwargs["level"] == messages.WARNING
+
+        # Data must be untouched despite confirm_purge=yes.
+        sample_company.refresh_from_db()
+        assert sample_company.name == "Acme Corporation"
+        assert sample_company.brand_info != {}
 
     def test_refresh_enrichment(
         self,
@@ -202,22 +322,14 @@ class TestCompanyAdminActions:
         # Other data should still exist
         assert sample_company.brand_info.get("description") is not None
 
-    def test_delete_selected_companies(
+    def test_no_custom_delete_action(
         self,
         company_admin: CompanyAdmin,
-        sample_company: Company,
-        request_factory: RequestFactory,
     ) -> None:
-        """Test delete_selected_companies removes companies."""
-        request = request_factory.post("/admin/core/company/")
-        request.user = type("User", (), {"has_perm": lambda self, x: True, "pk": 1})()
+        """Test the one-click custom delete action was removed.
 
-        company_id = sample_company.pk
-        queryset = Company.objects.filter(pk=company_id)
-
-        # Mock message_user to avoid middleware requirement
-        with patch.object(company_admin, "message_user"):
-            company_admin.delete_selected_companies(request, queryset)
-
-        # Company should be deleted
-        assert not Company.objects.filter(pk=company_id).exists()
+        Deletion now goes through Django's built-in ``delete_selected``,
+        which shows its own confirmation page.
+        """
+        assert "delete_selected_companies" not in company_admin.actions
+        assert not hasattr(company_admin, "delete_selected_companies")

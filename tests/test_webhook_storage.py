@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from core.encrypted_cache import decrypt_cache_value
 from django.http import HttpRequest
 from django.test.client import RequestFactory
 from django.utils import timezone
@@ -136,10 +137,13 @@ class TestWebhookStorageService:
         # Verify cache.set was called for the webhook record
         assert mock_cache.set.call_count >= 1
 
-        # Check the webhook record structure
+        # Check the webhook record structure (stored encrypted - raw
+        # payloads are the most PII-dense data in the system)
         first_call_args = mock_cache.set.call_args_list[0]
         webhook_key = first_call_args[0][0]
-        webhook_data = json.loads(first_call_args[0][1])
+        stored_value = first_call_args[0][1]
+        assert stored_value.startswith("pqc1:")
+        webhook_data = decrypt_cache_value(stored_value)
 
         assert webhook_key.startswith("webhook_raw:stripe:workspace123:")
         assert webhook_data["provider"] == "stripe"
@@ -167,7 +171,7 @@ class TestWebhookStorageService:
         assert result is True
         first_call_args = mock_cache.set.call_args_list[0]
         webhook_key = first_call_args[0][0]
-        webhook_data = json.loads(first_call_args[0][1])
+        webhook_data = decrypt_cache_value(first_call_args[0][1])
 
         assert "global" in webhook_key
         assert webhook_data["workspace_uuid"] == "global"

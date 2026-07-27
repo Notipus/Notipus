@@ -70,7 +70,7 @@ class DashboardService:
             "member": member,
             "integrations": self._get_integration_data(workspace),
             "recent_activity": self._get_recent_activity(workspace),
-            "usage_data": self._get_usage_data(workspace),
+            "usage_data": self.get_usage_data(workspace),
             "trial_info": self._get_trial_info(workspace),
         }
 
@@ -87,16 +87,77 @@ class DashboardService:
             workspace=workspace, is_active=True
         )
 
+        # One query for every flag: unique_together on (workspace,
+        # integration_type) makes this lossless. Values are the raw
+        # webhook_verified_at timestamps — None means connected but not
+        # yet verified.
+        verified_at_by_type: dict[str, Any] = dict(
+            integrations.values_list("integration_type", "webhook_verified_at")
+        )
+        has_slack = "slack_notifications" in verified_at_by_type
+        connected_sources = [
+            t for t in Integration.SOURCE_INTEGRATION_TYPES if t in verified_at_by_type
+        ]
         return {
             "integrations": integrations,
-            "has_slack": integrations.filter(
-                integration_type="slack_notifications"
-            ).exists(),
-            "has_shopify": integrations.filter(integration_type="shopify").exists(),
-            "has_chargify": integrations.filter(integration_type="chargify").exists(),
-            "has_stripe": integrations.filter(
-                integration_type="stripe_customer"
-            ).exists(),
+            "has_slack": has_slack,
+            "has_shopify": "shopify" in verified_at_by_type,
+            "has_chargify": "chargify" in verified_at_by_type,
+            "has_stripe": "stripe_customer" in verified_at_by_type,
+            "setup_progress": self._build_setup_progress(
+                has_slack=has_slack,
+                has_source=bool(connected_sources),
+                has_first_event=any(
+                    verified_at_by_type[t] is not None for t in connected_sources
+                ),
+            ),
+        }
+
+    @staticmethod
+    def _build_setup_progress(
+        *, has_slack: bool, has_source: bool, has_first_event: bool
+    ) -> dict[str, Any]:
+        """Build the dashboard setup checklist state.
+
+        The checklist never renders at zero, honestly: reaching the
+        dashboard requires an account and a workspace, so those two
+        steps are genuinely complete and counted — no fabricated head
+        start. Plan choice is not a step: workspaces start on the free
+        plan and upgrading is a later decision, not setup.
+
+        Args:
+            has_slack: Whether a Slack destination is connected.
+            has_source: Whether any event source is connected.
+            has_first_event: Whether any source has received a
+                verified webhook.
+
+        Returns:
+            Dict with the step list (key, label, done), done_count,
+            total, percent, and complete.
+        """
+        steps = [
+            {"key": "account", "label": "Create your account", "done": True},
+            {"key": "workspace", "label": "Create your workspace", "done": True},
+            {"key": "slack", "label": "Connect Slack", "done": has_slack},
+            {
+                "key": "source",
+                "label": "Connect an event source",
+                "done": has_source,
+            },
+            {
+                "key": "first_event",
+                "label": "Receive your first event",
+                "done": has_first_event,
+            },
+        ]
+        done_count = sum(1 for step in steps if step["done"])
+        total = len(steps)
+        return {
+            "steps": steps,
+            "done_count": done_count,
+            "total": total,
+            "percent": round(done_count * 100 / total),
+            "complete": done_count == total,
         }
 
     def _get_recent_activity(self, workspace: Workspace) -> list[dict[str, Any]]:
@@ -111,7 +172,7 @@ class DashboardService:
         try:
             # Fetch more records than needed to allow for deduplication
             recent_activity_raw = self.db_service.get_recent_webhook_activity(
-                days=7, limit=100
+                workspace_id=str(workspace.uuid), days=7, limit=100
             )
             transformed = self._transform_activity_data(recent_activity_raw)
             deduplicated = self._deduplicate_activity(transformed)
@@ -166,6 +227,8 @@ class DashboardService:
                     "customer_ltv": record.get("customer_ltv"),
                     "customer_tenure": record.get("customer_tenure"),
                     "customer_status_flags": record.get("customer_status_flags", []),
+                    # Older stored records predate email tags; default to []
+                    "customer_email_tags": record.get("customer_email_tags", []),
                     "insight_text": record.get("insight_text"),
                     "insight_icon": record.get("insight_icon"),
                     "plan_name": record.get("plan_name"),
@@ -251,15 +314,21 @@ class DashboardService:
 
         return deduplicated
 
-    def _get_usage_data(self, workspace: Workspace) -> dict[str, Any]:
+    def get_usage_data(self, workspace: Workspace) -> dict[str, Any]:
         """Get rate limiting and usage statistics for the workspace.
 
         Args:
             workspace: Workspace model instance.
 
         Returns:
-            Dictionary with usage data and rate limit info.
+            Dictionary with usage data and rate limit info, including
+            pause_at — the event count at which delivery actually stops
+            (the plan limit times its grace multiplier), so upgrade
+            prompts can state the real consequence instead of a vague
+            warning.
         """
+        from core.services.usage_alerts import hard_limit
+
         try:
             # Get rate limit info and usage stats
             is_allowed, rate_limit_info = rate_limiter.check_rate_limit(workspace)
@@ -275,6 +344,7 @@ class DashboardService:
                 "rate_limit_info": rate_limit_info,
                 "usage_stats": usage_stats,
                 "usage_percentage": min(usage_percentage, 100),  # Cap at 100%
+                "pause_at": hard_limit(limit, workspace.subscription_plan),
             }
         except Exception as e:
             logger.error(f"Error getting usage data: {e!s}")
@@ -283,6 +353,7 @@ class DashboardService:
                 "rate_limit_info": {},
                 "usage_stats": {},
                 "usage_percentage": 0,
+                "pause_at": None,
             }
 
     def _get_trial_info(self, workspace: Workspace) -> dict[str, Any]:
@@ -295,16 +366,21 @@ class DashboardService:
             Dictionary with trial status and remaining days.
         """
         trial_days_remaining = 0
+        trial_has_ended = False
         is_trial = workspace.subscription_status == "trial"
 
         if is_trial and workspace.trial_end_date:
             trial_days_remaining = max(
                 0, (workspace.trial_end_date - timezone.now()).days
             )
+            # Distinct from trial_days_remaining == 0, which is also true
+            # during the final <24h of an active trial.
+            trial_has_ended = workspace.trial_end_date <= timezone.now()
 
         return {
             "is_trial": is_trial,
             "trial_days_remaining": trial_days_remaining,
+            "trial_has_ended": trial_has_ended,
             "trial_end_date": workspace.trial_end_date,
         }
 
@@ -522,7 +598,7 @@ class BillingService:
             Dictionary with billing dashboard information.
         """
         dashboard_service = DashboardService()
-        usage_data = dashboard_service._get_usage_data(workspace)
+        usage_data = dashboard_service.get_usage_data(workspace)
         trial_info = dashboard_service._get_trial_info(workspace)
 
         # Get Stripe subscription info if available
@@ -563,6 +639,11 @@ class IntegrationService:
             workspace=workspace, is_active=True
         )
 
+        # Build lookup dict to avoid repeated .filter().exists() queries
+        integration_lookup: dict[str, Integration] = {
+            i.integration_type: i for i in current_integrations
+        }
+
         # Event Sources - Services that send webhooks TO Notipus
         event_sources: list[dict[str, Any]] = [
             {
@@ -572,9 +653,12 @@ class IntegrationService:
                     "E-commerce events from your Shopify store "
                     "(orders, payments, customers)"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="shopify"
-                ).exists(),
+                "connected": "shopify" in integration_lookup,
+                "webhook_verified_at": (
+                    integration_lookup["shopify"].webhook_verified_at
+                    if "shopify" in integration_lookup
+                    else None
+                ),
                 "category": "E-commerce",
             },
             {
@@ -583,9 +667,12 @@ class IntegrationService:
                 "description": (
                     "Subscription billing events (renewals, cancellations, upgrades)"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="chargify"
-                ).exists(),
+                "connected": "chargify" in integration_lookup,
+                "webhook_verified_at": (
+                    integration_lookup["chargify"].webhook_verified_at
+                    if "chargify" in integration_lookup
+                    else None
+                ),
                 "category": "Billing",
             },
             {
@@ -594,9 +681,12 @@ class IntegrationService:
                 "description": (
                     "Customer payment events (successful payments, failed charges)"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="stripe_customer"
-                ).exists(),
+                "connected": "stripe_customer" in integration_lookup,
+                "webhook_verified_at": (
+                    integration_lookup["stripe_customer"].webhook_verified_at
+                    if "stripe_customer" in integration_lookup
+                    else None
+                ),
                 "category": "Payments",
             },
         ]
@@ -609,9 +699,7 @@ class IntegrationService:
                 "description": (
                     "Real-time notifications sent to your team's Slack workspace"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="slack_notifications"
-                ).exists(),
+                "connected": "slack_notifications" in integration_lookup,
                 "category": "Team Communication",
             },
             {
@@ -620,10 +708,21 @@ class IntegrationService:
                 "description": (
                     "Real-time notifications sent to your Telegram chat or channel"
                 ),
-                "connected": current_integrations.filter(
-                    integration_type="telegram_notifications"
-                ).exists(),
+                "connected": "telegram_notifications" in integration_lookup,
                 "category": "Messaging",
+            },
+        ]
+
+        # Enrichment Services - Services that enhance customer data
+        enrichment_services: list[dict[str, Any]] = [
+            {
+                "id": "hunter",
+                "name": "Hunter.io",
+                "description": (
+                    "Enrich customer data with person info (name, job title, LinkedIn)"
+                ),
+                "connected": "hunter_enrichment" in integration_lookup,
+                "category": "Email Enrichment",
             },
         ]
 
@@ -631,5 +730,6 @@ class IntegrationService:
             "workspace": workspace,
             "event_sources": event_sources,
             "notification_channels": notification_destinations,
+            "enrichment_services": enrichment_services,
             "current_integrations": current_integrations,
         }

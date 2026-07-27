@@ -2,6 +2,11 @@
 
 This module provides services for storing and retrieving raw webhook
 payloads in Redis with 7-day TTL-based expiration for debugging and analysis.
+
+Raw payloads are the most PII-dense data in the system (full customer
+emails, names, addresses, order contents), so records are encrypted at
+rest via core.encrypted_cache. The daily index stays plaintext: it holds
+only cache key names.
 """
 
 import json
@@ -9,6 +14,7 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
 from django.core.cache import cache
 from django.http import HttpRequest
 from django.utils import timezone
@@ -136,11 +142,16 @@ class WebhookStorageService:
                 "body_size": len(raw_body),
             }
 
-            # Store in Redis with TTL
+            # Store in Redis with TTL, encrypted (raw payloads carry the
+            # full customer PII of the original webhook)
             webhook_key = self._get_webhook_key(
                 provider_name, workspace_id, timestamp_ms
             )
-            cache.set(webhook_key, json.dumps(webhook_record), timeout=self.ttl_seconds)
+            cache.set(
+                webhook_key,
+                encrypt_cache_value(webhook_record),
+                timeout=self.ttl_seconds,
+            )
 
             # Add to daily index
             date_str = now.strftime("%Y-%m-%d")
@@ -210,7 +221,10 @@ class WebhookStorageService:
 
             results: list[dict[str, Any]] = []
             for key in webhook_keys:
-                webhook_data = cache.get(key)
+                # Decrypting; legacy plaintext entries written before
+                # encryption come back as JSON strings and take the
+                # json.loads branch
+                webhook_data = decrypt_cache_value(cache.get(key))
                 if webhook_data:
                     if isinstance(webhook_data, str):
                         webhook_data = json.loads(webhook_data)

@@ -7,6 +7,7 @@ database, then updates the Plan model with the actual Stripe Price IDs.
 import json
 import logging
 from decimal import Decimal
+from typing import Any, cast
 
 from core.models import Plan
 from core.services.stripe import StripeAPI
@@ -253,7 +254,7 @@ class Command(BaseCommand):
         stripe_api: StripeAPI,
         dry_run: bool,
         results: dict,
-    ) -> dict | None:
+    ) -> dict[Any, Any] | None:
         """Get existing Stripe Product or create a new one.
 
         Args:
@@ -270,7 +271,7 @@ class Command(BaseCommand):
 
         if existing:
             self.stdout.write(f"  Found existing product: {existing['id']}")
-            return existing
+            return cast("dict[Any, Any]", existing)
 
         # Create new product
         if dry_run:
@@ -303,7 +304,7 @@ class Command(BaseCommand):
             results["created_products"] += 1
             self.stdout.write(self.style.SUCCESS(f"  Created product: {product['id']}"))
 
-        return product
+        return cast("dict[Any, Any] | None", product)
 
     def _create_price_if_needed(
         self,
@@ -315,7 +316,7 @@ class Command(BaseCommand):
         dry_run: bool,
         force: bool,
         results: dict,
-    ) -> dict | None:
+    ) -> dict[Any, Any] | None:
         """Create a Stripe Price if needed.
 
         Args:
@@ -341,7 +342,7 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f"  Found existing {interval}ly price: {existing['id']}"
                 )
-                return existing
+                return cast("dict[Any, Any]", existing)
 
         if dry_run:
             self.stdout.write(
@@ -368,7 +369,7 @@ class Command(BaseCommand):
                 )
             )
 
-        return price
+        return cast("dict[Any, Any] | None", price)
 
     def _print_summary(self, results: dict, dry_run: bool) -> None:
         """Print a summary of operations performed.

@@ -78,12 +78,14 @@ def get_user_workspace(request: HttpRequest) -> Workspace | None:
     # Try WorkspaceMember first
     member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()
     if member:
-        return member.workspace
+        workspace: Workspace = member.workspace
+        return workspace
 
     # Fall back to UserProfile for backward compatibility
     try:
         user_profile = UserProfile.objects.get(user=request.user)
-        return user_profile.workspace
+        workspace = user_profile.workspace
+        return workspace
     except UserProfile.DoesNotExist:
         return None
 

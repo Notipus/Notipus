@@ -1,26 +1,37 @@
 # syntax=docker/dockerfile:1
-# Use the official Python image
-FROM python:3.13-slim
+# All base images are digest-pinned for supply-chain safety and
+# reproducibility; Dependabot (docker ecosystem) keeps the digests fresh.
+# The two Chainguard digests must move together: the builder and runtime
+# stages must track the same release so the venv built in the builder runs
+# on the same interpreter version at runtime.
+
+# Tool images, declared as stages so Dependabot can bump their digests
+FROM ghcr.io/astral-sh/uv:latest@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c AS uv
+FROM oven/bun:latest@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 AS bun
+
+# Build stage: Chainguard's -dev variant includes a shell and apk for build
+# tooling.
+FROM cgr.dev/chainguard/python:latest-dev@sha256:7a568bcee42666f73f041645a41c913ce1d442f4c24cf6019bc543a90820e531 AS builder
+
+USER root
 
 # Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-
-# Git SHA for Sentry release tracking (passed as build arg)
-ARG GIT_SHA=unknown
-ENV SENTRY_RELEASE=${GIT_SHA}
+# Precompile dependencies to .pyc at build time so container boots skip
+# bytecode compilation (~1.1s saved per cold start)
+ENV UV_COMPILE_BYTECODE=1
+# Build the venv against the image's interpreter so its symlinks resolve to
+# the same path in the runtime stage
+ENV UV_PYTHON=/usr/bin/python
 
 # Copy uv binary from official image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=uv /uv /uvx /bin/
 
 # Copy bun binary from official image
-COPY --from=oven/bun:latest /usr/local/bin/bun /usr/local/bin/
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/
 
 # Set the working directory
 WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y libpq-dev gcc redis-tools postgresql-client && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files
 COPY pyproject.toml uv.lock /app/
@@ -40,8 +51,7 @@ COPY postcss.config.js /app/
 COPY ./app/ .
 
 # Build frontend assets
-RUN mkdir -p static/dist/fonts static/webfonts && \
-    cp -r /app/node_modules/@fortawesome/fontawesome-free/webfonts/* static/webfonts/ && \
+RUN mkdir -p static/dist/fonts && \
     cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.woff2 static/dist/fonts/ && \
     cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.woff static/dist/fonts/ && \
     cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.ttf static/dist/fonts/ && \
@@ -50,8 +60,35 @@ RUN mkdir -p static/dist/fonts static/webfonts && \
 # Collect static files
 RUN uv run --no-dev python manage.py collectstatic --noinput
 
+# Precompile application code to bytecode (deps are handled by UV_COMPILE_BYTECODE)
+RUN /app/.venv/bin/python -m compileall -q -x '(\.venv|node_modules)' /app
+
+# Drop frontend build inputs so they don't ship in the runtime image
+RUN rm -rf /app/node_modules /app/src /app/package.json /app/bun.lock /app/postcss.config.js
+
+# Runtime stage: distroless (no shell, no package manager), runs as nonroot.
+# Same Chainguard release as the builder stage above — keep in lockstep.
+FROM cgr.dev/chainguard/python:latest@sha256:a0365f7b90bf7b78a5e35f2709efb7c9263acf9c7b1905e0ec4c3e943c88e64d
+
+ENV PYTHONUNBUFFERED=1
+
+# Git SHA for Sentry release tracking (passed as build arg)
+ARG GIT_SHA=unknown
+ENV SENTRY_RELEASE=${GIT_SHA}
+
+WORKDIR /app
+COPY --from=builder /app /app
+
 # Port that the application will use
 EXPOSE 8080
 
+# The base image's entrypoint is `python`; reset it so CMD (and
+# docker-compose `command:` overrides) execute as-is
+ENTRYPOINT []
+
 # Command to start the server
-CMD ["uv", "run", "--no-dev", "uvicorn", "--host", "0.0.0.0", "--port", "8080", "--lifespan", "off", "django_notipus.asgi:application"]
+# Invoke uvicorn from the venv directly: `uv run` re-validates the lockfile and
+# environment on every boot, which costs startup time and can mutate the env
+# --proxy-headers: Use X-Forwarded-* headers for client IP (from Fly.io/Cloudflare)
+# --forwarded-allow-ips='*': Trust proxy headers from any IP (we're behind Fly.io)
+CMD ["/app/.venv/bin/uvicorn", "--host", "0.0.0.0", "--port", "8080", "--lifespan", "off", "--proxy-headers", "--forwarded-allow-ips", "*", "django_notipus.asgi:application"]

@@ -4,8 +4,49 @@ This module tests the InsightDetector class that identifies
 milestones and generates insights for notifications.
 """
 
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+
 import pytest
 from webhooks.services.insight_detector import InsightDetector, MilestoneConfig
+
+
+def _years_ago(years: int, offset_days: int = 0) -> str:
+    """Build an ISO timestamp exactly N calendar years before now.
+
+    Args:
+        years: Number of years to go back.
+        offset_days: Extra days to shift the result by (can be negative).
+
+    Returns:
+        ISO-formatted UTC timestamp string.
+    """
+    now = datetime.now(timezone.utc)
+    day = now.day
+    if now.month == 2 and now.day == 29:
+        day = 28  # Leap day has no exact match in non-leap years
+    created = now.replace(year=now.year - years, day=day)
+    return (created + timedelta(days=offset_days)).isoformat()
+
+
+@pytest.fixture
+def mock_insight_cache():
+    """Stateful cache mock for anniversary dedup (cache.add semantics).
+
+    Yields:
+        Mock cache whose add() returns True only for previously-unseen keys.
+    """
+    store: dict = {}
+
+    def mock_add(key: str, value, timeout=None) -> bool:
+        if key in store:
+            return False
+        store[key] = value
+        return True
+
+    with patch("webhooks.services.insight_detector.cache") as mock:
+        mock.add = mock_add
+        yield mock
 
 
 @pytest.fixture
@@ -19,7 +60,6 @@ def custom_detector() -> InsightDetector:
     """Create an InsightDetector with custom config."""
     config = MilestoneConfig(
         ltv_milestones=[500, 1000, 2500],
-        payment_growth_threshold=0.15,
         vip_ltv_threshold=5000,
     )
     return InsightDetector(config)
@@ -95,7 +135,7 @@ class TestInsightDetectorBasic:
         """Test default milestone configuration."""
         assert 1000 in detector.config.ltv_milestones
         assert 5000 in detector.config.ltv_milestones
-        assert detector.config.payment_growth_threshold == 0.20
+        assert detector.config.vip_ltv_threshold == 10000
 
 
 class TestFirstPaymentDetection:
@@ -137,6 +177,21 @@ class TestFirstPaymentDetection:
         if result is not None:
             assert "First payment" not in result.text
 
+    def test_no_first_payment_without_orders_count(
+        self, detector: InsightDetector, payment_success_event: dict
+    ) -> None:
+        """Test that missing history data never reads as a first payment.
+
+        Stripe/Chargify webhook payloads carry no order count. Absence of
+        history is not evidence of a first payment - defaulting to 0 would
+        label every renewal "First payment from this customer".
+        """
+        customer = {"email": "renewal@example.com", "customer_id": "cus_123"}
+
+        result = detector.detect(payment_success_event, customer)
+
+        assert result is None or "First payment" not in result.text
+
 
 class TestLTVMilestoneDetection:
     """Test LTV milestone detection."""
@@ -146,7 +201,8 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 200.00}
         customer = {
             "orders_count": 5,
-            "total_spent": 900.00,  # Will cross $1000 with this payment
+            # Reported total is read as post-payment: $900 -> $1,100
+            "total_spent": 1100.00,
             "payment_history": [{"status": "success", "amount": 300}] * 3,
         }
 
@@ -161,7 +217,8 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 500.00}
         customer = {
             "orders_count": 20,
-            "total_spent": 4800.00,  # Will cross $5000 with this payment
+            # Reported total is read as post-payment: $4,700 -> $5,200
+            "total_spent": 5200.00,
             "payment_history": [{"status": "success", "amount": 300}] * 5,
         }
 
@@ -191,7 +248,8 @@ class TestLTVMilestoneDetection:
         event = {"type": "payment_success", "amount": 100.00}
         customer = {
             "orders_count": 3,
-            "total_spent": 450.00,  # Will cross $500 with this payment
+            # Reported total is read as post-payment: $420 -> $520
+            "total_spent": 520.00,
             "payment_history": [{"status": "success", "amount": 150}] * 3,
         }
 
@@ -200,44 +258,680 @@ class TestLTVMilestoneDetection:
         assert result is not None
         assert "500" in result.text
 
+    def test_no_milestone_without_ltv_data(self, detector: InsightDetector) -> None:
+        """Test that unknown LTV never fires a milestone.
 
-class TestPaymentGrowthDetection:
-    """Test payment growth detection."""
+        Stripe payloads carry no lifetime spend; treating unknown as $0
+        would make a single $5k invoice from a years-old customer claim
+        "Crossed $5,000 lifetime!".
+        """
+        event = {"type": "payment_success", "amount": 5000.00, "orders_count": 9}
+        customer = {"email": "big@example.com", "customer_id": "cus_123"}
 
-    def test_detect_payment_growth(self, detector: InsightDetector) -> None:
-        """Test detection of significant payment growth."""
-        event = {"type": "payment_success", "amount": 600.00}  # 100% larger than avg
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_milestone_uses_event_currency(self, detector: InsightDetector) -> None:
+        """Test that milestone text uses the payment's currency, not $."""
+        event = {"type": "payment_success", "amount": 200.00, "currency": "EUR"}
+        customer = {"orders_count": 5, "total_spent": 1100.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is not None
+        assert "€1,000" in result.text
+
+
+class TestLargestLTVMilestone:
+    """Test that the LARGEST crossed LTV milestone is celebrated."""
+
+    def test_big_jump_fires_largest_milestone(self, detector: InsightDetector) -> None:
+        """Test $500 -> $60,500 fires the $50,000 milestone, not $1,000."""
+        event = {"type": "payment_success", "amount": 60000.00}
         customer = {
             "orders_count": 10,
-            "total_spent": 3000.00,
-            "payment_history": [
-                {"status": "success", "amount": 300},
-                {"status": "success", "amount": 300},
-                {"status": "success", "amount": 300},
-            ],  # Average is 300
+            # Reported total is read as post-payment: $500 -> $60,500
+            "total_spent": 60500.00,
+            "payment_history": [{"status": "success", "amount": 250}] * 2,
         }
 
         result = detector.detect(event, customer)
 
         assert result is not None
-        assert "%" in result.text or "larger" in result.text.lower()
+        assert "50,000" in result.text
+        assert "1,000" not in result.text.replace("50,000", "")
 
-    def test_no_growth_detection_without_history(
+    def test_crossing_single_milestone_unchanged(
         self, detector: InsightDetector
     ) -> None:
-        """Test no growth detection without enough payment history."""
-        event = {"type": "payment_success", "amount": 600.00}
+        """Test that crossing exactly one milestone still fires it."""
+        event = {"type": "payment_success", "amount": 200.00}
         customer = {
-            "orders_count": 1,
-            "total_spent": 100.00,
-            "payment_history": [{"status": "success", "amount": 100}],  # Only 1 payment
+            "orders_count": 10,
+            # Reported total is read as post-payment: crosses only $5,000
+            "total_spent": 5100.00,
+            "payment_history": [{"status": "success", "amount": 200}] * 2,
         }
 
         result = detector.detect(event, customer)
 
-        # Should not be growth insight due to insufficient history
-        if result is not None:
-            assert "larger" not in result.text.lower() or "%" not in result.text
+        assert result is not None
+        assert "5,000" in result.text
+
+
+class TestLTVMilestoneConservativeSemantics:
+    """Regression tests for the conservative total_spent reading (issue #110).
+
+    Neither Shopify nor Chargify documents whether the lifetime-spend
+    snapshot in a payment webhook includes the payment being reported,
+    and Shopify's aggregates update asynchronously. The detector must
+    therefore treat the reported total as the post-payment ceiling: a
+    milestone fires only when reported - amount < milestone <= reported.
+    A celebration may arrive late but can never be early or false.
+    """
+
+    def test_milestone_fires_when_reported_total_proves_it(
+        self, detector: InsightDetector
+    ) -> None:
+        """A reported total at/above the milestone within the payment window fires.
+
+        Reported $1,000 with a $200 payment: window ($800, $1,000] contains
+        the $1,000 milestone, and the customer provably reached $1,000.
+        """
+        event = {"type": "payment_success", "amount": 200.00}
+        customer = {"orders_count": 5, "total_spent": 1000.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is not None
+        assert "1,000" in result.text
+
+    def test_no_early_celebration_when_total_below_milestone(
+        self, detector: InsightDetector
+    ) -> None:
+        """A reported total below the milestone must never fire it.
+
+        Under the old pre-payment math, reported $900 + $200 payment
+        claimed "Crossed $1,000 lifetime!". If $900 was already the
+        post-payment total, that celebration was one payment early. The
+        conservative reading stays silent until the provider's own
+        number proves the milestone.
+        """
+        event = {"type": "payment_success", "amount": 200.00}
+        customer = {"orders_count": 5, "total_spent": 900.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_stale_zero_snapshot_stays_silent(self, detector: InsightDetector) -> None:
+        """A stale $0 snapshot with a large payment must not fire milestones.
+
+        Shopify's customer aggregates can lag the triggering order, so
+        total_spent "0.00" plus a $1,500 payment proves nothing about
+        lifetime spend having crossed $1,000 - the old math would have
+        celebrated it.
+        """
+        event = {"type": "payment_success", "amount": 1500.00}
+        customer = {"orders_count": 3, "total_spent": "0.00"}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_negative_previous_ltv_clamped_to_zero(
+        self, detector: InsightDetector
+    ) -> None:
+        """A payment larger than the reported total clamps previous LTV to 0.
+
+        Reported $1,200 with a $1,500 payment: reported - amount is
+        negative, so the window becomes ($0, $1,200] and the $1,000
+        milestone (proven by the reported total) still fires.
+        """
+        event = {"type": "payment_success", "amount": 1500.00}
+        customer = {"orders_count": 4, "total_spent": 1200.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is not None
+        assert "1,000" in result.text
+
+    def test_zero_amount_payment_never_fires(self, detector: InsightDetector) -> None:
+        """A zero-amount event yields an empty window and stays silent.
+
+        With amount 0 the window (reported, reported] is empty even when
+        the reported total sits exactly on a milestone - nothing was
+        crossed BY this payment.
+        """
+        event = {"type": "payment_success", "amount": 0}
+        customer = {"orders_count": 9, "total_spent": 5000.00}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+    def test_chargify_lifetime_value_same_conservative_reading(
+        self, detector: InsightDetector
+    ) -> None:
+        """Chargify-style totals get the same conservative semantics.
+
+        Chargify's total_revenue_in_cents ("total payments since
+        signup") is equally undocumented on whether it includes the
+        payment that triggered the webhook, so the post-payment reading
+        applies: $950 reported + $100 payment does not fire $1,000, but
+        a reported $1,000 does.
+        """
+        event = {"type": "payment_success", "amount": 100.00}
+
+        below = detector._detect_ltv_milestone(
+            event, {"total_spent": 950.00, "customer_id": "chargify_1"}
+        )
+        assert below is None
+
+        proven = detector._detect_ltv_milestone(
+            event, {"total_spent": 1000.00, "customer_id": "chargify_1"}
+        )
+        assert proven is not None
+        assert "1,000" in proven.text
+
+    def test_stripe_without_ltv_field_still_silent(
+        self, detector: InsightDetector
+    ) -> None:
+        """Stripe payloads carry no lifetime-spend field and stay silent.
+
+        The conservative change must not alter Stripe's behavior:
+        unknown LTV is not $0, so no milestone can ever fire.
+        """
+        event = {"type": "payment_success", "amount": 10000.00}
+        customer = {"email": "big@example.com", "customer_id": "cus_123"}
+
+        result = detector._detect_ltv_milestone(event, customer)
+
+        assert result is None
+
+
+class TestAnniversaryDetection:
+    """Test true-date anniversary detection with dedup."""
+
+    @pytest.fixture
+    def anniversary_customer(self) -> dict:
+        """Customer created exactly one year ago with quiet history.
+
+        History is shaped so no higher-priority insight (first payment, LTV
+        milestone, growth) fires before the anniversary check.
+        """
+        return {
+            "email": "loyal@example.com",
+            "orders_count": 12,
+            "total_spent": 300.00,
+            "payment_history": [{"status": "success", "amount": 25}] * 2,
+            "created_at": _years_ago(1),
+        }
+
+    @pytest.fixture
+    def anniversary_event(self) -> dict:
+        """Payment event for the anniversary customer."""
+        return {
+            "type": "payment_success",
+            "customer_id": "cus_anniv",
+            "workspace_id": "ws_123",
+            "amount": 25.00,
+            "metadata": {},
+        }
+
+    def test_fires_on_true_anniversary_date(
+        self,
+        detector: InsightDetector,
+        anniversary_event: dict,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test that the 1-year anniversary fires on the true date."""
+        result = detector.detect(anniversary_event, anniversary_customer)
+
+        assert result is not None
+        assert "1 year anniversary" in result.text
+        assert result.icon == "celebration"
+
+    def test_fires_within_tolerance_window(
+        self,
+        detector: InsightDetector,
+        anniversary_event: dict,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test that a payment 2 days after the true date still fires."""
+        anniversary_customer["created_at"] = _years_ago(1, offset_days=-2)
+
+        result = detector.detect(anniversary_event, anniversary_customer)
+
+        assert result is not None
+        assert "1 year anniversary" in result.text
+
+    def test_does_not_fire_outside_tolerance_window(
+        self,
+        detector: InsightDetector,
+        anniversary_event: dict,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test that a payment 10 days off the true date does not fire.
+
+        The old `days // 30` heuristic matched a ~30-day span (any payment
+        between day 360 and day 389), so a weekly payer got several
+        "1 year anniversary!" insights in a row.
+        """
+        anniversary_customer["created_at"] = _years_ago(1, offset_days=-10)
+
+        result = detector.detect(anniversary_event, anniversary_customer)
+
+        assert result is None
+
+    def test_fires_exactly_once_per_anniversary(
+        self,
+        detector: InsightDetector,
+        anniversary_event: dict,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test dedup: a second payment inside the window does not re-fire."""
+        first = detector.detect(anniversary_event, anniversary_customer)
+        second = detector.detect(anniversary_event, anniversary_customer)
+
+        assert first is not None
+        assert "1 year anniversary" in first.text
+        assert second is None
+
+    def test_different_customers_dedup_independently(
+        self,
+        detector: InsightDetector,
+        anniversary_event: dict,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test that one customer's celebration doesn't block another's."""
+        first = detector.detect(anniversary_event, anniversary_customer)
+
+        other_event = dict(anniversary_event, customer_id="cus_other")
+        second = detector.detect(other_event, anniversary_customer)
+
+        assert first is not None
+        assert second is not None
+
+    def test_two_year_anniversary(
+        self,
+        detector: InsightDetector,
+        anniversary_event: dict,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test the 2-year anniversary text."""
+        anniversary_customer["created_at"] = _years_ago(2)
+
+        result = detector.detect(anniversary_event, anniversary_customer)
+
+        assert result is not None
+        assert "2 year anniversary" in result.text
+
+    def test_no_anniversary_without_customer_id(
+        self,
+        detector: InsightDetector,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test that anniversary needs a customer id (for attribution/dedup)."""
+        event = {"type": "payment_success", "amount": 25.00, "metadata": {}}
+
+        result = detector.detect(event, anniversary_customer)
+
+        assert result is None
+
+    def test_no_anniversary_without_workspace_id(
+        self,
+        detector: InsightDetector,
+        anniversary_customer: dict,
+        mock_insight_cache,
+    ) -> None:
+        """Test that anniversary is skipped when the workspace is unknown.
+
+        The dedup key is tenant-scoped; customer ids are only unique per
+        provider account, so an unscoped claim could collide across
+        tenants. Skipping is the only behavior that cannot collide.
+        """
+        event = {
+            "type": "payment_success",
+            "customer_id": "cus_anniv",
+            "amount": 25.00,
+            "metadata": {},
+        }
+
+        result = detector.detect(event, anniversary_customer)
+
+        assert result is None
+
+    def test_add_months_clamps_short_months(self, detector: InsightDetector) -> None:
+        """Test that month arithmetic clamps Jan 31 to end of February."""
+        jan_31 = datetime(2025, 1, 31, tzinfo=timezone.utc)
+
+        result = detector._add_months(jan_31, 13)
+
+        assert result == datetime(2026, 2, 28, tzinfo=timezone.utc)
+
+    def test_add_months_handles_leap_year(self, detector: InsightDetector) -> None:
+        """Test that a Jan 31 anniversary lands on Feb 29 in leap years."""
+        jan_31 = datetime(2027, 1, 31, tzinfo=timezone.utc)
+
+        result = detector._add_months(jan_31, 13)
+
+        assert result == datetime(2028, 2, 29, tzinfo=timezone.utc)
+
+
+class TestTrialConvertedDetection:
+    """Test stateless trial conversion detection from invoice metadata."""
+
+    def test_detects_trial_conversion_from_metadata(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that is_trial_conversion metadata yields the insight.
+
+        The Stripe parser flags the first paid invoice after a trial
+        (period_start at trial_end) - no cache marker involved, so the
+        3-day gap between trial_will_end and the conversion is irrelevant.
+        """
+        event = {
+            "type": "payment_success",
+            "customer_id": "cus_123",
+            "amount": 29.00,
+            "metadata": {"is_trial_conversion": True},
+        }
+
+        result = detector.detect(event, {"payment_history": []})
+
+        assert result is not None
+        assert "Trial converted" in result.text
+        assert result.icon == "celebration"
+
+    def test_no_trial_conversion_without_metadata(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that an ordinary payment does not claim a trial conversion."""
+        event = {
+            "type": "payment_success",
+            "customer_id": "cus_123",
+            "amount": 29.00,
+            "metadata": {},
+        }
+
+        result = detector._detect_trial_converted(event, {})
+
+        assert result is None
+
+    def test_trial_conversion_on_invoice_paid(self, detector: InsightDetector) -> None:
+        """Test that invoice_paid events can also carry the conversion flag."""
+        event = {
+            "type": "invoice_paid",
+            "customer_id": "cus_123",
+            "amount": 29.00,
+            "metadata": {"is_trial_conversion": True},
+        }
+
+        result = detector._detect_trial_converted(event, {})
+
+        assert result is not None
+        assert "Trial converted" in result.text
+
+    def test_none_metadata_does_not_crash(self, detector: InsightDetector) -> None:
+        """Test that an explicit metadata=None is handled gracefully."""
+        event = {
+            "type": "payment_success",
+            "customer_id": "cus_123",
+            "amount": 29.00,
+            "metadata": None,
+        }
+
+        result = detector._detect_trial_converted(event, {})
+
+        assert result is None
+
+
+class TestTrialEndingDetection:
+    """Test the trial_ending insight (end date and post-trial price).
+
+    Stripe's trial_will_end payload is a full subscription object, so
+    trial_end and the plan price are proven fields the parser stages
+    into metadata; the insight must degrade gracefully when they are
+    missing rather than guessing.
+    """
+
+    def test_full_insight_with_date_and_price(self, detector: InsightDetector) -> None:
+        """Test end date plus post-trial price renders the full insight."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "currency": "USD",
+            "metadata": {
+                "is_trial": True,
+                "trial_end": 1770537317,  # Feb 8, 2026 UTC
+                "plan_amount": 26.60,
+                "billing_period": "monthly",
+            },
+        }
+
+        result = detector.detect(event, {})
+
+        assert result is not None
+        assert result.text == "Trial ends Feb 8, then $26.60/mo"
+        assert result.icon == "clock"
+
+    def test_date_only_when_plan_amount_missing(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test a missing plan amount degrades to the end date alone."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": {"is_trial": True, "trial_end": 1770537317},
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is not None
+        assert result.text == "Trial ends Feb 8"
+
+    def test_price_only_when_trial_end_missing(self, detector: InsightDetector) -> None:
+        """Test a missing end date degrades to the conversion price alone."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "currency": "USD",
+            "metadata": {
+                "is_trial": True,
+                "plan_amount": 26.60,
+                "billing_period": "monthly",
+            },
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is not None
+        assert result.text == "Converts to $26.60/mo at trial end"
+
+    def test_zero_plan_amount_still_renders(self, detector: InsightDetector) -> None:
+        """Test a $0 post-trial plan (free tier) is not treated as missing."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "currency": "USD",
+            "metadata": {
+                "is_trial": True,
+                "trial_end": 1770537317,
+                "plan_amount": 0.0,
+                "billing_period": "monthly",
+            },
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is not None
+        assert result.text == "Trial ends Feb 8, then $0.00/mo"
+
+    def test_silent_when_both_signals_missing(self, detector: InsightDetector) -> None:
+        """Test the detector stays silent with neither date nor price."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": {"is_trial": True},
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is None
+
+    def test_ignores_other_event_types(self, detector: InsightDetector) -> None:
+        """Test non-trial-ending events never trigger the insight."""
+        event = {
+            "type": "trial_started",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": {"trial_end": 1770537317, "plan_amount": 26.60},
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is None
+
+    def test_none_metadata_does_not_crash(self, detector: InsightDetector) -> None:
+        """Test that an explicit metadata=None is handled gracefully."""
+        event = {
+            "type": "trial_ending",
+            "customer_id": "cus_123",
+            "amount": 0,
+            "metadata": None,
+        }
+
+        result = detector._detect_trial_ending(event, {})
+
+        assert result is None
+
+
+class TestInitialPaymentFailureDetection:
+    """Test surfacing of a payment_failure folded into an aggregated event."""
+
+    def test_subscription_with_failed_payment_surfaces_failure(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that has_payment_failure metadata produces a warning insight.
+
+        This is the aggregation case: subscription.created +
+        invoice.payment_failed in the same idempotency bucket must not read
+        as a plain "New subscription!".
+        """
+        event = {
+            "type": "subscription_created",
+            "customer_id": "cus_123",
+            "amount": 49.00,
+            "metadata": {
+                "has_payment_failure": True,
+                "failure_reason": "Your card was declined",
+                "decline_code": "insufficient_funds",
+                "attempt_count": 1,
+            },
+        }
+
+        result = detector.detect(event, {"orders_count": 0, "payment_history": []})
+
+        assert result is not None
+        assert result.icon == "warning"
+        assert "Your card was declined" in result.text
+
+    def test_failure_insight_outranks_first_payment(
+        self, detector: InsightDetector, new_customer_data: dict
+    ) -> None:
+        """Test that the failure warning wins over 'First payment'."""
+        event = {
+            "type": "subscription_created",
+            "amount": 49.00,
+            "metadata": {"has_payment_failure": True, "failure_reason": "declined"},
+        }
+
+        result = detector.detect(event, new_customer_data)
+
+        assert result is not None
+        assert result.icon == "warning"
+
+    def test_failure_insight_includes_retry_info(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that retry count and next attempt date are included."""
+        event = {
+            "type": "subscription_created",
+            "metadata": {
+                "has_payment_failure": True,
+                "failure_reason": "Card declined",
+                "attempt_count": 2,
+                "next_payment_attempt": 1740182400,  # Feb 22 2025
+            },
+        }
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is not None
+        assert "attempt #2" in result.text
+        assert "Next retry" in result.text
+
+    def test_no_failure_insight_without_flag(self, detector: InsightDetector) -> None:
+        """Test that plain subscription_created events are unaffected."""
+        event = {"type": "subscription_created", "metadata": {}}
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is None
+
+    def test_none_metadata_does_not_crash(self, detector: InsightDetector) -> None:
+        """Test that an explicit metadata=None is handled gracefully."""
+        event = {"type": "subscription_created", "metadata": None}
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is None
+
+    def test_retry_date_from_string_timestamp(self, detector: InsightDetector) -> None:
+        """Test that a numeric-string timestamp is still formatted."""
+        event = {
+            "type": "subscription_created",
+            "metadata": {
+                "has_payment_failure": True,
+                "next_payment_attempt": "1740182400",  # Feb 22 2025, as string
+            },
+        }
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is not None
+        assert "Next retry Feb 22" in result.text
+
+    def test_invalid_retry_timestamp_ignored(self, detector: InsightDetector) -> None:
+        """Test that an unparseable timestamp drops the retry date, not the insight."""
+        event = {
+            "type": "subscription_created",
+            "metadata": {
+                "has_payment_failure": True,
+                "failure_reason": "Card declined",
+                "next_payment_attempt": "soon",
+            },
+        }
+
+        result = detector._detect_initial_payment_failure(event, {})
+
+        assert result is not None
+        assert "Card declined" in result.text
+        assert "Next retry" not in result.text
 
 
 class TestFailedAttemptDetection:
@@ -254,22 +948,6 @@ class TestFailedAttemptDetection:
         assert result is not None
         assert "declined" in result.text.lower()
         assert result.icon == "warning"
-
-    def test_detect_multiple_failures(
-        self, detector: InsightDetector, payment_failure_event: dict
-    ) -> None:
-        """Test detection of multiple failed attempts."""
-        customer = {
-            "payment_history": [
-                {"status": "failed", "type": "payment_failure"},
-                {"status": "failed", "type": "payment_failure"},
-            ],
-        }
-
-        result = detector.detect(payment_failure_event, customer)
-
-        assert result is not None
-        assert "Attempt #3" in result.text or "#3" in result.text
 
 
 class TestVIPDetection:
@@ -289,6 +967,27 @@ class TestVIPDetection:
         # VIP detection might not be highest priority, check if detected
         # when no higher priority milestones are crossed
         assert result is not None
+
+    def test_vip_text_reflects_threshold_and_currency(
+        self, custom_detector: InsightDetector
+    ) -> None:
+        """Test VIP text renders the configured threshold in event currency."""
+        event = {"type": "payment_success", "amount": 100.00, "currency": "EUR"}
+        customer = {"total_spent": 6000.00}
+
+        result = custom_detector._detect_vip_status(event, customer)
+
+        assert result is not None
+        assert "€5,000+" in result.text
+
+    def test_no_vip_without_ltv_data(self, detector: InsightDetector) -> None:
+        """Test that unknown LTV never claims VIP status."""
+        event = {"type": "payment_success", "amount": 100.00}
+        customer = {"email": "unknown@example.com"}
+
+        result = detector._detect_vip_status(event, customer)
+
+        assert result is None
 
 
 class TestRiskStatusDetection:
@@ -320,22 +1019,15 @@ class TestRiskStatusDetection:
 
         assert "vip" in flags
 
-    def test_detect_at_risk_multiple_failures(
+    def test_no_flags_without_ltv_data(
         self, detector: InsightDetector, payment_failure_event: dict
     ) -> None:
-        """Test at_risk flag with multiple recent failures."""
-        customer = {
-            "total_spent": 500.00,
-            "payment_history": [
-                {"status": "failed"},
-                {"status": "failed"},
-                {"status": "success"},
-            ],
-        }
+        """Test that unknown LTV yields no flags (never guessed from $0)."""
+        customer = {"email": "unknown@example.com", "customer_id": "cus_123"}
 
         flags = detector.detect_risk_status(payment_failure_event, customer)
 
-        assert "at_risk" in flags
+        assert flags == []
 
     def test_no_flags_normal_customer(
         self, detector: InsightDetector, payment_success_event: dict
@@ -385,11 +1077,6 @@ class TestMilestoneConfigDefaults:
         config = MilestoneConfig()
         assert config.anniversary_months == [12, 24, 36, 48, 60]
 
-    def test_default_growth_threshold(self) -> None:
-        """Test default payment growth threshold."""
-        config = MilestoneConfig()
-        assert config.payment_growth_threshold == 0.20
-
     def test_default_vip_threshold(self) -> None:
         """Test default VIP LTV threshold."""
         config = MilestoneConfig()
@@ -404,15 +1091,74 @@ class TestMilestoneConfigDefaults:
         """Test custom configuration."""
         config = MilestoneConfig(
             ltv_milestones=[100, 500, 1000],
-            payment_growth_threshold=0.10,
             vip_ltv_threshold=2500,
             large_payment_threshold=500,
         )
 
         assert config.ltv_milestones == [100, 500, 1000]
-        assert config.payment_growth_threshold == 0.10
         assert config.vip_ltv_threshold == 2500
         assert config.large_payment_threshold == 500
+
+
+class TestStringLTVHandling:
+    """Test handling of string LTV values from providers like Shopify."""
+
+    def test_string_total_spent_in_risk_status(
+        self, detector: InsightDetector, payment_success_event: dict
+    ) -> None:
+        """Test that string total_spent doesn't crash detect_risk_status."""
+        # Shopify sends total_spent as string "0.00"
+        customer = {
+            "total_spent": "0.00",  # String, not float
+            "payment_history": [],
+        }
+
+        # Should not raise TypeError
+        flags = detector.detect_risk_status(payment_success_event, customer)
+        assert isinstance(flags, list)
+        assert "vip" not in flags  # 0.00 is not VIP
+
+    def test_string_total_spent_vip_detection(
+        self, detector: InsightDetector, payment_success_event: dict
+    ) -> None:
+        """Test VIP detection works with string total_spent."""
+        customer = {
+            "total_spent": "15000.00",  # String over VIP threshold
+            "payment_history": [],
+        }
+
+        flags = detector.detect_risk_status(payment_success_event, customer)
+        assert "vip" in flags
+
+    def test_string_ltv_milestone_detection(self, detector: InsightDetector) -> None:
+        """Test LTV milestone detection with string total_spent."""
+        event = {"type": "payment_success", "amount": 200.00}
+        customer = {
+            "orders_count": 5,
+            # String reported total, read as post-payment: crossed $1,000
+            "total_spent": "1100.00",
+            "payment_history": [{"status": "success", "amount": 300}] * 3,
+        }
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "1,000" in result.text
+
+    def test_string_amount_in_event(self, detector: InsightDetector) -> None:
+        """Test that string amount in event data is handled."""
+        event = {"type": "payment_success", "amount": "200.00"}  # String amount
+        customer = {
+            "orders_count": 5,
+            # Reported total is read as post-payment: crossed $1,000
+            "total_spent": 1100.00,
+            "payment_history": [{"status": "success", "amount": 300}] * 3,
+        }
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "1,000" in result.text
 
 
 class TestInsightPriority:
@@ -430,22 +1176,166 @@ class TestInsightPriority:
         assert result is not None
         assert "First payment" in result.text or "Welcome" in result.text
 
-    def test_ltv_milestone_over_growth(self, detector: InsightDetector) -> None:
-        """Test LTV milestone takes priority over growth."""
-        # Payment that both crosses milestone AND is large growth
-        event = {"type": "payment_success", "amount": 500.00}
+    def test_ltv_milestone_over_large_payment(self, detector: InsightDetector) -> None:
+        """Test LTV milestone takes priority over the large-payment insight."""
+        # Payment that both crosses a milestone AND clears the large threshold
+        event = {"type": "payment_success", "amount": 1500.00}
         customer = {
             "orders_count": 5,
-            "total_spent": 900.00,  # Will cross $1000
-            "payment_history": [
-                {"status": "success", "amount": 100},  # Average is 100
-                {"status": "success", "amount": 100},
-                {"status": "success", "amount": 100},
-            ],
+            # Reported total proves $1,000 was crossed by this payment
+            "total_spent": 2000.00,
         }
 
         result = detector.detect(event, customer)
 
         assert result is not None
-        # Should be milestone, not growth
-        assert "1,000" in result.text or "Crossed" in result.text
+        assert "Crossed" in result.text
+
+
+class TestFailedAttemptsWithAttemptCount:
+    """Test failed attempt detection using Stripe's attempt_count metadata."""
+
+    def test_attempt_count_2_shows_retry(self, detector: InsightDetector) -> None:
+        """Test that attempt_count >= 2 shows 'Retry #N'."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 2,
+                "next_payment_attempt": 1740182400,  # Feb 22 2025
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #2" in result.text
+        assert "Next attempt" in result.text
+        assert result.icon == "warning"
+
+    def test_attempt_count_3_shows_retry(self, detector: InsightDetector) -> None:
+        """Test that attempt_count 3 shows 'Retry #3'."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {"attempt_count": 3},
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #3" in result.text
+
+    def test_attempt_count_1_with_next_retry(self, detector: InsightDetector) -> None:
+        """Test attempt_count 1 with next_payment_attempt shows retry date."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 1,
+                "next_payment_attempt": 1740182400,
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Next retry" in result.text
+
+    def test_attempt_count_1_no_next_retry_with_reason(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test attempt_count 1 without next retry falls through to failure_reason."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 1,
+                "failure_reason": "Card declined",
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Card declined" in result.text
+
+    def test_no_attempt_data_yields_no_insight(self, detector: InsightDetector) -> None:
+        """Test that a failure with no metadata yields no insight.
+
+        Webhook payloads carry no cross-event history, so with neither
+        attempt_count nor failure_reason there is nothing truthful to say.
+        """
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {},
+        }
+
+        result = detector.detect(event, {})
+
+        assert result is None
+
+    def test_string_next_attempt_timestamp_formatted(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that a numeric-string next_payment_attempt still formats."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 2,
+                "next_payment_attempt": "1740182400",  # Feb 22 2025, as string
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #2" in result.text
+        assert "Next attempt Feb 22" in result.text
+
+    def test_invalid_next_attempt_timestamp_does_not_crash(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that garbage next_payment_attempt drops the date, not the insight."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 2,
+                "next_payment_attempt": "soon",
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Retry #2" in result.text
+        assert "Next attempt" not in result.text
+
+    def test_invalid_timestamp_attempt_1_falls_back_to_reason(
+        self, detector: InsightDetector
+    ) -> None:
+        """Test that attempt 1 with a bad timestamp falls back to the reason."""
+        event: dict = {
+            "type": "payment_failure",
+            "amount": 53.20,
+            "metadata": {
+                "attempt_count": 1,
+                "failure_reason": "Card declined",
+                "next_payment_attempt": "not-a-timestamp",
+            },
+        }
+        customer: dict = {"payment_history": []}
+
+        result = detector.detect(event, customer)
+
+        assert result is not None
+        assert "Card declined" in result.text

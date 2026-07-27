@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from webhooks.utils.currency import format_money
+
 
 class EventCategory(Enum):
     """High-level categories of events.
@@ -67,8 +69,12 @@ class NotificationType(Enum):
     INTEGRATION_ERROR = "integration_error"
     WEBHOOK_RECEIVED = "webhook_received"
 
+    # Checkout events
+    CHECKOUT_STARTED = "checkout_started"
+
     # Logistics events
     ORDER_CREATED = "order_created"
+    ORDER_CANCELLED = "order_cancelled"
     ORDER_FULFILLED = "order_fulfilled"
     FULFILLMENT_CREATED = "fulfillment_created"
     FULFILLMENT_UPDATED = "fulfillment_updated"
@@ -103,7 +109,9 @@ EVENT_CATEGORY_MAP: dict[NotificationType, EventCategory] = {
     NotificationType.INTEGRATION_CONNECTED: EventCategory.SYSTEM,
     NotificationType.INTEGRATION_ERROR: EventCategory.SYSTEM,
     NotificationType.WEBHOOK_RECEIVED: EventCategory.SYSTEM,
+    NotificationType.CHECKOUT_STARTED: EventCategory.PAYMENT,
     NotificationType.ORDER_CREATED: EventCategory.LOGISTICS,
+    NotificationType.ORDER_CANCELLED: EventCategory.LOGISTICS,
     NotificationType.ORDER_FULFILLED: EventCategory.LOGISTICS,
     NotificationType.FULFILLMENT_CREATED: EventCategory.LOGISTICS,
     NotificationType.FULFILLMENT_UPDATED: EventCategory.LOGISTICS,
@@ -162,6 +170,53 @@ class CompanyInfo:
 
 
 @dataclass
+class PersonInfo:
+    """Enriched person information from email enrichment (Hunter.io).
+
+    This data is only available for Pro/Enterprise workspaces with
+    Hunter.io integration configured. Works for all emails including
+    free email providers like Gmail.
+
+    Attributes:
+        email: The enriched email address.
+        first_name: Person's first/given name.
+        last_name: Person's last/family name.
+        full_name: Computed full name (first + last).
+        position: Job title (e.g., "VP of Engineering").
+        seniority: Seniority level (e.g., "senior", "executive").
+        company_domain: Company domain from employment data.
+        linkedin_url: LinkedIn profile URL.
+        twitter_handle: Twitter/X handle (without @).
+        github_handle: GitHub username.
+        location: Location string (e.g., "San Francisco, CA").
+    """
+
+    email: str
+    first_name: str | None = None
+    last_name: str | None = None
+    position: str | None = None
+    seniority: str | None = None
+    company_domain: str | None = None
+    linkedin_url: str | None = None
+    twitter_handle: str | None = None
+    github_handle: str | None = None
+    location: str | None = None
+
+    @property
+    def full_name(self) -> str | None:
+        """Get the person's full name if available."""
+        if self.first_name or self.last_name:
+            parts = [p for p in [self.first_name, self.last_name] if p]
+            return " ".join(parts)
+        return None
+
+    @property
+    def display_name(self) -> str:
+        """Get the best available display name."""
+        return self.full_name or self.email
+
+
+@dataclass
 class PaymentInfo:
     """Payment/order details.
 
@@ -206,17 +261,24 @@ class PaymentInfo:
     def format_amount_with_arr(self) -> str:
         """Format amount with ARR if applicable.
 
+        Both the base amount and the ARR are rendered in the payment's
+        own currency (e.g. "€299.00/mo = €3,588 ARR").
+
         Returns:
             Formatted string like "$299.00/mo = $3,588 ARR".
         """
         arr = self.get_arr()
-        if self.interval == "monthly" and arr:
-            return f"{self.currency} {self.amount:,.2f}/mo = ${arr:,.0f} ARR"
-        elif self.interval == "annual" and arr:
-            return f"{self.currency} {self.amount:,.2f}/yr ARR"
-        elif self.interval == "quarterly" and arr:
-            return f"{self.currency} {self.amount:,.2f}/qtr = ${arr:,.0f} ARR"
-        return f"{self.currency} {self.amount:,.2f}"
+        amount_str: str = format_money(self.amount, self.currency)
+        # get_arr() returns None only when the interval is not recurring;
+        # an ARR of 0 is still applicable (e.g. a $0 monthly plan), so
+        # check for None rather than truthiness.
+        if self.interval == "monthly" and arr is not None:
+            return f"{amount_str}/mo = {format_money(arr, self.currency, 0)} ARR"
+        elif self.interval == "annual" and arr is not None:
+            return f"{amount_str}/yr ARR"
+        elif self.interval == "quarterly" and arr is not None:
+            return f"{amount_str}/qtr = {format_money(arr, self.currency, 0)} ARR"
+        return amount_str
 
 
 @dataclass
@@ -232,6 +294,9 @@ class CustomerInfo:
         orders_count: Total number of orders.
         total_spent: Total amount spent.
         status_flags: Status indicators (at_risk, vip, etc.).
+        email_tags: Domain-type tags for the email address, as
+            EmailTag values (e.g. ["education", "free"]). See
+            webhooks.utils.email_classifier.
     """
 
     email: str
@@ -242,6 +307,7 @@ class CustomerInfo:
     orders_count: int | None = None
     total_spent: float | None = None
     status_flags: list[str] = field(default_factory=list)  # ["at_risk", "vip"]
+    email_tags: list[str] = field(default_factory=list)  # ["education", "free"]
 
 
 @dataclass
@@ -356,6 +422,9 @@ class RichNotification:
 
     # Company enrichment (optional)
     company: CompanyInfo | None = None
+
+    # Person enrichment (optional - requires Pro/Enterprise + Hunter.io)
+    person: PersonInfo | None = None
 
     # Actions (optional)
     actions: list[ActionButton] = field(default_factory=list)

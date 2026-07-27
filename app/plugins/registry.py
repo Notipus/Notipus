@@ -8,7 +8,7 @@ and lifecycle management.
 import importlib
 import logging
 import pkgutil
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from django.conf import settings
 
@@ -43,6 +43,9 @@ class PluginRegistry:
     """
 
     _instance: "PluginRegistry | None" = None
+    _plugins: dict[PluginType, dict[str, type[BasePlugin]]]
+    _instances: dict[str, BasePlugin]
+    _initialized: bool
 
     def __new__(cls) -> "PluginRegistry":
         """Create or return the singleton instance."""
@@ -50,6 +53,7 @@ class PluginRegistry:
             cls._instance = super().__new__(cls)
             cls._instance._plugins = {
                 PluginType.ENRICHMENT: {},
+                PluginType.EMAIL_ENRICHMENT: {},
                 PluginType.SOURCE: {},
                 PluginType.DESTINATION: {},
             }
@@ -138,18 +142,20 @@ class PluginRegistry:
         """
         discovered: dict[PluginType, list[str]] = {
             PluginType.ENRICHMENT: [],
+            PluginType.EMAIL_ENRICHMENT: [],
             PluginType.SOURCE: [],
             PluginType.DESTINATION: [],
         }
 
-        # Map subpackage names to plugin types
-        subpackages = {
-            "enrichment": PluginType.ENRICHMENT,
-            "sources": PluginType.SOURCE,
-            "destinations": PluginType.DESTINATION,
+        # Map subpackage names to allowed plugin types
+        # The enrichment folder can contain both domain and email enrichment plugins
+        subpackages: dict[str, list[PluginType]] = {
+            "enrichment": [PluginType.ENRICHMENT, PluginType.EMAIL_ENRICHMENT],
+            "sources": [PluginType.SOURCE],
+            "destinations": [PluginType.DESTINATION],
         }
 
-        for subpackage, plugin_type in subpackages.items():
+        for subpackage, allowed_types in subpackages.items():
             try:
                 package = importlib.import_module(f"plugins.{subpackage}")
                 package_path = package.__path__
@@ -158,15 +164,18 @@ class PluginRegistry:
                     package_path
                 ):
                     # Skip base and __init__ modules
-                    if module_name in ("base", "__init__"):
+                    if module_name in ("base", "base_email", "__init__"):
                         continue
 
                     try:
                         module = importlib.import_module(
                             f"plugins.{subpackage}.{module_name}"
                         )
-                        names = self._register_plugins_from_module(module, plugin_type)
-                        discovered[plugin_type].extend(names)
+                        names = self._register_plugins_from_module(
+                            module, allowed_types
+                        )
+                        for plugin_type, plugin_names in names.items():
+                            discovered[plugin_type].extend(plugin_names)
                     except Exception as e:
                         logger.warning(
                             f"Failed to import plugins.{subpackage}.{module_name}: {e}"
@@ -179,18 +188,18 @@ class PluginRegistry:
         return discovered
 
     def _register_plugins_from_module(
-        self, module: Any, expected_type: PluginType
-    ) -> list[str]:
+        self, module: Any, allowed_types: list[PluginType]
+    ) -> dict[PluginType, list[str]]:
         """Register all plugin classes from a module.
 
         Args:
             module: The module to scan for plugins.
-            expected_type: The expected plugin type for this module.
+            allowed_types: List of allowed plugin types for this module.
 
         Returns:
-            List of registered plugin names.
+            Dictionary mapping plugin types to lists of registered plugin names.
         """
-        registered: list[str] = []
+        registered: dict[PluginType, list[str]] = {t: [] for t in allowed_types}
 
         for attr_name in dir(module):
             attr = getattr(module, attr_name)
@@ -206,16 +215,17 @@ class PluginRegistry:
             ):
                 try:
                     metadata = attr.get_metadata()
-                    # Verify plugin type matches expected type
-                    if metadata.plugin_type != expected_type:
+                    # Verify plugin type is in allowed types
+                    if metadata.plugin_type not in allowed_types:
+                        allowed = [t.value for t in allowed_types]
                         logger.warning(
                             f"Plugin {attr_name} has type {metadata.plugin_type.value} "
-                            f"but is in {expected_type.value} package"
+                            f"but is in package that only allows {allowed}"
                         )
                         continue
 
                     self.register(attr)
-                    registered.append(metadata.name)
+                    registered[metadata.plugin_type].append(metadata.name)
                 except Exception as e:
                     logger.warning(f"Failed to register {attr_name}: {e}")
 
@@ -272,7 +282,7 @@ class PluginRegistry:
             True if enabled (default True if not in settings).
         """
         plugin_config = self._get_plugin_config(plugin_type, name)
-        return plugin_config.get("enabled", True)
+        return cast(bool, plugin_config.get("enabled", True))
 
     def is_available(self, plugin_type: PluginType, name: str) -> bool:
         """Check if a plugin is available (has required config).
@@ -301,7 +311,7 @@ class PluginRegistry:
         """
         plugins_config = getattr(settings, "PLUGINS", {})
         type_config = plugins_config.get(plugin_type.value, {})
-        return type_config.get(name, {})
+        return cast(dict[str, Any], type_config.get(name, {}))
 
     def get(
         self, plugin_type: PluginType, name: str, **init_kwargs: Any

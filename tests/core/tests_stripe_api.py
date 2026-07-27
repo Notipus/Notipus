@@ -16,9 +16,8 @@ with the Stripe SDK to ensure robust payment processing.
 
 from unittest.mock import Mock, patch
 
+from core.services.stripe import StripeAPI
 from django.test import TestCase
-
-from .services.stripe import StripeAPI
 
 
 class StripeAPITest(TestCase):
@@ -55,7 +54,7 @@ class StripeAPITest(TestCase):
         }
 
         self.assertEqual(result, expected)
-        mock_create.assert_called_once_with(**customer_data)
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key", **customer_data)
 
     @patch("core.services.stripe.stripe.Customer.create")
     def test_create_stripe_customer_stripe_error(self, mock_create) -> None:
@@ -164,7 +163,7 @@ class StripeAPITest(TestCase):
         result = self.api.create_stripe_customer({})
 
         self.assertEqual(result, {"id": "cus_empty"})
-        mock_create.assert_called_once_with()
+        mock_create.assert_called_once_with(api_key="sk_test_dev_key")
 
     @patch("core.services.stripe.stripe.Customer.create")
     def test_create_stripe_customer_with_metadata(self, mock_create) -> None:
@@ -223,7 +222,7 @@ class StripeAPITest(TestCase):
         self.assertEqual(result["address"]["city"], "San Francisco")
 
     @patch("core.services.stripe.stripe.Customer.create")
-    @patch("app.core.services.stripe.logger")
+    @patch("core.services.stripe.logger")
     def test_create_stripe_customer_logs_stripe_error(
         self, mock_logger, mock_create
     ) -> None:
@@ -244,7 +243,7 @@ class StripeAPITest(TestCase):
         )
 
     @patch("core.services.stripe.stripe.Customer.create")
-    @patch("app.core.services.stripe.logger")
+    @patch("core.services.stripe.logger")
     def test_create_stripe_customer_logs_general_error(
         self, mock_logger, mock_create
     ) -> None:
@@ -264,7 +263,7 @@ class StripeAPITest(TestCase):
     @patch("core.services.stripe.settings.STRIPE_SECRET_KEY", "sk_test_new_key")
     @patch("core.services.stripe.stripe.Customer.create")
     def test_create_stripe_customer_uses_correct_api_key(self, mock_create) -> None:
-        """Test that the correct API key is used"""
+        """The instance key travels per call, never via the module global"""
         import core.services.stripe as stripe_module
 
         # Mock successful creation
@@ -274,13 +273,22 @@ class StripeAPITest(TestCase):
 
         customer_data = {"email": "test@example.com"}
 
-        # Create new instance to trigger API key setting (not self.api from setUp)
-        new_api = StripeAPI()
-        result = new_api.create_stripe_customer(customer_data)
+        global_sentinel = "sk_global_untouched"
+        stripe_module.stripe.api_key = global_sentinel
+        try:
+            new_api = StripeAPI()
+            result = new_api.create_stripe_customer(customer_data)
 
-        # Verify API key was set
-        self.assertEqual(stripe_module.stripe.api_key, "sk_test_new_key")
-        self.assertIsNotNone(result)
+            # Key is passed on the call itself...
+            mock_create.assert_called_once_with(
+                api_key="sk_test_new_key", **customer_data
+            )
+            # ...and the module global is never mutated (a global would
+            # leak this key into concurrent requests using another one)
+            self.assertEqual(stripe_module.stripe.api_key, global_sentinel)
+            self.assertIsNotNone(result)
+        finally:
+            stripe_module.stripe.api_key = None
 
     @patch("core.services.stripe.stripe.Account.retrieve")
     def test_get_account_info_success(self, mock_retrieve) -> None:

@@ -123,20 +123,20 @@ class NotificationSettingsTest(TestCase):
         )
 
     def test_notification_settings_creation(self):
-        """Test creating notification settings"""
-        settings = NotificationSettings.objects.create(workspace=self.workspace)
+        """Test settings are created automatically by the post_save signal"""
+        settings = NotificationSettings.objects.get(workspace=self.workspace)
         self.assertEqual(settings.workspace, self.workspace)
         self.assertTrue(settings.notify_payment_success)  # Default value
 
     def test_notification_settings_str_representation(self):
         """Test string representation"""
-        settings = NotificationSettings.objects.create(workspace=self.workspace)
+        settings = NotificationSettings.objects.get(workspace=self.workspace)
         expected = f"Notification Settings for {self.workspace.name}"
         self.assertEqual(str(settings), expected)
 
     def test_notification_settings_defaults(self):
         """Test default values"""
-        settings = NotificationSettings.objects.create(workspace=self.workspace)
+        settings = NotificationSettings.objects.get(workspace=self.workspace)
         # Test some key defaults
         self.assertTrue(settings.notify_payment_success)
         self.assertTrue(settings.notify_payment_failure)
@@ -144,7 +144,10 @@ class NotificationSettingsTest(TestCase):
 
     def test_notification_settings_one_per_workspace(self):
         """Test one settings instance per workspace"""
-        NotificationSettings.objects.create(workspace=self.workspace)
+        # The post_save signal already created settings for the workspace
+        self.assertTrue(
+            NotificationSettings.objects.filter(workspace=self.workspace).exists()
+        )
 
         # Test unique constraint
         with self.assertRaises(IntegrityError):

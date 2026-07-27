@@ -57,9 +57,11 @@ def integrate_stripe(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     ).first()
 
     if request.method == "POST":
+        assert workspace is not None
         return _handle_stripe_connect(request, workspace, existing_integration)
 
     # Generate webhook URL for this workspace
+    assert workspace is not None
     webhook_url = f"{settings.BASE_URL}/webhook/customer/{workspace.uuid}/stripe/"
 
     context: dict[str, Any] = {
@@ -104,6 +106,7 @@ def _handle_stripe_connect(
     if existing_integration:
         # Update existing integration
         existing_integration.webhook_secret = webhook_secret
+        existing_integration.webhook_verified_at = None
         existing_integration.save()
         logger.info(f"Stripe integration updated for workspace {workspace.name}")
         messages.success(request, "Stripe integration updated successfully!")
@@ -155,6 +158,7 @@ def disconnect_stripe(request: HttpRequest) -> HttpResponseRedirect:
     integration.is_active = False
     integration.save()
 
+    assert workspace is not None
     logger.info(f"Stripe integration disconnected for workspace {workspace.name}")
     messages.success(
         request,
