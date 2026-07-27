@@ -818,10 +818,10 @@ PLUGINS: dict = {
     "destination": {
         "slack": {"enabled": True},
         "telegram": {"enabled": True},
+        "teams": {"enabled": True},
         # Future destination plugins:
         # "discord": {"enabled": False},
         # "email": {"enabled": False},
-        # "teams": {"enabled": False},
     },
 }
 

@@ -51,6 +51,12 @@ from .stripe import (
     disconnect_stripe,
     integrate_stripe,
 )
+from .teams import (
+    connect_teams,
+    disconnect_teams,
+    get_teams_status,
+    test_teams,
+)
 from .telegram import (
     configure_telegram,
     connect_telegram,
@@ -81,6 +87,10 @@ __all__ = [
     "test_telegram",
     "configure_telegram",
     "get_telegram_status",
+    "connect_teams",
+    "disconnect_teams",
+    "test_teams",
+    "get_teams_status",
     # Stripe
     "integrate_stripe",
     "disconnect_stripe",

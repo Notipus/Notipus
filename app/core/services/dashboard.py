@@ -711,6 +711,15 @@ class IntegrationService:
                 "connected": "telegram_notifications" in integration_lookup,
                 "category": "Messaging",
             },
+            {
+                "id": "teams_notifications",
+                "name": "Microsoft Teams",
+                "description": (
+                    "Real-time notifications sent to a Microsoft Teams channel"
+                ),
+                "connected": "teams_notifications" in integration_lookup,
+                "category": "Team Communication",
+            },
         ]
 
         # Enrichment Services - Services that enhance customer data

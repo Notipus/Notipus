@@ -124,6 +124,26 @@ urlpatterns = [
         name="configure_telegram",
     ),
     path(
+        "integrate/teams/",
+        views.connect_teams,
+        name="teams_connect",
+    ),
+    path(
+        "api/disconnect/teams/",
+        views.disconnect_teams,
+        name="disconnect_teams",
+    ),
+    path(
+        "api/test/teams/",
+        views.test_teams,
+        name="test_teams",
+    ),
+    path(
+        "api/teams/status/",
+        views.get_teams_status,
+        name="get_teams_status",
+    ),
+    path(
         "api/telegram/status/",
         views.get_telegram_status,
         name="get_telegram_status",
