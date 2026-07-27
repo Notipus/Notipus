@@ -19,16 +19,16 @@ Everything lives under `app/plugins/`.
 
 | Type (`PluginType`) | Subpackage | Base class | Job |
 |---|---|---|---|
-| `SOURCE` | `plugins/sources/` | `BaseSourcePlugin` | Validate + parse incoming provider webhooks |
-| `DESTINATION` | `plugins/destinations/` | `BaseDestinationPlugin` | Format + deliver a notification |
-| `ENRICHMENT` | `plugins/enrichment/` | `BaseEnrichmentPlugin` | Enrich company data from a domain |
-| `EMAIL_ENRICHMENT` | `plugins/enrichment/` | `BaseEmailEnrichmentPlugin` | Enrich person data from an email |
+| `SOURCE` | `app/plugins/sources/` | `BaseSourcePlugin` | Validate + parse incoming provider webhooks |
+| `DESTINATION` | `app/plugins/destinations/` | `BaseDestinationPlugin` | Format + deliver a notification |
+| `ENRICHMENT` | `app/plugins/enrichment/` | `BaseEnrichmentPlugin` | Enrich company data from a domain |
+| `EMAIL_ENRICHMENT` | `app/plugins/enrichment/` | `BaseEmailEnrichmentPlugin` | Enrich person data from an email |
 
 Every plugin subclasses `BasePlugin` (`app/plugins/base.py`) and must implement the
 classmethod `get_metadata() -> PluginMetadata`:
 
 ```python
-# From the Slack destination plugin (plugins/destinations/slack.py):
+# From the Slack destination plugin (app/plugins/destinations/slack.py):
 PluginMetadata(
     name="slack",  # unique id, used as the registry key
     display_name="Slack",
@@ -71,14 +71,14 @@ Each provider is one entry in `Integration.INTEGRATION_TYPES` (e.g.
 
 # Recipe: add a DESTINATION plugin
 
-The existing Slack plugin (`plugins/destinations/slack.py`) is the reference
+The existing Slack plugin (`app/plugins/destinations/slack.py`) is the reference
 implementation — copy its shape. Below, "a Telegram plugin" is used only as an
 illustration of the plugin you'd be adding; substitute your own destination.
 
 1. **Plugin** — `app/plugins/destinations/<name>.py`, subclass `BaseDestinationPlugin`:
    - `get_metadata()` → `PluginMetadata(plugin_type=PluginType.DESTINATION, ...)`.
    - `format(self, n: RichNotification) -> dict` — convert the target-agnostic
-     `RichNotification` (`webhooks/models/rich_notification.py`) into the platform's
+     `RichNotification` (`app/webhooks/models/rich_notification.py`) into the platform's
      payload. Escape/format for that platform here.
    - `send(self, formatted, credentials: dict) -> bool` — deliver it. Raise on
      failure (delivery failures must surface, not be swallowed).
@@ -94,11 +94,11 @@ illustration of the plugin you'd be adding; substitute your own destination.
    test/status views, using helpers from `views/integrations/base.py`:
    `get_user_workspace`, `require_admin_role`, `require_post_method`), export them from
    `views/integrations/__init__.py` and re-export via `core/views/__init__.py`, add
-   routes in `app/core/urls.py`, and a `templates/core/<name>_connect.html.j2`
+   routes in `app/core/urls.py`, and an `app/core/templates/core/<name>_connect.html.j2`
    template. Store creds into `integration.oauth_credentials`.
 5. **Wire delivery into BOTH paths** (this is the step most easily missed):
-   - **Immediate** — `webhooks/webhook_router.py::_process_immediately`
-   - **Delayed** — `webhooks/services/pending_event_queue.py::_send_notification`
+   - **Immediate** — `app/webhooks/webhook_router.py::_process_immediately`
+   - **Delayed** — `app/webhooks/services/pending_event_queue.py::_send_notification`
    Both build the notification **once** via
    `settings.EVENT_PROCESSOR.build_rich_notification(...)`, then for each configured
    destination call `plugin.format(notification)` + `plugin.send(formatted, creds)`.
@@ -122,7 +122,7 @@ illustration of the plugin you'd be adding; substitute your own destination.
 2. **Enable** in `PLUGINS["source"]`.
 3. **Model + migration** for the new `INTEGRATION_TYPES` entry (same `makemigrations`
    step as above).
-4. **Router endpoint** — add the webhook view/route in `webhooks/webhook_router.py` +
+4. **Router endpoint** — add the webhook view/route in `app/webhooks/webhook_router.py` +
    `urls`. If the provider sends complete data in one webhook, add it to
    `_IMMEDIATE_PROCESSING_PROVIDERS`; otherwise it queues for aggregation.
 5. **Tests** — signature validation, parsing, and dedup (`tests/test_signed_content_dedup.py`).
