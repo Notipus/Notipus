@@ -1,9 +1,12 @@
 """Server-side Google Analytics 4 tracking via the Measurement Protocol.
 
-All analytics events are sent from the server, never from browser
-JavaScript: webhook-driven events (plan changes from Stripe) have no
-browser to send from, server-side events can't be dropped by ad
-blockers, and no third-party script runs on users' pages.
+By default all analytics events are sent from the server rather than
+from browser JavaScript: webhook-driven events (plan changes from
+Stripe) have no browser to send from, server-side events can't be
+dropped by ad blockers, and no third-party script runs on users' pages.
+The optional ``GA4_CLIENT_SIDE`` flag adds a client-side ``gtag.js``
+snippet that takes over page-view tracking (see :class:`GA4Middleware`);
+event-style tracking (sign_up, login, billing) always stays server-side.
 
 Requires two settings (both empty disables tracking entirely):
 
@@ -16,8 +19,10 @@ Requires two settings (both empty disables tracking entirely):
 Identity model: anonymous visitors get a first-party ``np_ga_cid``
 cookie holding a GA-style client id (minted by :class:`GA4Middleware`);
 if a ``_ga`` cookie from gtag.js ever exists it wins, so a client-side
-snippet can be added later and sessions will stitch together. Logged-in
-users additionally send ``user_id``. Events with no request context
+snippet stitches into the same sessions (enable ``GA4_CLIENT_SIDE`` to
+render that snippet and hand page-view tracking to the browser;
+server-side ``page_view`` is then suppressed to avoid double counting).
+Logged-in users additionally send ``user_id``. Events with no request context
 (Stripe webhooks) use the workspace UUID as a stable client id via
 :func:`track_workspace_event`.
 
@@ -484,12 +489,16 @@ class GA4Middleware:
 
         response = self.get_response(request)
 
-        track_page_view = self._should_track_page_view(request, response)
+        eligible = self._should_track_page_view(request, response)
 
-        # Only mint the cookie for responses that are actually tracked:
-        # Set-Cookie on excluded paths (static assets, webhooks) breaks
-        # response caching, and bot traffic never becomes a page view.
-        if not had_cookie and track_page_view:
+        # Mint the first-party cookie for eligible page loads — even in
+        # client-side mode. Server-side events (the Stripe checkout client
+        # id, sign_up/login) resolve their client id from this cookie, so
+        # it must persist before gtag.js has written its own ``_ga`` cookie;
+        # otherwise those events would mint a fresh id per request and lose
+        # user stitching. Excluded paths (static assets, webhooks) and bots
+        # never qualify, so Set-Cookie stays off machine responses.
+        if not had_cookie and eligible:
             response.set_cookie(
                 CLIENT_ID_COOKIE,
                 client_id,
@@ -499,7 +508,9 @@ class GA4Middleware:
                 samesite="Lax",
             )
 
-        if track_page_view:
+        # Emit the server-side page_view unless the browser owns page
+        # views (GA4_CLIENT_SIDE); sending both would double-count.
+        if eligible and not settings.GA4_CLIENT_SIDE:
             params: dict[str, Any] = {
                 "page_location": sanitize_page_location(request.build_absolute_uri())
             }
@@ -517,7 +528,11 @@ class GA4Middleware:
 
     @staticmethod
     def _should_track_page_view(request: HttpRequest, response: HttpResponse) -> bool:
-        """Return whether this request/response pair is a real page view."""
+        """Return whether this request/response is an eligible HTML page load.
+
+        Gates both first-party cookie minting and (unless GA4_CLIENT_SIDE
+        hands page views to the browser) the server-side ``page_view``.
+        """
         if request.method != "GET":
             return False
         if not 200 <= response.status_code < 300:

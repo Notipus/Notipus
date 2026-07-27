@@ -11,7 +11,7 @@ from typing import Any, Generator
 from unittest.mock import MagicMock, patch
 
 import pytest
-from core import analytics
+from core import analytics, context_processors
 from core.models import Plan, Workspace, WorkspaceMember
 from django.contrib.auth.models import User
 from django.contrib.auth.signals import user_logged_in
@@ -220,6 +220,64 @@ class TestMiddleware:
         json_response.status_code = 200
         json_response.get.return_value = "application/json"
         assert not should_track(factory.get("/dashboard/", **browser), json_response)
+
+
+class TestClientSideGtag:
+    """GA4_CLIENT_SIDE: browser gtag.js owns page views."""
+
+    def test_client_side_suppresses_page_view_but_mints_cookie(
+        self, ga4: MagicMock, logged_in_client: Client
+    ) -> None:
+        """Client-side mode: no server page_view, but the client-id cookie
+        is still minted so server-side events keep a stable client id."""
+        with override_settings(GA4_CLIENT_SIDE=True):
+            response = logged_in_client.get(
+                reverse("core:create_workspace"), HTTP_USER_AGENT="Mozilla/5.0"
+            )
+        assert response.status_code == 200
+        assert _events_named(ga4, "page_view") == []
+        assert analytics.CLIENT_ID_COOKIE in response.cookies
+
+    def test_server_side_page_view_when_client_side_off(
+        self, ga4: MagicMock, logged_in_client: Client
+    ) -> None:
+        """With the flag off, the middleware still emits page_view server-side."""
+        with override_settings(GA4_CLIENT_SIDE=False):
+            response = logged_in_client.get(
+                reverse("core:create_workspace"), HTTP_USER_AGENT="Mozilla/5.0"
+            )
+        assert response.status_code == 200
+        assert len(_events_named(ga4, "page_view")) == 1
+
+    def test_context_processor_empty_by_default(self) -> None:
+        """No measurement id is exposed unless client-side is enabled."""
+        request = RequestFactory().get("/")
+        with override_settings(GA4_MEASUREMENT_ID="G-TEST123", GA4_CLIENT_SIDE=False):
+            assert context_processors.analytics(request) == {}
+
+    def test_context_processor_exposes_id_when_enabled(self) -> None:
+        """The measurement id is exposed when client-side is enabled."""
+        request = RequestFactory().get("/")
+        with override_settings(GA4_MEASUREMENT_ID="G-TEST123", GA4_CLIENT_SIDE=True):
+            assert context_processors.analytics(request) == {
+                "ga4_measurement_id": "G-TEST123"
+            }
+
+    def test_snippet_rendered_when_enabled(self, client: Client, db: None) -> None:
+        """The gtag.js snippet appears in the page when client-side is on."""
+        with override_settings(GA4_MEASUREMENT_ID="G-TEST123", GA4_CLIENT_SIDE=True):
+            response = client.get(
+                reverse("account_login"), HTTP_USER_AGENT="Mozilla/5.0"
+            )
+        assert b"googletagmanager.com/gtag/js?id=G-TEST123" in response.content
+
+    def test_snippet_absent_when_disabled(self, client: Client, db: None) -> None:
+        """No gtag.js snippet renders when client-side is off (default)."""
+        with override_settings(GA4_MEASUREMENT_ID="G-TEST123", GA4_CLIENT_SIDE=False):
+            response = client.get(
+                reverse("account_login"), HTTP_USER_AGENT="Mozilla/5.0"
+            )
+        assert b"googletagmanager.com/gtag/js" not in response.content
 
 
 class TestAuthEvents:
