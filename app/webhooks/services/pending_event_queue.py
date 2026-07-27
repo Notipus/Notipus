@@ -35,6 +35,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
 
+from .destination_credentials import get_telegram_credentials
 from .redis_client import get_raw_redis_client
 
 logger = logging.getLogger(__name__)
@@ -901,7 +902,7 @@ class PendingEventQueue:
 
         # Every destination this workspace has enabled, as (name, credentials).
         slack_webhook_url = self._get_slack_webhook_url(workspace)
-        telegram_credentials = self._get_telegram_credentials(workspace)
+        telegram_credentials = get_telegram_credentials(workspace)
         destinations: list[tuple[str, dict[str, Any]]] = []
         if slack_webhook_url:
             destinations.append(("slack", {"webhook_url": slack_webhook_url}))
@@ -938,7 +939,8 @@ class PendingEventQueue:
             except Exception as e:
                 logger.error(
                     f"Failed to send {name} notification for workspace "
-                    f"{workspace.uuid if workspace else 'unknown'}: {e}"
+                    f"{workspace.uuid if workspace else 'unknown'}: {e}",
+                    exc_info=True,
                 )
                 all_delivered = False
 
@@ -979,37 +981,6 @@ class PendingEventQueue:
         except Integration.DoesNotExist:
             logger.warning(
                 f"No active Slack integration found for workspace {workspace.uuid}"
-            )
-            return None
-
-    def _get_telegram_credentials(
-        self, workspace: Workspace | None
-    ) -> dict[str, str] | None:
-        """Get Telegram bot credentials for a workspace.
-
-        Args:
-            workspace: Workspace model instance.
-
-        Returns:
-            Dict with 'bot_token' and 'chat_id', or None if not configured.
-        """
-        if not workspace:
-            return None
-
-        try:
-            telegram_integration = Integration.objects.get(
-                workspace=workspace,
-                integration_type="telegram_notifications",
-                is_active=True,
-            )
-            bot_token = telegram_integration.oauth_credentials.get("bot_token")
-            chat_id = telegram_integration.oauth_credentials.get("chat_id")
-            if bot_token and chat_id:
-                return {"bot_token": bot_token, "chat_id": chat_id}
-            return None
-        except Integration.DoesNotExist:
-            logger.debug(
-                f"No active Telegram integration found for workspace {workspace.uuid}"
             )
             return None
 

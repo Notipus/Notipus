@@ -342,13 +342,15 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             # Add payment type (recurring/one-time)
             if n.is_recurring:
                 if n.billing_interval:
-                    elements.append(f"🔄 Recurring ({n.billing_interval.title()})")
+                    interval = self._escape_html(n.billing_interval.title())
+                    elements.append(f"🔄 Recurring ({interval})")
                 else:
                     elements.append("🔄 Recurring")
             elif n.payment:
                 elements.append("💵 One-Time")
 
-            # Add payment method if available
+            # Add payment method if available. payment_method/card_last4 come
+            # from the webhook payload, so escape before rendering as HTML.
             if n.payment and n.payment.payment_method:
                 pm_emoji = PAYMENT_METHOD_ICONS.get(
                     n.payment.payment_method.lower(), "💳"
@@ -356,7 +358,7 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
                 pm_display = n.payment.payment_method.title()
                 if n.payment.card_last4:
                     pm_display += f" ••••{n.payment.card_last4}"
-                elements.append(f"{pm_emoji} {pm_display}")
+                elements.append(f"{pm_emoji} {self._escape_html(pm_display)}")
         else:
             # For non-payment events, add category badge
             category = n.category.value.title()
@@ -424,18 +426,21 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         order_display = payment.order_number or "N/A"
         lines = [f"🛒 <b>Order #{self._escape_html(order_display)}</b>"]
 
+        # currency comes from the webhook payload; escape it once for reuse.
+        currency = self._escape_html(payment.currency)
+
         # Amount. Coerce defensively: some providers send amounts as strings,
         # which would raise on :.2f formatting and fail the whole send.
         amount = self._coerce_float(payment.amount)
-        lines.append(f"<b>Amount:</b> {payment.currency} {amount:,.2f}")
+        lines.append(f"<b>Amount:</b> {currency} {amount:,.2f}")
 
         # Line items (max 5)
         if payment.line_items:
             for item in payment.line_items[:5]:
-                qty = item.get("quantity", 1)
+                qty = self._coerce_int(item.get("quantity", 1), default=1)
                 name = self._escape_html(item.get("name", "Item"))
                 price = self._coerce_float(item.get("price", 0))
-                lines.append(f"• {qty}x {name} ({payment.currency} {price:.2f})")
+                lines.append(f"• {qty}x {name} ({currency} {price:.2f})")
 
             if len(payment.line_items) > 5:
                 remaining = len(payment.line_items) - 5
@@ -656,5 +661,24 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         """
         try:
             return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int = 0) -> int:
+        """Best-effort int coercion for counts that may arrive as strings.
+
+        Line-item quantities can arrive as strings (or junk); rendering them
+        raw risks broken markup, so coerce and fall back to ``default``.
+
+        Args:
+            value: The value to coerce.
+            default: Fallback when coercion fails.
+
+        Returns:
+            The value as an int, or ``default`` when it can't be parsed.
+        """
+        try:
+            return int(value)
         except (TypeError, ValueError):
             return default

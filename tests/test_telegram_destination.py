@@ -348,6 +348,25 @@ class TestTelegramFormatEcommerceNotification:
         assert "2,999.00" in result
         assert "9.99" in result
 
+    def test_ecommerce_escapes_currency_and_coerces_quantity(
+        self, plugin: TelegramDestinationPlugin
+    ) -> None:
+        """Currency is HTML-escaped and line-item quantities are coerced."""
+        payment = PaymentInfo(
+            amount=10,
+            currency="U<D",
+            order_number="1001",
+            line_items=[
+                {"name": "Widget", "quantity": "3", "price": "9.99"},
+                {"name": "Junk", "quantity": "notanint", "price": 5},
+            ],
+        )
+        result = plugin._format_ecommerce_details(payment)
+        assert "U<D" not in result
+        assert "U&lt;D" in result
+        assert "3x Widget" in result  # string quantity coerced
+        assert "1x Junk" in result  # non-numeric quantity falls back to 1
+
     def test_format_includes_line_items(
         self,
         plugin: TelegramDestinationPlugin,
@@ -829,6 +848,24 @@ class TestTelegramHtmlEscaping:
         assert '" onmouseover=' not in result
         assert '"><b>' not in result
         assert "&quot;" in result
+
+    def test_provider_badge_escapes_payment_fields(
+        self, plugin: TelegramDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """billing_interval and payment_method are escaped in the badge.
+
+        Both derive from webhook payloads and render into an HTML message.
+        """
+        basic_notification.billing_interval = "mon<th&ly"
+        assert basic_notification.payment is not None
+        basic_notification.payment.payment_method = "vi>sa"
+
+        badge = plugin._format_provider_badge(basic_notification)
+        # The badge itself carries no legitimate HTML, so no raw angle
+        # brackets should survive — only escaped entities.
+        assert "<" not in badge
+        assert ">" not in badge
+        assert "&lt;" in badge and "&gt;" in badge and "&amp;" in badge
 
 
 class TestTelegramSend:

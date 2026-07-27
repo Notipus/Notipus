@@ -10,6 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .exceptions import WebhookError, WebhookSignatureError
+from .services.destination_credentials import get_telegram_credentials
 from .services.event_consolidation import event_consolidation_service
 from .services.pending_event_queue import pending_event_queue
 from .services.rate_limiter import RateLimitException, rate_limiter
@@ -256,36 +257,6 @@ def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
         return None
 
 
-def _get_telegram_credentials(
-    workspace: Optional[Workspace],
-) -> Optional[Dict[str, str]]:
-    """Get Telegram credentials for a workspace.
-
-    Returns:
-        Dict with 'bot_token' and 'chat_id' if configured, None otherwise.
-    """
-    if not workspace:
-        return None
-
-    try:
-        telegram_integration = Integration.objects.get(
-            workspace=workspace,
-            integration_type="telegram_notifications",
-            is_active=True,
-        )
-        bot_token = telegram_integration.oauth_credentials.get("bot_token")
-        chat_id = telegram_integration.oauth_credentials.get("chat_id")
-
-        if bot_token and chat_id:
-            return {"bot_token": bot_token, "chat_id": chat_id}
-        return None
-    except Integration.DoesNotExist:
-        logger.debug(
-            f"No active Telegram integration found for workspace {workspace.uuid}"
-        )
-        return None
-
-
 def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     """Build the deduplication key for a parsed webhook event.
 
@@ -471,7 +442,7 @@ def _process_immediately(
 
     # Every destination this workspace has enabled, as (name, credentials).
     slack_webhook_url = _get_slack_webhook_url(workspace)
-    telegram_credentials = _get_telegram_credentials(workspace)
+    telegram_credentials = get_telegram_credentials(workspace)
     destinations: list[tuple[str, dict[str, Any]]] = []
     if slack_webhook_url:
         destinations.append(("slack", {"webhook_url": slack_webhook_url}))
@@ -513,7 +484,8 @@ def _process_immediately(
         except Exception as e:
             logger.error(
                 f"Failed to deliver {name} notification for workspace "
-                f"{workspace.uuid if workspace else 'unknown'}: {e!s}"
+                f"{workspace.uuid if workspace else 'unknown'}: {e!s}",
+                exc_info=True,
             )
             delivery_errors.append(name)
 
