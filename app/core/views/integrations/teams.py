@@ -10,6 +10,7 @@ into the form, never logged).
 
 import logging
 from typing import cast
+from urllib.parse import urlparse
 
 import requests
 from django.contrib import messages
@@ -35,8 +36,11 @@ DISPLAY_NAME = "Microsoft Teams"
 def _is_valid_webhook_url(url: str) -> bool:
     """Cheap sanity check for a Teams Workflows webhook URL.
 
-    The Workflows webhook has no validation endpoint, so we only require an
-    HTTPS URL here and rely on the "Test" button for real verification.
+    The Workflows webhook has no validation endpoint, so we only structurally
+    validate here and rely on the "Test" button for real verification. We
+    require an ``https`` scheme with a non-empty host so a degenerate value
+    like ``"https://"`` (which would be saved and then fail every send at
+    runtime) is rejected up front.
 
     Args:
         url: The candidate webhook URL.
@@ -44,7 +48,11 @@ def _is_valid_webhook_url(url: str) -> bool:
     Returns:
         True if the URL is a plausible HTTPS webhook.
     """
-    return url.startswith("https://")
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and bool(parsed.netloc)
 
 
 @login_required

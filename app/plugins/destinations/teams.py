@@ -71,6 +71,29 @@ STATUS_FLAG_LABELS: dict[str, str] = {
     "vip": "⭐ VIP",
 }
 
+# Characters that carry meaning in the Markdown subset Teams renders inside
+# Adaptive Card ``TextBlock``/``FactSet`` fields (emphasis, links, lists,
+# code, blockquote, headings). Webhook payloads (customer/company names,
+# plan names, failure reasons, ...) are attacker-controllable, so these are
+# neutralized before interpolation to prevent unintended formatting or link
+# injection (e.g. a plan name of ``[Update billing](https://evil/login)``).
+_MARKDOWN_SPECIAL = frozenset("\\`*_[]()~#>")
+
+
+def _escape_md(text: str | None) -> str:
+    """Escape untrusted text for the Teams Adaptive Card Markdown subset.
+
+    Args:
+        text: The untrusted text (coerced to str). May be None.
+
+    Returns:
+        The text with Markdown control characters backslash-escaped so they
+        render literally. Empty string for None/empty input.
+    """
+    if not text:
+        return ""
+    return "".join(f"\\{ch}" if ch in _MARKDOWN_SPECIAL else ch for ch in str(text))
+
 
 class TeamsDestinationPlugin(BaseDestinationPlugin):
     """Format and send a RichNotification as a Teams Adaptive Card."""
@@ -109,10 +132,11 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
             The ``{"type": "message", "attachments": [...]}`` payload the
             Workflows webhook expects.
         """
+        icon = HEADLINE_ICONS.get(n.headline_icon, "🔔")
         body: list[dict[str, Any]] = [
             {
                 "type": "TextBlock",
-                "text": f"{HEADLINE_ICONS.get(n.headline_icon, '🔔')} {n.headline}",
+                "text": f"{icon} {_escape_md(n.headline)}",
                 "weight": "Bolder",
                 "size": "Large",
                 "wrap": True,
@@ -124,18 +148,21 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
             body.append(
                 {
                     "type": "TextBlock",
-                    "text": f"{insight_emoji} {n.insight.text}",
+                    "text": f"{insight_emoji} {_escape_md(n.insight.text)}",
                     "wrap": True,
                     "isSubtle": True,
                     "spacing": "Small",
                 }
             )
 
-        # Provider + payment-type / category subtitle.
+        # Provider + payment-type / category subtitle. The payment-type and
+        # category come from our own enums (safe); only provider_display can
+        # carry attacker-controlled text, so escape that one.
+        provider = _escape_md(n.provider_display)
         if n.is_payment_event:
-            subtitle = f"{n.provider_display} • {n.get_payment_type_display()}"
+            subtitle = f"{provider} • {n.get_payment_type_display()}"
         else:
-            subtitle = f"{n.provider_display} • {n.category.value.title()}"
+            subtitle = f"{provider} • {n.category.value.title()}"
         body.append(
             {
                 "type": "TextBlock",
@@ -183,43 +210,64 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
         if n.payment:
             facts.extend(self._payment_facts(n.payment))
         if n.company:
-            facts.append({"title": "Company", "value": n.company.name})
+            facts.append({"title": "Company", "value": _escape_md(n.company.name)})
             if n.company.industry:
-                facts.append({"title": "Industry", "value": n.company.industry})
+                facts.append(
+                    {"title": "Industry", "value": _escape_md(n.company.industry)}
+                )
         if n.customer:
             facts.extend(self._customer_facts(n.customer))
         return facts
 
     @staticmethod
     def _payment_facts(payment: PaymentInfo) -> list[dict[str, str]]:
-        """FactSet rows for the payment/order portion of a notification."""
-        facts = [{"title": "Amount", "value": payment.format_amount_with_arr()}]
+        """FactSet rows for the payment/order portion of a notification.
+
+        Values are escaped for the Adaptive Card Markdown subset because
+        several (plan name, order/subscription id, failure reason) originate
+        from the untrusted webhook payload.
+        """
+        facts = [
+            {"title": "Amount", "value": _escape_md(payment.format_amount_with_arr())}
+        ]
         if payment.plan_name:
-            facts.append({"title": "Plan", "value": payment.plan_name})
+            facts.append({"title": "Plan", "value": _escape_md(payment.plan_name)})
         if payment.order_number:
-            facts.append({"title": "Order", "value": f"#{payment.order_number}"})
+            facts.append(
+                {"title": "Order", "value": f"#{_escape_md(payment.order_number)}"}
+            )
         if payment.subscription_id:
-            facts.append({"title": "Subscription", "value": payment.subscription_id})
+            facts.append(
+                {"title": "Subscription", "value": _escape_md(payment.subscription_id)}
+            )
         if payment.payment_method:
             method = payment.payment_method.title()
             if payment.card_last4:
                 method += f" ••••{payment.card_last4}"
-            facts.append({"title": "Payment", "value": method})
+            facts.append({"title": "Payment", "value": _escape_md(method)})
         if payment.failure_reason:
-            facts.append({"title": "Reason", "value": payment.failure_reason})
+            facts.append(
+                {"title": "Reason", "value": _escape_md(payment.failure_reason)}
+            )
         return facts
 
     @staticmethod
     def _customer_facts(customer: CustomerInfo) -> list[dict[str, str]]:
-        """FactSet rows for the customer portion of a notification."""
+        """FactSet rows for the customer portion of a notification.
+
+        Identity fields come from the untrusted webhook payload, so they are
+        escaped; the status labels are our own constants and are safe.
+        """
         facts: list[dict[str, str]] = []
         who = customer.email or customer.name
         if who:
-            facts.append({"title": "Customer", "value": who})
+            facts.append({"title": "Customer", "value": _escape_md(who)})
         if customer.tenure_display:
-            facts.append({"title": "Since", "value": customer.tenure_display})
+            facts.append(
+                {"title": "Since", "value": _escape_md(customer.tenure_display)}
+            )
         if customer.ltv_display:
-            facts.append({"title": "LTV", "value": customer.ltv_display})
+            facts.append({"title": "LTV", "value": _escape_md(customer.ltv_display)})
         flags = [
             STATUS_FLAG_LABELS[flag]
             for flag in customer.status_flags

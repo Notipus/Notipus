@@ -230,7 +230,9 @@ class TestTeamsFormatContent:
         facts = self._facts(self._card(plugin, basic_notification))
         assert "299" in facts["Amount"]
         assert facts["Plan"] == "Enterprise"
-        assert facts["Subscription"] == "sub_123"
+        # The underscore is a Markdown emphasis char, so it is backslash-escaped
+        # (renders identically in Teams, but can't start an italic run).
+        assert facts["Subscription"] == "sub\\_123"
         assert "Visa" in facts["Payment"]
         assert "4242" in facts["Payment"]
 
@@ -319,6 +321,61 @@ class TestTeamsFormatActions:
             for i in range(10)
         ]
         assert len(self._card(plugin, basic_notification)["actions"]) == 6
+
+
+class TestTeamsMarkdownEscaping:
+    """Untrusted payload text is escaped for the Adaptive Card Markdown subset.
+
+    Teams renders a Markdown subset (emphasis, links) inside TextBlock and
+    FactSet fields, so raw webhook values must not be able to inject links or
+    formatting — mirroring Slack's ``safe_mrkdwn`` and Telegram's HTML escaping.
+    """
+
+    def _card(self, plugin: TeamsDestinationPlugin, n: RichNotification) -> dict:
+        return plugin.format(n)["attachments"][0]["content"]
+
+    def _facts(self, card: dict) -> dict[str, str]:
+        for block in card["body"]:
+            if block.get("type") == "FactSet":
+                return {f["title"]: f["value"] for f in block["facts"]}
+        return {}
+
+    def test_escape_md_helper(self) -> None:
+        """The helper backslash-escapes each Markdown control character."""
+        from plugins.destinations.teams import _escape_md
+
+        assert _escape_md(None) == ""
+        assert _escape_md("") == ""
+        assert _escape_md("plain text 4242") == "plain text 4242"
+        assert _escape_md("*bold*") == "\\*bold\\*"
+        assert _escape_md("[x](https://e)") == "\\[x\\]\\(https://e\\)"
+
+    def test_headline_link_injection_is_neutralized(
+        self, plugin: TeamsDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """A Markdown link in the headline renders literally, not as a link."""
+        basic_notification.headline = "[Update billing](https://evil/login)"
+        text = self._card(plugin, basic_notification)["body"][0]["text"]
+        # The raw link syntax must be broken by escaping.
+        assert "](https://evil" not in text
+        assert "\\[Update billing\\]\\(https://evil/login\\)" in text
+
+    def test_fact_value_emphasis_is_escaped(
+        self, plugin: TeamsDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """Markdown emphasis in a payload-derived fact value is escaped."""
+        basic_notification.payment.plan_name = "*Enterprise*"  # type: ignore[union-attr]
+        facts = self._facts(self._card(plugin, basic_notification))
+        assert facts["Plan"] == "\\*Enterprise\\*"
+
+    def test_customer_name_is_escaped(
+        self, plugin: TeamsDestinationPlugin, basic_notification: RichNotification
+    ) -> None:
+        """A customer identity carrying Markdown is escaped in the FactSet."""
+        basic_notification.customer.email = None  # type: ignore[union-attr]
+        basic_notification.customer.name = "[a](http://x)"  # type: ignore[union-attr]
+        facts = self._facts(self._card(plugin, basic_notification))
+        assert facts["Customer"] == "\\[a\\]\\(http://x\\)"
 
 
 class TestTeamsSend:
