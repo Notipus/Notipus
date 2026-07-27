@@ -33,14 +33,17 @@ from .errors import (
 from .integrations import (
     configure_slack,
     configure_telegram,
+    connect_teams,
     connect_telegram,
     disconnect_hunter,
     disconnect_shopify,
     disconnect_slack,
     disconnect_stripe,
+    disconnect_teams,
     disconnect_telegram,
     email_setup_instructions,
     get_slack_channels,
+    get_teams_status,
     get_telegram_status,
     integrate_chargify,
     integrate_hunter,
@@ -53,6 +56,7 @@ from .integrations import (
     slack_connect,
     slack_connect_callback,
     test_slack,
+    test_teams,
     test_telegram,
     update_shopify_events,
 )
@@ -115,6 +119,11 @@ __all__ = [
     "test_telegram",
     "configure_telegram",
     "get_telegram_status",
+    # Microsoft Teams
+    "connect_teams",
+    "disconnect_teams",
+    "test_teams",
+    "get_teams_status",
     # Settings
     "get_notification_settings",
     "update_notification_settings",

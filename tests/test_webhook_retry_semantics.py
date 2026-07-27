@@ -424,6 +424,102 @@ class TestTelegramImmediateDelivery:
 
 
 @pytest.mark.django_db
+class TestTeamsImmediateDelivery:
+    """A configured Teams destination is delivered on the immediate path."""
+
+    @pytest.fixture
+    def workspace(self) -> Workspace:
+        """Workspace with a Chargify source and a Teams destination."""
+        workspace = Workspace.objects.create(
+            name="Teams Workspace", shop_domain="teams.myshopify.com"
+        )
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="chargify",
+            webhook_secret="test-webhook-secret",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="teams_notifications",
+            is_active=True,
+            oauth_credentials={"webhook_url": "https://logic.azure.com/workflows/x"},
+        )
+        return workspace
+
+    def _post_chargify(self, client: Client, workspace: Workspace) -> Any:
+        """Send a valid Chargify payment_success webhook."""
+        return client.post(
+            f"/webhook/customer/{workspace.uuid}/chargify/",
+            data=urlencode(
+                {
+                    "event": "payment_success",
+                    "payload[subscription][id]": "sub_789",
+                    "payload[subscription][customer][id]": "cust_123",
+                    "payload[subscription][customer][email]": "test@example.com",
+                    "payload[subscription][product][name]": "Premium Plan",
+                    "payload[transaction][id]": "txn_1",
+                    "payload[transaction][amount_in_cents]": "2999",
+                    "created_at": "2024-03-15T10:00:00Z",
+                }
+            ),
+            content_type="application/x-www-form-urlencoded",
+            HTTP_X_CHARGIFY_WEBHOOK_ID="teams_webhook_1",
+            HTTP_X_CHARGIFY_WEBHOOK_SIGNATURE_HMAC_SHA_256="sig",
+        )
+
+    @patch("plugins.sources.chargify.ChargifySourcePlugin.validate_webhook")
+    def test_teams_delivered_with_webhook_credentials(
+        self,
+        mock_validate: Mock,
+        mock_consolidation_cache: dict,
+        client: Client,
+        workspace: Workspace,
+    ) -> None:
+        """The Teams plugin is invoked with the workspace's webhook URL."""
+        mock_validate.return_value = True
+
+        teams_plugin = MagicMock(spec=BaseDestinationPlugin)
+        mock_registry = Mock()
+        mock_registry.get.return_value = teams_plugin
+
+        with patch(
+            "plugins.registry.PluginRegistry.instance", return_value=mock_registry
+        ):
+            response = self._post_chargify(client, workspace)
+
+        assert response.status_code == 200
+        teams_plugin.format.assert_called_once()
+        teams_plugin.send.assert_called_once()
+        # send(formatted, credentials): assert the webhook URL is passed.
+        _, credentials = teams_plugin.send.call_args[0]
+        assert credentials == {"webhook_url": "https://logic.azure.com/workflows/x"}
+
+    @patch("plugins.sources.chargify.ChargifySourcePlugin.validate_webhook")
+    def test_teams_failure_returns_5xx(
+        self,
+        mock_validate: Mock,
+        mock_consolidation_cache: dict,
+        client: Client,
+        workspace: Workspace,
+    ) -> None:
+        """A failed Teams send surfaces as 5xx so the provider retries."""
+        mock_validate.return_value = True
+
+        teams_plugin = MagicMock(spec=BaseDestinationPlugin)
+        teams_plugin.send.side_effect = Exception("teams unreachable")
+        mock_registry = Mock()
+        mock_registry.get.return_value = teams_plugin
+
+        with patch(
+            "plugins.registry.PluginRegistry.instance", return_value=mock_registry
+        ):
+            response = self._post_chargify(client, workspace)
+
+        assert response.status_code == 500
+
+
+@pytest.mark.django_db
 class TestBillingWebhookPropagatesDbErrors:
     """Finding 5: billing handler errors must surface as 5xx."""
 

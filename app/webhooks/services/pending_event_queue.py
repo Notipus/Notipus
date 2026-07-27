@@ -35,7 +35,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
 
-from .destination_credentials import get_telegram_credentials
+from .destination_credentials import get_teams_credentials, get_telegram_credentials
 from .redis_client import get_raw_redis_client
 
 logger = logging.getLogger(__name__)
@@ -900,15 +900,7 @@ class PendingEventQueue:
 
         registry = PluginRegistry.instance()
 
-        # Every destination this workspace has enabled, as (name, credentials).
-        slack_webhook_url = self._get_slack_webhook_url(workspace)
-        telegram_credentials = get_telegram_credentials(workspace)
-        destinations: list[tuple[str, dict[str, Any]]] = []
-        if slack_webhook_url:
-            destinations.append(("slack", {"webhook_url": slack_webhook_url}))
-        if telegram_credentials:
-            destinations.append(("telegram", telegram_credentials))
-
+        destinations = self._collect_destinations(workspace)
         if not destinations:
             logger.warning(
                 f"No notification destinations configured for workspace "
@@ -955,6 +947,30 @@ class PendingEventQueue:
             external_id=external_id,
         )
         return True
+
+    def _collect_destinations(
+        self, workspace: Workspace | None
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Return every destination this workspace has enabled.
+
+        Args:
+            workspace: Workspace model instance.
+
+        Returns:
+            A list of ``(plugin_name, credentials)`` tuples, one per
+            configured destination.
+        """
+        destinations: list[tuple[str, dict[str, Any]]] = []
+        slack_webhook_url = self._get_slack_webhook_url(workspace)
+        if slack_webhook_url:
+            destinations.append(("slack", {"webhook_url": slack_webhook_url}))
+        telegram_credentials = get_telegram_credentials(workspace)
+        if telegram_credentials:
+            destinations.append(("telegram", telegram_credentials))
+        teams_credentials = get_teams_credentials(workspace)
+        if teams_credentials:
+            destinations.append(("teams", teams_credentials))
+        return destinations
 
     def _get_slack_webhook_url(self, workspace: Workspace | None) -> str | None:
         """Get Slack webhook URL for a workspace.

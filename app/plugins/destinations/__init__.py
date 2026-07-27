@@ -18,9 +18,11 @@ Usage:
 """
 
 from plugins.destinations.base import BaseDestinationPlugin
+from plugins.destinations.teams import TeamsDestinationPlugin
 from plugins.destinations.telegram import TelegramDestinationPlugin
 
 __all__ = [
     "BaseDestinationPlugin",
+    "TeamsDestinationPlugin",
     "TelegramDestinationPlugin",
 ]

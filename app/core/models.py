@@ -394,6 +394,7 @@ class Integration(models.Model):
         # Notification integrations (workspace-specific)
         ("slack_notifications", "Slack Notifications"),
         ("telegram_notifications", "Telegram Notifications"),
+        ("teams_notifications", "Microsoft Teams Notifications"),
         # Enrichment integrations (workspace-specific, user-provided API keys)
         ("hunter_enrichment", "Hunter.io Email Enrichment"),
     )

@@ -44,3 +44,38 @@ def get_telegram_credentials(workspace: Workspace | None) -> dict[str, str] | No
     if bot_token and chat_id:
         return {"bot_token": bot_token, "chat_id": chat_id}
     return None
+
+
+def get_teams_credentials(workspace: Workspace | None) -> dict[str, str] | None:
+    """Return the Microsoft Teams webhook URL for a workspace, if configured.
+
+    The credential is a Power Automate "Workflows" incoming-webhook URL
+    (the successor to the retiring Office 365 connector webhooks). It is a
+    bearer secret — treat it like the Slack webhook URL.
+
+    Args:
+        workspace: The workspace to look up, or None.
+
+    Returns:
+        Dict with ``webhook_url`` when an active Teams integration has one,
+        otherwise None.
+    """
+    if not workspace:
+        return None
+
+    try:
+        integration = Integration.objects.get(
+            workspace=workspace,
+            integration_type="teams_notifications",
+            is_active=True,
+        )
+    except Integration.DoesNotExist:
+        logger.debug(
+            f"No active Teams integration found for workspace {workspace.uuid}"
+        )
+        return None
+
+    webhook_url = integration.oauth_credentials.get("webhook_url")
+    if webhook_url:
+        return {"webhook_url": webhook_url}
+    return None
