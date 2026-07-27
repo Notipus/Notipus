@@ -28,9 +28,10 @@ Every plugin subclasses `BasePlugin` (`app/plugins/base.py`) and must implement 
 classmethod `get_metadata() -> PluginMetadata`:
 
 ```python
+# From the Slack destination plugin (plugins/destinations/slack.py):
 PluginMetadata(
-    name="telegram",  # unique id, used as the registry key
-    display_name="Telegram",
+    name="slack",  # unique id, used as the registry key
+    display_name="Slack",
     version="1.0.0",
     description="...",
     plugin_type=PluginType.DESTINATION,
@@ -50,13 +51,13 @@ PluginMetadata(
 
    ```python
    PLUGINS = {
-       "destination": {"slack": {"enabled": True}, "telegram": {"enabled": True}},
+       "destination": {"slack": {"enabled": True}},  # add your plugin's key here
        "source": {"stripe": {"enabled": True}, ...},
        ...
    }
    ```
 
-Resolve a plugin at runtime with `PluginRegistry.instance().get(PluginType.DESTINATION, "telegram")`.
+Resolve a plugin at runtime with `PluginRegistry.instance().get(PluginType.DESTINATION, "slack")`.
 
 ## Credentials
 
@@ -64,14 +65,15 @@ Per-workspace credentials live on the `Integration` model (`app/core/models.py`)
 `oauth_credentials`, which is an **`EncryptedJSONField`** (encrypted at rest, same
 dict API as JSON — read/write it like a normal dict; do not encrypt/decrypt yourself).
 Each provider is one entry in `Integration.INTEGRATION_TYPES` (e.g.
-`"telegram_notifications"`, `"slack_notifications"`, `"chargify"`).
+`"slack_notifications"`, `"chargify"`).
 
 ---
 
 # Recipe: add a DESTINATION plugin
 
-Worked example: Telegram (`plugins/destinations/telegram.py`), mirroring Slack
-(`plugins/destinations/slack.py`) — Slack is the reference implementation.
+The existing Slack plugin (`plugins/destinations/slack.py`) is the reference
+implementation — copy its shape. Below, "a Telegram plugin" is used only as an
+illustration of the plugin you'd be adding; substitute your own destination.
 
 1. **Plugin** — `app/plugins/destinations/<name>.py`, subclass `BaseDestinationPlugin`:
    - `get_metadata()` → `PluginMetadata(plugin_type=PluginType.DESTINATION, ...)`.
