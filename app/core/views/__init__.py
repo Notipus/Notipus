@@ -32,12 +32,16 @@ from .errors import (
 )
 from .integrations import (
     configure_slack,
+    configure_telegram,
+    connect_telegram,
     disconnect_hunter,
     disconnect_shopify,
     disconnect_slack,
     disconnect_stripe,
+    disconnect_telegram,
     email_setup_instructions,
     get_slack_channels,
+    get_telegram_status,
     integrate_chargify,
     integrate_hunter,
     integrate_shopify,
@@ -49,6 +53,7 @@ from .integrations import (
     slack_connect,
     slack_connect_callback,
     test_slack,
+    test_telegram,
     update_shopify_events,
 )
 from .members import (
@@ -104,6 +109,12 @@ __all__ = [
     "test_slack",
     "get_slack_channels",
     "configure_slack",
+    # Telegram
+    "connect_telegram",
+    "disconnect_telegram",
+    "test_telegram",
+    "configure_telegram",
+    "get_telegram_status",
     # Settings
     "get_notification_settings",
     "update_notification_settings",

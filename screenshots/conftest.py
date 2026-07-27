@@ -452,6 +452,65 @@ def mock_slack_api() -> Generator[None, Any, None]:
         yield
 
 
+class _FakeTelegramResponse:
+    """Minimal requests.Response stand-in for the mocked Telegram Bot API."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+        self.status_code = 200
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        """Always a 200 — nothing to raise."""
+
+
+def _fake_telegram_get(url: str, **kwargs: Any) -> _FakeTelegramResponse:
+    # getMe validates the bot token; getChat validates the chat id.
+    if "/getMe" in url:
+        return _FakeTelegramResponse(
+            {
+                "ok": True,
+                "result": {
+                    "id": 424242,
+                    "is_bot": True,
+                    "first_name": "Initech Alerts",
+                    "username": "InitechAlertsBot",
+                },
+            }
+        )
+    return _FakeTelegramResponse(
+        {
+            "ok": True,
+            "result": {
+                "id": -1001234567890,
+                "title": "Initech · billing",
+                "type": "supergroup",
+            },
+        }
+    )
+
+
+def _fake_telegram_post(url: str, **kwargs: Any) -> _FakeTelegramResponse:
+    # sendMessage (the "send test message" button)
+    return _FakeTelegramResponse({"ok": True, "result": {"message_id": 1}})
+
+
+@pytest.fixture
+def mock_telegram_api() -> Generator[None, Any, None]:
+    """Fake the server-side Telegram Bot API (getMe/getChat/sendMessage).
+
+    ``live_server`` runs in this process, so patching the ``requests``
+    module used by the Telegram views affects the serving thread too.
+    """
+    with (
+        patch("core.views.integrations.telegram.requests.get", _fake_telegram_get),
+        patch("core.views.integrations.telegram.requests.post", _fake_telegram_post),
+    ):
+        yield
+
+
 @pytest.fixture
 def recording_page(
     request: pytest.FixtureRequest, browser: Browser, live_server, settings
@@ -494,6 +553,37 @@ def recording_page(
             }
         },
     )
+
+    yield page
+
+    video = page.video
+    context.close()  # finalizes the recording
+    if video:
+        Path(video.path()).rename(OUTPUT_DIR / f"{request.node.name}.webm")
+
+
+@pytest.fixture
+def recording_page_authed(
+    request: pytest.FixtureRequest,
+    browser: Browser,
+    live_server,
+    session_cookie: dict[str, str],
+) -> Generator[Page, Any, None]:
+    """Authenticated Full HD page recorded to ``output/<test>.webm``.
+
+    Starts logged in as the Initech owner, with Slack and Stripe already
+    connected (via ``office_space_data``), for screencasts that begin
+    inside the app rather than at signup.
+    """
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    context = browser.new_context(
+        base_url=live_server.url,
+        viewport=DESKTOP_VIEWPORT,
+        record_video_dir=str(OUTPUT_DIR),
+        record_video_size=DESKTOP_VIEWPORT,
+    )
+    context.add_cookies([session_cookie])
+    page = context.new_page()
 
     yield page
 
@@ -604,6 +694,88 @@ def show_slack_finale(page: Page) -> None:
 def play_slack_finale(page: Page, hold_ms: int = 4500) -> None:
     """Show the Slack-style view and hold it on screen for recordings."""
     show_slack_finale(page)
+    pace(page, hold_ms)
+
+
+# Telegram-style finale for the telegram screencast: a chat where the
+# Notipus notification bubble slides in after a beat. Uses the app's own
+# logo (relative URL, served by the live server since the page keeps the
+# app origin after set_content).
+TELEGRAM_FINALE_HTML = """\
+<!doctype html><html><head><meta charset="utf-8"><style>
+  * { margin: 0; box-sizing: border-box; font-family: -apple-system,
+      BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { height: 100vh; overflow: hidden; background: #dfe6ea; }
+  .chat { display: flex; flex-direction: column; height: 100vh; }
+  .header { background: #527da3; color: #fff; padding: 12px 20px;
+            display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .chat-avatar { width: 42px; height: 42px; border-radius: 50%;
+                 background: #fff; display: flex; align-items: center;
+                 justify-content: center; }
+  .chat-avatar img { width: 30px; height: 30px; }
+  .chat-title { font-weight: 600; font-size: 17px; }
+  .chat-sub { font-size: 13px; color: #cfe0ee; margin-top: 1px; }
+  .messages { flex: 1; padding: 24px 18%; display: flex;
+              flex-direction: column; justify-content: flex-end; gap: 14px;
+              background:
+                radial-gradient(circle at 20% 30%, #c9d6de 0 2px, transparent 2px),
+                radial-gradient(circle at 70% 60%, #c9d6de 0 2px, transparent 2px),
+                #dfe6ea;
+              background-size: 60px 60px; }
+  .bubble { align-self: flex-start; background: #fff; border-radius: 12px;
+            padding: 10px 14px; max-width: 560px;
+            box-shadow: 0 1px 1px rgba(0,0,0,.12); }
+  .headline { font-weight: 700; color: #1d1d1f; font-size: 15px; }
+  .meta { color: #556; font-size: 13px; margin-top: 4px; }
+  .insight { color: #1a8f4c; font-size: 13px; font-weight: 600;
+             margin-top: 6px; }
+  .stamp { display: block; text-align: right; color: #9aa7b0;
+           font-size: 11px; margin-top: 6px; }
+  #incoming { opacity: 0; transform: translateY(14px); }
+  #incoming.shown { opacity: 1; transform: none;
+                    transition: all 420ms ease-out; }
+</style></head><body>
+  <div class="chat">
+    <div class="header">
+      <div class="chat-avatar"><img src="/static/img/notipus-logo.png"></div>
+      <div>
+        <div class="chat-title">Initech · billing</div>
+        <div class="chat-sub">Notipus bot &middot; payment alerts</div>
+      </div>
+    </div>
+    <div class="messages">
+      <div class="bubble">
+        <div class="headline">Trial started for Swingline</div>
+        <div class="meta">Stapler Tier &middot; milton@swingline.com</div>
+        <span class="stamp">9:12 AM</span>
+      </div>
+      <div class="bubble" id="incoming">
+        <div class="headline">&#128176; Payment received from Initrode</div>
+        <div class="meta">$4,999.00 &middot; TPS Premium &middot;
+          billing@initrode.com</div>
+        <div class="insight">&#128200; 3rd successful payment in a row</div>
+        <span class="stamp">9:57 AM</span>
+      </div>
+    </div>
+  </div>
+  <script>
+    setTimeout(() => {
+      document.getElementById('incoming').classList.add('shown');
+    }, 1600);
+  </script>
+</body></html>
+"""
+
+
+def show_telegram_finale(page: Page) -> None:
+    """Swap the page for the Telegram-style view and wait for the alert."""
+    page.set_content(TELEGRAM_FINALE_HTML, wait_until="load")
+    page.wait_for_selector("#incoming.shown", timeout=10_000)
+
+
+def play_telegram_finale(page: Page, hold_ms: int = 4500) -> None:
+    """Show the Telegram-style view and hold it on screen for recordings."""
+    show_telegram_finale(page)
     pace(page, hold_ms)
 
 

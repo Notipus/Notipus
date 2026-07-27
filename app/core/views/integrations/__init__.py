@@ -6,6 +6,7 @@ configuration, and disconnection.
 
 Modules:
     - slack: Slack OAuth for notifications
+    - telegram: Telegram bot token configuration for notifications
     - stripe: Stripe webhook configuration (manual setup)
     - shopify: Shopify OAuth and webhook configuration
     - chargify: Chargify/Maxio webhook configuration (manual setup)
@@ -50,6 +51,13 @@ from .stripe import (
     disconnect_stripe,
     integrate_stripe,
 )
+from .telegram import (
+    configure_telegram,
+    connect_telegram,
+    disconnect_telegram,
+    get_telegram_status,
+    test_telegram,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,12 @@ __all__ = [
     "test_slack",
     "get_slack_channels",
     "configure_slack",
+    # Telegram
+    "connect_telegram",
+    "disconnect_telegram",
+    "test_telegram",
+    "configure_telegram",
+    "get_telegram_status",
     # Stripe
     "integrate_stripe",
     "disconnect_stripe",

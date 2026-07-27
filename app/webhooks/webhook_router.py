@@ -10,6 +10,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .exceptions import WebhookError, WebhookSignatureError
+from .services.destination_credentials import get_telegram_credentials
 from .services.event_consolidation import event_consolidation_service
 from .services.pending_event_queue import pending_event_queue
 from .services.rate_limiter import RateLimitException, rate_limiter
@@ -250,7 +251,7 @@ def _get_slack_webhook_url(workspace: Optional[Workspace]) -> Optional[str]:
         )
         return cast("str | None", incoming_webhook.get("url"))
     except Integration.DoesNotExist:
-        logger.warning(
+        logger.debug(
             f"No active Slack integration found for workspace {workspace.uuid}"
         )
         return None
@@ -430,34 +431,67 @@ def _process_immediately(
             status=200,
         )
 
-    # Build and format rich notification
-    formatted = settings.EVENT_PROCESSOR.process_event_rich(
-        event_data, customer_data, target="slack", workspace=workspace
+    # Build the target-agnostic notification once (this also stores the
+    # enriched record for the dashboard). Each destination formats it
+    # itself, so the event is never built or re-enriched twice.
+    notification = settings.EVENT_PROCESSOR.build_rich_notification(
+        event_data, customer_data, workspace=workspace
     )
 
-    # Send to Slack using workspace-specific integration
-    slack_webhook_url = _get_slack_webhook_url(workspace)
+    registry = PluginRegistry.instance()
 
+    # Every destination this workspace has enabled, as (name, credentials).
+    slack_webhook_url = _get_slack_webhook_url(workspace)
+    telegram_credentials = get_telegram_credentials(workspace)
+    destinations: list[tuple[str, dict[str, Any]]] = []
     if slack_webhook_url:
-        registry = PluginRegistry.instance()
-        slack_plugin = registry.get(PluginType.DESTINATION, "slack")
-        if slack_plugin is None or not isinstance(slack_plugin, BaseDestinationPlugin):
-            logger.error("Slack destination plugin not found or not configured")
-            return JsonResponse(
-                create_success_response(
-                    f"{provider_name} webhook processed (Slack plugin unavailable)"
-                ),
-                status=200,
-            )
-        # Let delivery failures propagate: the router then returns 5xx so
-        # the provider retries, instead of the notification being silently
-        # lost (consistent with pending_event_queue._send_notification).
-        slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
-    else:
+        destinations.append(("slack", {"webhook_url": slack_webhook_url}))
+    if telegram_credentials:
+        destinations.append(("telegram", telegram_credentials))
+
+    if not destinations:
         logger.warning(
-            f"No Slack webhook URL configured for workspace "
-            f"{workspace.uuid if workspace else 'unknown'}, "
-            f"skipping notification"
+            f"No notification destinations configured for workspace "
+            f"{workspace.uuid if workspace else 'unknown'}, skipping notification"
+        )
+        return JsonResponse(
+            create_success_response(f"{provider_name} webhook processed successfully"),
+            status=200,
+        )
+
+    # Deliver to each configured destination independently. Both a missing
+    # plugin and a send failure count as delivery errors: after attempting
+    # every destination we raise, so the router returns 5xx and the provider
+    # retries (re-attempting all destinations) instead of silently dropping
+    # the notification. Treating a missing plugin as an error — rather than
+    # skipping it — keeps this consistent with
+    # PendingEventQueue._send_notification and prevents a
+    # configured-but-undeliverable destination from being suppressed once the
+    # dedup marker is recorded (see _process_webhook_data). Trade-off: the
+    # marker is recorded only on full success, so a retry after a partial
+    # failure re-sends to destinations that already succeeded — an accepted
+    # duplicate beats a dropped notification.
+    delivery_errors: list[str] = []
+    for name, credentials in destinations:
+        plugin = registry.get(PluginType.DESTINATION, name)
+        if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
+            logger.error(f"{name} destination plugin not found or not configured")
+            delivery_errors.append(name)
+            continue
+        try:
+            formatted = plugin.format(notification)
+            plugin.send(formatted, credentials)
+        except Exception as e:
+            logger.error(
+                f"Failed to deliver {name} notification for workspace "
+                f"{workspace.uuid if workspace else 'unknown'}: {e!s}",
+                exc_info=True,
+            )
+            delivery_errors.append(name)
+
+    if delivery_errors:
+        raise RuntimeError(
+            f"notification delivery failed for: {', '.join(delivery_errors)}"
         )
 
     return JsonResponse(

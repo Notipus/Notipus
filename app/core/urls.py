@@ -102,6 +102,32 @@ urlpatterns = [
         views.configure_slack,
         name="configure_slack",
     ),
+    # Telegram integration
+    path(
+        "integrate/telegram/",
+        views.connect_telegram,
+        name="telegram_connect",
+    ),
+    path(
+        "api/disconnect/telegram/",
+        views.disconnect_telegram,
+        name="disconnect_telegram",
+    ),
+    path(
+        "api/test/telegram/",
+        views.test_telegram,
+        name="test_telegram",
+    ),
+    path(
+        "api/telegram/configure/",
+        views.configure_telegram,
+        name="configure_telegram",
+    ),
+    path(
+        "api/telegram/status/",
+        views.get_telegram_status,
+        name="get_telegram_status",
+    ),
     path(
         "api/disconnect/stripe/",
         views.disconnect_stripe,

@@ -702,6 +702,15 @@ class IntegrationService:
                 "connected": "slack_notifications" in integration_lookup,
                 "category": "Team Communication",
             },
+            {
+                "id": "telegram_notifications",
+                "name": "Telegram",
+                "description": (
+                    "Real-time notifications sent to your Telegram chat or channel"
+                ),
+                "connected": "telegram_notifications" in integration_lookup,
+                "category": "Messaging",
+            },
         ]
 
         # Enrichment Services - Services that enhance customer data

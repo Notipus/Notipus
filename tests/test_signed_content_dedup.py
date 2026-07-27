@@ -294,7 +294,7 @@ class TestChargifySignedContentDedup:
         workspace: Workspace,
     ) -> None:
         """A provider retry resends the identical body and is suppressed."""
-        mock_processor.process_event_rich.return_value = {"blocks": []}
+        mock_processor.build_rich_notification.return_value = {"blocks": []}
         body = _chargify_body()
 
         first = _post_chargify(client, workspace, body, "wh_1001")
@@ -319,7 +319,7 @@ class TestChargifySignedContentDedup:
         an attacker replaying a captured (body, signature) pair can set
         any value; it must not mint a fresh dedup key.
         """
-        mock_processor.process_event_rich.return_value = {"blocks": []}
+        mock_processor.build_rich_notification.return_value = {"blocks": []}
         body = _chargify_body()
 
         first = _post_chargify(client, workspace, body, "wh_1001")
@@ -330,7 +330,7 @@ class TestChargifySignedContentDedup:
         assert replay.status_code == 200
         assert "duplicate suppressed" in replay.json()["message"]
         # Exactly one notification was built
-        assert mock_processor.process_event_rich.call_count == 1
+        assert mock_processor.build_rich_notification.call_count == 1
 
     @patch("django.conf.settings.EVENT_PROCESSOR")
     def test_distinct_events_different_bodies_both_process(
@@ -341,7 +341,7 @@ class TestChargifySignedContentDedup:
         workspace: Workspace,
     ) -> None:
         """Two distinct events (different signed bodies) both process."""
-        mock_processor.process_event_rich.return_value = {"blocks": []}
+        mock_processor.build_rich_notification.return_value = {"blocks": []}
         first_body = _chargify_body(
             **{"id": "wh_1001", "payload[transaction][id]": "txn_1"}
         )
@@ -356,7 +356,7 @@ class TestChargifySignedContentDedup:
         assert "successfully" in first.json()["message"]
         assert second.status_code == 200
         assert "successfully" in second.json()["message"]
-        assert mock_processor.process_event_rich.call_count == 2
+        assert mock_processor.build_rich_notification.call_count == 2
 
 
 @pytest.mark.django_db
@@ -386,7 +386,7 @@ class TestShopifySignedContentDedup:
         workspace: Workspace,
     ) -> None:
         """A Shopify redelivery resends the identical body; suppressed."""
-        mock_processor.process_event_rich.return_value = {"blocks": []}
+        mock_processor.build_rich_notification.return_value = {"blocks": []}
         body = _shopify_body()
 
         first = _post_shopify(client, workspace, body, "delivery-1")
@@ -411,7 +411,7 @@ class TestShopifySignedContentDedup:
         an attacker replaying a captured (body, signature) pair can set
         any value; it must not mint a fresh dedup key.
         """
-        mock_processor.process_event_rich.return_value = {"blocks": []}
+        mock_processor.build_rich_notification.return_value = {"blocks": []}
         body = _shopify_body()
 
         first = _post_shopify(client, workspace, body, "delivery-1")
@@ -421,7 +421,7 @@ class TestShopifySignedContentDedup:
         assert "successfully" in first.json()["message"]
         assert replay.status_code == 200
         assert "duplicate suppressed" in replay.json()["message"]
-        assert mock_processor.process_event_rich.call_count == 1
+        assert mock_processor.build_rich_notification.call_count == 1
 
     @patch("django.conf.settings.EVENT_PROCESSOR")
     def test_distinct_events_different_bodies_both_process(
@@ -432,7 +432,7 @@ class TestShopifySignedContentDedup:
         workspace: Workspace,
     ) -> None:
         """Two distinct orders (different signed bodies) both process."""
-        mock_processor.process_event_rich.return_value = {"blocks": []}
+        mock_processor.build_rich_notification.return_value = {"blocks": []}
         first_body = _shopify_body(order_id=555)
         second_body = _shopify_body(order_id=556)
 
@@ -443,4 +443,4 @@ class TestShopifySignedContentDedup:
         assert "successfully" in first.json()["message"]
         assert second.status_code == 200
         assert "successfully" in second.json()["message"]
-        assert mock_processor.process_event_rich.call_count == 2
+        assert mock_processor.build_rich_notification.call_count == 2

@@ -1,0 +1,254 @@
+{% extends "core/base.html.j2" %}
+
+{% block title %}
+    Connect Telegram - Notipus
+{% endblock title %}
+
+{% block content %}
+    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
+        <!-- Header -->
+        <div class="bg-white shadow-sm">
+            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                <div class="md:flex md:items-center md:justify-between">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-3">
+                            <div class="w-12 h-12 bg-[#0088cc]/10 rounded-xl flex items-center justify-center">
+                                <svg class="w-7 h-7" viewBox="0 0 24 24" fill="#0088cc">
+                                    <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl">Connect Telegram</h1>
+                                <p class="mt-1 text-lg text-gray-600">Receive real-time notifications in your Telegram chat or channel</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex md:mt-0 md:ml-4">
+                        <a href="{% url 'core:integrations' %}"
+                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
+                            <i class="ti ti-arrow-left mr-2"></i>
+                            Back to Integrations
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main content -->
+        <div class="max-w-4xl mx-auto py-8 sm:px-6 lg:px-8">
+            {% if existing_integration %}
+                <!-- Already Connected -->
+                <div class="bg-green-50 border border-green-200 rounded-xl p-6 mb-8">
+                    <div class="flex">
+                        <div class="flex-shrink-0">
+                            <svg class="h-5 w-5 text-green-400"
+                                 fill="currentColor"
+                                 viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
+                                </path>
+                            </svg>
+                        </div>
+                        <div class="ml-3">
+                            <h3 class="text-sm font-medium text-green-800">Telegram is connected!</h3>
+                            <div class="mt-2 text-sm text-green-700">
+                                <p>Your Telegram bot is successfully connected. You can update your credentials below if needed.</p>
+                                {% if existing_integration.integration_settings.bot_username %}
+                                    <p class="mt-1">Bot: <strong>@{{ existing_integration.integration_settings.bot_username }}</strong></p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {% endif %}
+
+            <!-- Integration Setup -->
+            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
+                <div class="flex items-center mb-6">
+                    <div class="h-12 w-12 bg-[#0088cc]/10 rounded-xl flex items-center justify-center">
+                        <i class="ti ti-brand-telegram text-[#0088cc] text-2xl"></i>
+                    </div>
+                    <div class="ml-4">
+                        <h3 class="text-xl font-semibold text-gray-900">Telegram Bot Setup</h3>
+                        <p class="text-gray-600">Configure your Telegram bot to receive notifications</p>
+                    </div>
+                </div>
+
+                <form method="post" class="space-y-6">
+                    {% csrf_token %}
+
+                    <!-- Bot Token -->
+                    <div>
+                        <label for="bot_token" class="block text-sm font-medium text-gray-700">Bot Token</label>
+                        <div class="mt-1">
+                            {% comment %}
+                            Never render the stored bot token back into the
+                            page: even in a password field it would sit in the
+                            DOM/source where an extension or XSS could read it.
+                            Re-enter the token to update the connection.
+                            {% endcomment %}
+                            <input type="password"
+                                   name="bot_token"
+                                   id="bot_token"
+                                   autocomplete="off"
+                                   class="shadow-sm focus:ring-[#0088cc] focus:border-[#0088cc] block w-full sm:text-sm border-gray-300 rounded-md"
+                                   placeholder="123456789:ABCdefGHIjklmnOPQrstUVwxyz"
+                                   required>
+                        </div>
+                        <p class="mt-2 text-sm text-gray-500">
+                            Get your bot token from <a href="https://t.me/botfather"
+    target="_blank"
+    rel="noopener noreferrer"
+    class="text-[#0088cc] hover:underline">@BotFather</a> on Telegram{% if existing_integration %} (re-enter it to update the connection){% endif %}
+                        </p>
+                    </div>
+
+                    <!-- Chat ID -->
+                    <div>
+                        <label for="chat_id" class="block text-sm font-medium text-gray-700">Chat ID</label>
+                        <div class="mt-1">
+                            <input type="text"
+                                   name="chat_id"
+                                   id="chat_id"
+                                   value="{% if existing_integration %}{{ existing_integration.oauth_credentials.chat_id }}{% endif %}"
+                                   class="shadow-sm focus:ring-[#0088cc] focus:border-[#0088cc] block w-full sm:text-sm border-gray-300 rounded-md"
+                                   placeholder="-1001234567890 or 123456789"
+                                   required>
+                        </div>
+                        <p class="mt-2 text-sm text-gray-500">
+                            The chat, group, or channel ID where notifications will be sent.
+                            For groups/channels, IDs usually start with <code class="bg-gray-100 px-1 rounded">-100</code>
+                        </p>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <div class="flex justify-end">
+                        <button type="submit"
+                                class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#0088cc] hover:bg-[#0077b5] transition-all duration-200">
+                            <i class="ti ti-plug-connected mr-2"></i>
+                            {% if existing_integration %}
+                                Update Connection
+                            {% else %}
+                                Connect Telegram
+                            {% endif %}
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Setup Instructions -->
+            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8">
+                <h3 class="text-lg font-semibold text-gray-900 mb-4">
+                    <i class="ti ti-list-check mr-2 text-[#0088cc]"></i>
+                    Setup Instructions
+                </h3>
+
+                <div class="space-y-6">
+                    <!-- Step 1: Create Bot -->
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#0088cc]/10 text-[#0088cc] font-medium text-sm">
+                                1
+                            </div>
+                        </div>
+                        <div class="ml-3">
+                            <h4 class="text-sm font-medium text-gray-900">Create a Telegram Bot</h4>
+                            <div class="text-sm text-gray-500 space-y-1">
+                                <p>Open Telegram and search for <a href="https://t.me/botfather"
+    target="_blank"
+    rel="noopener noreferrer"
+    class="text-[#0088cc] hover:underline">@BotFather</a></p>
+                                <p>Send <code class="bg-gray-100 px-1.5 py-0.5 rounded">/newbot</code> and follow the prompts</p>
+                                <p>Copy the bot token provided (looks like <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs">123456:ABC-DEF...</code>)</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Add Bot to Chat -->
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#0088cc]/10 text-[#0088cc] font-medium text-sm">
+                                2
+                            </div>
+                        </div>
+                        <div class="ml-3">
+                            <h4 class="text-sm font-medium text-gray-900">Add the Bot to Your Chat</h4>
+                            <div class="text-sm text-gray-500 space-y-1">
+                                <p><strong>For private chat:</strong> Start a conversation with your bot</p>
+                                <p><strong>For groups:</strong> Add the bot as a member of the group</p>
+                                <p><strong>For channels:</strong> Add the bot as an administrator</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Get Chat ID -->
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#0088cc]/10 text-[#0088cc] font-medium text-sm">
+                                3
+                            </div>
+                        </div>
+                        <div class="ml-3">
+                            <h4 class="text-sm font-medium text-gray-900">Get the Chat ID</h4>
+                            <div class="text-sm text-gray-500 space-y-2">
+                                <p>The easiest way to get your chat ID:</p>
+                                <ol class="list-decimal list-inside space-y-1 ml-2">
+                                    <li>Add <a href="https://t.me/userinfobot"
+    target="_blank"
+    rel="noopener noreferrer"
+    class="text-[#0088cc] hover:underline">@userinfobot</a> to your chat/group</li>
+                                    <li>Forward a message to @userinfobot to get the chat ID</li>
+                                    <li>Or use <a href="https://t.me/raw_data_bot"
+    target="_blank"
+    rel="noopener noreferrer"
+    class="text-[#0088cc] hover:underline">@raw_data_bot</a></li>
+                                </ol>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 4: Connect -->
+                    <div class="flex items-start">
+                        <div class="flex-shrink-0">
+                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#0088cc]/10 text-[#0088cc] font-medium text-sm">
+                                4
+                            </div>
+                        </div>
+                        <div class="ml-3">
+                            <h4 class="text-sm font-medium text-gray-900">Connect and Test</h4>
+                            <p class="text-sm text-gray-500">
+                                Enter your bot token and chat ID above, then click Connect.
+                                Use the "Test" button on the integrations page to verify it works.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Benefits -->
+            <div class="mt-8 bg-gradient-to-r from-[#0088cc]/5 to-[#0088cc]/10 rounded-xl p-6 border border-[#0088cc]/20">
+                <h3 class="text-lg font-semibold text-[#0088cc] mb-4">
+                    <i class="ti ti-star mr-2"></i>
+                    What you'll get with Telegram integration:
+                </h3>
+                <ul class="space-y-2 text-gray-700">
+                    <li class="flex items-center">
+                        <i class="ti ti-check text-[#0088cc] mr-2"></i>
+                        Real-time payment and subscription notifications
+                    </li>
+                    <li class="flex items-center">
+                        <i class="ti ti-check text-[#0088cc] mr-2"></i>
+                        Rich formatted messages with customer and company info
+                    </li>
+                    <li class="flex items-center">
+                        <i class="ti ti-check text-[#0088cc] mr-2"></i>
+                        Quick action buttons to view details in Stripe/Shopify
+                    </li>
+                    <li class="flex items-center">
+                        <i class="ti ti-check text-[#0088cc] mr-2"></i>
+                        Works alongside Slack - get notified in both places
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+{% endblock content %}

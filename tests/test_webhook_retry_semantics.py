@@ -302,6 +302,128 @@ class TestImmediateDeliveryFailureReturns5xx:
 
 
 @pytest.mark.django_db
+class TestTelegramImmediateDelivery:
+    """A configured Telegram destination is delivered on the immediate path."""
+
+    @pytest.fixture
+    def workspace(self) -> Workspace:
+        """Workspace with a Chargify source and a Telegram destination."""
+        workspace = Workspace.objects.create(
+            name="TG Workspace", shop_domain="tg.myshopify.com"
+        )
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="chargify",
+            webhook_secret="test-webhook-secret",
+            is_active=True,
+        )
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="telegram_notifications",
+            is_active=True,
+            oauth_credentials={"bot_token": "123:abc", "chat_id": "-1001"},
+        )
+        return workspace
+
+    def _post_chargify(self, client: Client, workspace: Workspace) -> Any:
+        """Send a valid Chargify payment_success webhook."""
+        return client.post(
+            f"/webhook/customer/{workspace.uuid}/chargify/",
+            data=urlencode(
+                {
+                    "event": "payment_success",
+                    "payload[subscription][id]": "sub_789",
+                    "payload[subscription][customer][id]": "cust_123",
+                    "payload[subscription][customer][email]": "test@example.com",
+                    "payload[subscription][product][name]": "Premium Plan",
+                    "payload[transaction][id]": "txn_1",
+                    "payload[transaction][amount_in_cents]": "2999",
+                    "created_at": "2024-03-15T10:00:00Z",
+                }
+            ),
+            content_type="application/x-www-form-urlencoded",
+            HTTP_X_CHARGIFY_WEBHOOK_ID="tg_webhook_1",
+            HTTP_X_CHARGIFY_WEBHOOK_SIGNATURE_HMAC_SHA_256="sig",
+        )
+
+    @patch("plugins.sources.chargify.ChargifySourcePlugin.validate_webhook")
+    def test_telegram_delivered_with_bot_credentials(
+        self,
+        mock_validate: Mock,
+        mock_consolidation_cache: dict,
+        client: Client,
+        workspace: Workspace,
+    ) -> None:
+        """The Telegram plugin is invoked with the workspace's bot credentials."""
+        mock_validate.return_value = True
+
+        telegram_plugin = MagicMock(spec=BaseDestinationPlugin)
+        mock_registry = Mock()
+        mock_registry.get.return_value = telegram_plugin
+
+        with patch(
+            "plugins.registry.PluginRegistry.instance", return_value=mock_registry
+        ):
+            response = self._post_chargify(client, workspace)
+
+        assert response.status_code == 200
+        telegram_plugin.format.assert_called_once()
+        telegram_plugin.send.assert_called_once()
+        # send(formatted, credentials): assert the bot credentials are passed.
+        _, credentials = telegram_plugin.send.call_args[0]
+        assert credentials == {"bot_token": "123:abc", "chat_id": "-1001"}
+
+    @patch("plugins.sources.chargify.ChargifySourcePlugin.validate_webhook")
+    def test_telegram_failure_returns_5xx(
+        self,
+        mock_validate: Mock,
+        mock_consolidation_cache: dict,
+        client: Client,
+        workspace: Workspace,
+    ) -> None:
+        """A failed Telegram send surfaces as 5xx so the provider retries."""
+        mock_validate.return_value = True
+
+        telegram_plugin = MagicMock(spec=BaseDestinationPlugin)
+        telegram_plugin.send.side_effect = Exception("telegram unreachable")
+        mock_registry = Mock()
+        mock_registry.get.return_value = telegram_plugin
+
+        with patch(
+            "plugins.registry.PluginRegistry.instance", return_value=mock_registry
+        ):
+            response = self._post_chargify(client, workspace)
+
+        assert response.status_code == 500
+
+    @patch("plugins.sources.chargify.ChargifySourcePlugin.validate_webhook")
+    def test_missing_plugin_returns_5xx(
+        self,
+        mock_validate: Mock,
+        mock_consolidation_cache: dict,
+        client: Client,
+        workspace: Workspace,
+    ) -> None:
+        """A configured destination whose plugin is missing returns 5xx.
+
+        The notification must not be silently dropped (with the dedup marker
+        then suppressing the provider's retry) just because the plugin
+        didn't load — consistent with the delayed delivery path.
+        """
+        mock_validate.return_value = True
+
+        mock_registry = Mock()
+        mock_registry.get.return_value = None  # plugin not registered
+
+        with patch(
+            "plugins.registry.PluginRegistry.instance", return_value=mock_registry
+        ):
+            response = self._post_chargify(client, workspace)
+
+        assert response.status_code == 500
+
+
+@pytest.mark.django_db
 class TestBillingWebhookPropagatesDbErrors:
     """Finding 5: billing handler errors must surface as 5xx."""
 

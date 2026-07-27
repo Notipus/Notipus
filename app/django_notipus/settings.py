@@ -817,6 +817,7 @@ PLUGINS: dict = {
     # Destination plugins - send notifications to various platforms
     "destination": {
         "slack": {"enabled": True},
+        "telegram": {"enabled": True},
         # Future destination plugins:
         # "discord": {"enabled": False},
         # "email": {"enabled": False},

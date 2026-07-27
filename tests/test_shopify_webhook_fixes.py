@@ -124,14 +124,14 @@ class TestShopifyWebhookEndToEnd:
         }
 
         with patch("django.conf.settings.EVENT_PROCESSOR") as mock_processor:
-            mock_processor.process_event_rich.return_value = {"blocks": []}
+            mock_processor.build_rich_notification.return_value = {"blocks": []}
             response = _post_shopify_webhook(
                 client, workspace, "orders/cancelled", payload
             )
 
         assert response.status_code == 200
-        mock_processor.process_event_rich.assert_called_once()
-        event_data = mock_processor.process_event_rich.call_args[0][0]
+        mock_processor.build_rich_notification.assert_called_once()
+        event_data = mock_processor.build_rich_notification.call_args[0][0]
         assert event_data["type"] == "order_cancelled"
         assert event_data["customer_id"] == "456"
 
@@ -151,13 +151,13 @@ class TestShopifyWebhookEndToEnd:
         }
 
         with patch("django.conf.settings.EVENT_PROCESSOR") as mock_processor:
-            mock_processor.process_event_rich.return_value = {"blocks": []}
+            mock_processor.build_rich_notification.return_value = {"blocks": []}
             response = _post_shopify_webhook(
                 client, workspace, "orders/refunded", payload
             )
 
         assert response.status_code == 200
-        event_data = mock_processor.process_event_rich.call_args[0][0]
+        event_data = mock_processor.build_rich_notification.call_args[0][0]
         assert event_data["type"] == "refund_issued"
 
     def test_guest_checkout_returns_200(
@@ -177,13 +177,13 @@ class TestShopifyWebhookEndToEnd:
         }
 
         with patch("django.conf.settings.EVENT_PROCESSOR") as mock_processor:
-            mock_processor.process_event_rich.return_value = {"blocks": []}
+            mock_processor.build_rich_notification.return_value = {"blocks": []}
             response = _post_shopify_webhook(
                 client, workspace, "orders/create", payload
             )
 
         assert response.status_code == 200
-        event_data = mock_processor.process_event_rich.call_args[0][0]
+        event_data = mock_processor.build_rich_notification.call_args[0][0]
         # Guest checkouts are identified by email, never by the order id
         assert event_data["customer_id"] == "guest@gmail.com"
 
@@ -203,13 +203,13 @@ class TestShopifyWebhookEndToEnd:
         }
 
         with patch("django.conf.settings.EVENT_PROCESSOR") as mock_processor:
-            mock_processor.process_event_rich.return_value = {"blocks": []}
+            mock_processor.build_rich_notification.return_value = {"blocks": []}
             response = _post_shopify_webhook(
                 client, workspace, "orders/create", payload
             )
 
         assert response.status_code == 200
-        event_data = mock_processor.process_event_rich.call_args[0][0]
+        event_data = mock_processor.build_rich_notification.call_args[0][0]
         assert event_data["customer_id"] is None
 
     def test_unknown_topic_returns_200(
@@ -244,13 +244,13 @@ class TestShopifyWebhookEndToEnd:
         }
 
         with patch("django.conf.settings.EVENT_PROCESSOR") as mock_processor:
-            mock_processor.process_event_rich.return_value = {"blocks": []}
+            mock_processor.build_rich_notification.return_value = {"blocks": []}
             response = _post_shopify_webhook(
                 client, workspace, "orders/create", payload
             )
 
         assert response.status_code == 200
-        event_data = mock_processor.process_event_rich.call_args[0][0]
+        event_data = mock_processor.build_rich_notification.call_args[0][0]
         prices = [item["price"] for item in event_data["metadata"]["line_items"]]
         assert prices == [Decimal("0"), Decimal("5.00")]
 

@@ -35,6 +35,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
 
+from .destination_credentials import get_telegram_credentials
 from .redis_client import get_raw_redis_client
 
 logger = logging.getLogger(__name__)
@@ -832,7 +833,7 @@ class PendingEventQueue:
         provider_name: str,
         workspace: Workspace | None,
     ) -> bool:
-        """Build and send notification to Slack.
+        """Build and send notification to all configured destinations.
 
         Args:
             event_data: Aggregated event data.
@@ -841,8 +842,9 @@ class PendingEventQueue:
             workspace: Workspace model instance.
 
         Returns:
-            True if notification was sent successfully (or suppressed),
-            False if there was a failure that should be retried.
+            True if the notification was delivered to every configured
+            destination (or suppressed / nothing configured), False if any
+            destination failed so orphan recovery retries the event later.
         """
         from plugins.base import PluginType
         from plugins.destinations.base import BaseDestinationPlugin
@@ -885,52 +887,74 @@ class PendingEventQueue:
             )
             return True  # Suppressed events count as success
 
-        # Build and format rich notification
+        # Build the target-agnostic notification once (also stores the
+        # enriched record). Each destination formats it itself, so the
+        # event is never built or re-enriched twice.
         try:
-            formatted = settings.EVENT_PROCESSOR.process_event_rich(
-                event_data, customer_data, target="slack", workspace=workspace
+            notification = settings.EVENT_PROCESSOR.build_rich_notification(
+                event_data, customer_data, workspace=workspace
             )
         except Exception as e:
             logger.error(f"Failed to build notification: {e}", exc_info=True)
             return False  # Retry later
 
-        # Get Slack webhook URL
-        slack_webhook_url = self._get_slack_webhook_url(workspace)
-
-        if not slack_webhook_url:
-            logger.warning(
-                f"No Slack webhook URL configured for workspace "
-                f"{workspace.uuid if workspace else 'unknown'}, "
-                f"skipping notification"
-            )
-            return True  # No webhook = nothing to do, consider success
-
         registry = PluginRegistry.instance()
-        slack_plugin = registry.get(PluginType.DESTINATION, "slack")
 
-        if slack_plugin is None or not isinstance(slack_plugin, BaseDestinationPlugin):
-            logger.error("Slack destination plugin not found or not configured")
-            return False  # Retry later
+        # Every destination this workspace has enabled, as (name, credentials).
+        slack_webhook_url = self._get_slack_webhook_url(workspace)
+        telegram_credentials = get_telegram_credentials(workspace)
+        destinations: list[tuple[str, dict[str, Any]]] = []
+        if slack_webhook_url:
+            destinations.append(("slack", {"webhook_url": slack_webhook_url}))
+        if telegram_credentials:
+            destinations.append(("telegram", telegram_credentials))
 
-        try:
-            slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
-            logger.info(f"Sent {event_type} notification for customer {customer_id}")
-
-            # Record the event after successful send
-            event_consolidation_service.record_event(
-                event_type=event_type,
-                customer_id=customer_id,
-                workspace_id=workspace_id,
-                external_id=external_id,
+        if not destinations:
+            logger.warning(
+                f"No notification destinations configured for workspace "
+                f"{workspace.uuid if workspace else 'unknown'}, skipping notification"
             )
-            return True
+            return True  # Nothing to do, consider success
 
-        except Exception as e:
-            logger.error(
-                f"Failed to send Slack notification for workspace "
-                f"{workspace.uuid if workspace else 'unknown'}: {e}"
-            )
-            return False  # Retry later
+        # Deliver to each configured destination. If any fails (missing
+        # plugin or send error), return False so orphan recovery retries the
+        # whole event later — every destination is re-attempted. Trade-off:
+        # the consolidation marker is recorded only after all destinations
+        # succeed, so a retry after a partial failure re-sends to destinations
+        # that already succeeded. We accept a possible duplicate as the cost
+        # of never dropping a notification.
+        all_delivered = True
+        for name, credentials in destinations:
+            plugin = registry.get(PluginType.DESTINATION, name)
+            if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
+                logger.error(f"{name} destination plugin not found or not configured")
+                all_delivered = False
+                continue
+            try:
+                formatted = plugin.format(notification)
+                plugin.send(formatted, credentials)
+                logger.info(
+                    f"Sent {event_type} {name} notification for customer {customer_id}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to send {name} notification for workspace "
+                    f"{workspace.uuid if workspace else 'unknown'}: {e}",
+                    exc_info=True,
+                )
+                all_delivered = False
+
+        if not all_delivered:
+            return False  # Retry later (orphan recovery re-attempts all)
+
+        # Record the event only after every destination succeeded.
+        event_consolidation_service.record_event(
+            event_type=event_type,
+            customer_id=customer_id,
+            workspace_id=workspace_id,
+            external_id=external_id,
+        )
+        return True
 
     def _get_slack_webhook_url(self, workspace: Workspace | None) -> str | None:
         """Get Slack webhook URL for a workspace.

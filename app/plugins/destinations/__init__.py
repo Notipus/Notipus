@@ -1,7 +1,7 @@
 """Destination plugins for notification delivery.
 
 Destination plugins format and deliver notifications to various platforms
-(Slack, Email, Discord, etc.).
+(Slack, Email, Discord, Telegram, etc.).
 
 Usage:
     from plugins.destinations import BaseDestinationPlugin
@@ -10,6 +10,7 @@ Usage:
     # Get a specific destination plugin
     registry = PluginRegistry.instance()
     slack_plugin = registry.get(PluginType.DESTINATION, "slack")
+    telegram_plugin = registry.get(PluginType.DESTINATION, "telegram")
 
     # Format and send a notification
     formatted = slack_plugin.format(notification)
@@ -17,7 +18,9 @@ Usage:
 """
 
 from plugins.destinations.base import BaseDestinationPlugin
+from plugins.destinations.telegram import TelegramDestinationPlugin
 
 __all__ = [
     "BaseDestinationPlugin",
+    "TelegramDestinationPlugin",
 ]

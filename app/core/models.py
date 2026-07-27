@@ -393,6 +393,7 @@ class Integration(models.Model):
         ("chargify", "Chargify / Maxio Advanced Billing"),
         # Notification integrations (workspace-specific)
         ("slack_notifications", "Slack Notifications"),
+        ("telegram_notifications", "Telegram Notifications"),
         # Enrichment integrations (workspace-specific, user-provided API keys)
         ("hunter_enrichment", "Hunter.io Email Enrichment"),
     )
