@@ -122,13 +122,19 @@ _BOT_UA_MARKERS = (
 # Path prefixes never tracked as page views: machine traffic, not users.
 _EXCLUDED_PATH_PREFIXES = ("/admin/", "/static/", "/webhook/")
 
-# Pre-auth pages. An app root redirects anonymous visitors to the login
-# page, so it is where internet background scanning piles up — cookieless
-# crawler hits to /accounts/login/ dominate the raw "active users" count.
-# A cookieless GET here is indistinguishable from a crawler minting a
-# fresh client id per request (see _new_client_id), so it must not count.
-# Real visitors are still counted the moment they carry a client-id
-# cookie or authenticate (signup completion, dashboard).
+# Pre-auth pages. A hit to the login/signup page is never evidence of
+# *app usage* — it is top-of-funnel visitor traffic, and it dominated and
+# badly inflated the app's "active users" number. Two sources feed it:
+# internet background scanning (the app root 302s anonymous visitors here,
+# so crawlers pile up), and — because gtag.js on the marketing site sets
+# the `_ga` cookie on the registrable domain ``.notipus.com`` shared with
+# ``app.notipus.com`` — ordinary marketing-site visitors who click through
+# to the login page and bounce without ever signing in. Neither is an app
+# user, so server-side ``page_view`` is never emitted for these paths.
+# Real active-user signal comes from authenticated page views (dashboard,
+# billing, workspace — all behind login) and the explicit ``sign_up`` /
+# ``login`` conversion events; the marketing property owns the acquisition
+# funnel and measures it client-side.
 _PRE_AUTH_PATHS = ("/accounts/login/", "/accounts/signup/")
 
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ga4")
@@ -544,27 +550,6 @@ def _is_bot(request: HttpRequest) -> bool:
     return any(marker in user_agent for marker in _BOT_UA_MARKERS)
 
 
-def _visitor_is_known(request: HttpRequest) -> bool:
-    """Return whether we've seen this visitor before or they're signed in.
-
-    True when the request carries a usable client-id cookie (a prior
-    tracked page view minted one, or gtag.js set ``_ga``) or belongs to
-    an authenticated user. Used to keep anonymous, cookieless hits to
-    pre-auth pages — overwhelmingly crawler noise — out of the
-    active-user count while still counting returning and signed-in users.
-
-    Args:
-        request: The current HTTP request.
-
-    Returns:
-        True for cookie-bearing or authenticated visitors.
-    """
-    if _client_id_from_cookies(request.COOKIES) is not None:
-        return True
-    user = getattr(request, "user", None)
-    return bool(user is not None and user.is_authenticated)
-
-
 class GA4Middleware:
     """Mints the client-id cookie and tracks page views server-side.
 
@@ -638,6 +623,10 @@ class GA4Middleware:
             return False
         if request.path.startswith(_EXCLUDED_PATH_PREFIXES):
             return False
-        if request.path in _PRE_AUTH_PATHS and not _visitor_is_known(request):
+        # Never count login/signup page views: they are funnel-top visitor
+        # traffic (crawlers + marketing-site click-throughs carrying the
+        # shared ``.notipus.com`` _ga cookie), not app usage. See
+        # _PRE_AUTH_PATHS. Real usage is authenticated pages + sign_up/login.
+        if request.path in _PRE_AUTH_PATHS:
             return False
         return not _is_bot(request)

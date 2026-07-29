@@ -238,16 +238,30 @@ class TestMiddleware:
         assert _events_named(ga4, "page_view") == []
         assert analytics.CLIENT_ID_COOKIE not in response.cookies
 
-    def test_pre_auth_page_tracked_for_known_visitor(
+    def test_pre_auth_page_never_tracked_even_for_known_visitor(
         self, ga4: MagicMock, db: None
     ) -> None:
-        """A returning visitor (client-id cookie) is tracked on the login page."""
+        """The login page is never a page_view — even for a cookie-bearing
+        visitor. A login-page hit is funnel-top traffic, not app usage, and
+        counting it inflated the app's active-user number."""
         client = Client()
         client.cookies[analytics.CLIENT_ID_COOKIE] = "12345.67890"
         response = client.get(reverse("account_login"), HTTP_USER_AGENT="Mozilla/5.0")
         assert response.status_code == 200
-        (event,) = _events_named(ga4, "page_view")
-        assert event["params"]["page_location"].endswith(reverse("account_login"))
+        assert _events_named(ga4, "page_view") == []
+
+    def test_login_page_with_shared_ga_cookie_not_tracked(
+        self, ga4: MagicMock, db: None
+    ) -> None:
+        """Regression: a marketing-site visitor clicking through to the login
+        page carries the shared ``.notipus.com`` _ga cookie, which made them
+        "known" and got them counted as an app active user despite never
+        signing in. That page_view must not be emitted."""
+        client = Client()
+        client.cookies["_ga"] = "GA1.1.12345.67890"
+        response = client.get(reverse("account_login"), HTTP_USER_AGENT="Mozilla/5.0")
+        assert response.status_code == 200
+        assert _events_named(ga4, "page_view") == []
 
     def test_bot_requests_not_tracked(self, ga4: MagicMock, db: None) -> None:
         """Crawlers get neither page views nor a client-id cookie."""
@@ -288,14 +302,14 @@ class TestMiddleware:
         )
         assert not should_track(factory.get("/admin/core/", **browser), html_response())
 
-        # Pre-auth pages: a cookieless hit (crawler-shaped) is skipped, but
-        # a visitor carrying a client-id cookie is tracked.
+        # Pre-auth pages are never tracked as page views — cookieless
+        # (crawler-shaped) or cookie-bearing (marketing click-through) alike.
         assert not should_track(
             factory.get("/accounts/login/", **browser), html_response()
         )
         known = factory.get("/accounts/login/", **browser)
         known.COOKIES[analytics.CLIENT_ID_COOKIE] = "12345.67890"
-        assert should_track(known, html_response())
+        assert not should_track(known, html_response())
 
         json_response = MagicMock()
         json_response.status_code = 200
