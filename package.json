@@ -9,10 +9,10 @@
     "dev": "bun run build:fonts && bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
   },
   "devDependencies": {
-    "@tabler/icons-webfont": "^3.45.0",
+    "@tabler/icons-webfont": "^3.46.0",
     "@tailwindcss/cli": "^4.3.3",
     "autoprefixer": "^10.5.4",
-    "postcss": "^8.5.23",
+    "postcss": "^8.5.25",
     "tailwindcss": "^4.3.3"
   },
   "dependencies": {
