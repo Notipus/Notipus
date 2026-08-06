@@ -319,6 +319,36 @@
                                                         Disconnect
                                                     </button>
                                                 </form>
+                                            {% elif integration.id == "teams_notifications" %}
+                                                <!-- Top row: Configure and Send Test -->
+                                                <div class="flex items-center gap-2">
+                                                    <a href="{% url 'core:teams_connect' %}"
+                                                       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
+                                                        <i class="ti ti-settings"></i>
+                                                        Configure
+                                                    </a>
+                                                    <form method="post" action="{% url 'core:test_teams' %}" class="inline">
+                                                        {% csrf_token %}
+                                                        <button type="submit"
+                                                                class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
+                                                            <i class="ti ti-send"></i>
+                                                            Test
+                                                        </button>
+                                                    </form>
+                                                </div>
+                                                <!-- Bottom row: Disconnect -->
+                                                <form method="post"
+                                                      action="{% url 'core:disconnect_teams' %}"
+                                                      class="inline"
+                                                      id="disconnect-teams-form">
+                                                    {% csrf_token %}
+                                                    <button type="button"
+                                                            onclick="confirmDisconnectTeams()"
+                                                            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors">
+                                                        <i class="ti ti-unlink"></i>
+                                                        Disconnect
+                                                    </button>
+                                                </form>
                                             {% else %}
                                                 <button type="button"
                                                         class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
@@ -335,6 +365,12 @@
                                             {% elif integration.id == "telegram_notifications" %}
                                                 <a href="{% url 'core:telegram_connect' %}"
                                                    class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#0088cc] hover:bg-[#0077b5] rounded-lg transition-colors shadow-sm">
+                                                    <i class="ti ti-plug-connected"></i>
+                                                    Connect
+                                                </a>
+                                            {% elif integration.id == "teams_notifications" %}
+                                                <a href="{% url 'core:teams_connect' %}"
+                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#6264A7] hover:bg-[#52549b] rounded-lg transition-colors shadow-sm">
                                                     <i class="ti ti-plug-connected"></i>
                                                     Connect
                                                 </a>
@@ -358,7 +394,7 @@
                                     <i class="ti ti-dots text-gray-400 text-xl"></i>
                                 </div>
                                 <h3 class="text-sm font-medium text-gray-700 mb-1">More channels coming soon</h3>
-                                <p class="text-xs text-gray-500">Discord, Teams, Email, and more</p>
+                                <p class="text-xs text-gray-500">Discord, Email, and more</p>
                             </div>
                         </div>
                     </div>
@@ -615,6 +651,16 @@
             );
             if (confirmed) {
                 document.getElementById('disconnect-telegram-form').submit();
+            }
+        }
+
+        async function confirmDisconnectTeams() {
+            const confirmed = await NotipusUI.confirmDisconnect(
+                'Microsoft Teams',
+                'You will stop receiving notifications in Microsoft Teams. You can reconnect at any time.'
+            );
+            if (confirmed) {
+                document.getElementById('disconnect-teams-form').submit();
             }
         }
 
