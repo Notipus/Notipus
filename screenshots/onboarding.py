@@ -1,10 +1,11 @@
 """Record the zero-to-configured onboarding screencast.
 
-Drives the full journey a new customer takes: passkey signup as Peter
-Gibbons → pick the Pro trial → create the Initech workspace → connect
-Slack (OAuth mocked server-side, passkey ceremony real via a virtual
-authenticator) → pick the #billing-alerts channel → connect Stripe with
-a webhook signing secret → land on a dashboard full of activity.
+Drives the journey a new customer takes under the "build before you
+commit" onboarding: passkey signup as Peter Gibbons → land straight in
+the product on an auto-provisioned free workspace → connect Slack (OAuth
+mocked server-side, passkey ceremony real via a virtual authenticator) →
+pick the #billing-alerts channel → connect Stripe with a webhook signing
+secret → land on a dashboard full of activity.
 """
 
 import pytest
@@ -17,7 +18,7 @@ from conftest import (
     play_slack_finale,
     type_text,
 )
-from core.models import Workspace
+from core.models import WorkspaceMember
 from playwright.sync_api import Page
 
 
@@ -37,41 +38,30 @@ def onboarding(recording_page: Page, mock_slack_api: None) -> None:  # noqa: F81
     type_text(page.locator("#modal-email"), "peter.gibbons@initech.com")
     pace(page, 500)
 
-    # The virtual authenticator approves the passkey ceremony instantly
+    # The virtual authenticator approves the passkey ceremony instantly.
+    # "Build before you commit": signup drops the user straight into the
+    # product on an auto-provisioned free workspace — no plan gate and no
+    # manual workspace form — landing on the integrations hub.
     hover_and_click(page, page.locator("#create-with-passkey"))
-    page.wait_for_url("**/select-plan/", timeout=15_000)
+    page.wait_for_url("**/integrations/", timeout=15_000)
     page.wait_for_load_state("networkidle")
-    pace(page, 1500)
+    pace(page, 1800)
 
-    # --- Choose the Pro trial ---------------------------------------------
-    pro_button = page.locator(
-        "form:has(input[name='plan'][value='pro']) button[type='submit']"
+    # The workspace is auto-named "<username>'s Workspace"; rename it to
+    # Initech to match the Office Space theming used across the rest of the
+    # screenshot suite, then reload so the UI reflects it.
+    workspace = (
+        WorkspaceMember.objects.select_related("workspace")
+        .get(user__username="peter")
+        .workspace
     )
-    hover_and_click(page, pro_button)
-    page.wait_for_load_state("networkidle")
-    pace(page, 1200)
-
-    # Plan confirmation → continue to workspace creation
-    hover_and_click(page, page.get_by_role("link", name="Go to Dashboard"))
-    page.wait_for_url("**/workspace/create/", timeout=15_000)
-    pace(page, 1000)
-
-    # --- Create the workspace ---------------------------------------------
-    type_text(page.locator("input[name='name']"), "Initech")
-    pace(page, 300)
-    type_text(page.locator("input[name='shop_domain']"), "initech.com")
-    pace(page, 500)
-    hover_and_click(page, page.get_by_role("button", name="Create Workspace"))
-    page.wait_for_url("**/dashboard/", timeout=15_000)
-    page.wait_for_load_state("networkidle")
-    pace(page, 2000)
+    workspace.name = "Initech"
+    workspace.save(update_fields=["name"])
+    page.reload(wait_until="networkidle")
+    pace(page, 1500)
 
     # --- Connect Slack (OAuth round-trip, mocked at the edges) ------------
     intercept_slack_oauth(page)
-    hover_and_click(page, page.get_by_role("link", name="Integrations").first)
-    page.wait_for_load_state("networkidle")
-    pace(page, 1500)
-
     hover_and_click(page, page.locator("a[href*='integrate/slack']"))
     page.wait_for_load_state("networkidle")
     pace(page, 1500)
@@ -104,7 +94,7 @@ def onboarding(recording_page: Page, mock_slack_api: None) -> None:  # noqa: F81
     pace(page, 1800)
 
     # --- The payoff: a dashboard full of activity --------------------------
-    _seed_activity(Workspace.objects.get(name="Initech"))
+    _seed_activity(workspace)
     page.goto("/dashboard/", wait_until="networkidle")
     pace(page, 3000)
 
