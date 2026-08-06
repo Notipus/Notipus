@@ -533,6 +533,11 @@ def recording_page(
     context = browser.new_context(
         base_url=live_server.url,
         viewport=DESKTOP_VIEWPORT,
+        # 2x so mid-flow stills harvested via snap() match the retina
+        # resolution of the standalone screenshot scenarios; the video is
+        # still written at record_video_size (1920x1080), just rendered
+        # from a crisper backing store.
+        device_scale_factor=2,
         record_video_dir=str(OUTPUT_DIR),
         record_video_size=DESKTOP_VIEWPORT,
     )
@@ -631,10 +636,14 @@ SLACK_FINALE_HTML = """\
                 border-radius: 0 6px 6px 0; padding: 10px 14px;
                 margin-top: 6px; max-width: 640px; }
   .attachment.gray { border-left-color: #868686; }
+  .attachment.red { border-left-color: #e01e5a; }
+  .attachment.blue { border-left-color: #1264a3; }
   .headline { font-weight: 700; color: #1d1c1d; font-size: 15px; }
   .meta { color: #616061; font-size: 13px; margin-top: 4px; }
   .insight { color: #2eb67d; font-size: 13px; font-weight: 600;
              margin-top: 6px; }
+  .insight.warn { color: #e01e5a; }
+  .insight.info { color: #1264a3; }
   #incoming { opacity: 0; transform: translateY(14px); }
   #incoming.shown { opacity: 1; transform: none;
                     transition: all 420ms ease-out; }
@@ -650,6 +659,35 @@ SLACK_FINALE_HTML = """\
     <div class="header"># billing-alerts
       <small>Payment events from Notipus</small></div>
     <div class="messages">
+      <div class="msg">
+        <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
+        <div>
+          <span class="author">Notipus</span>
+          <span class="app-badge">APP</span><span class="ts">8:41 AM</span>
+          <div class="attachment red">
+            <div class="headline">&#9888;&#65039; Payment failed for
+              Chotchkie's</div>
+            <div class="meta">$149.00 &middot; Flair Plan &middot;
+              manager@chotchkies.com</div>
+            <div class="insight warn">Card declined &middot; retry scheduled
+              for tomorrow</div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
+        <div>
+          <span class="author">Notipus</span>
+          <span class="app-badge">APP</span><span class="ts">8:58 AM</span>
+          <div class="attachment blue">
+            <div class="headline">&#11014;&#65039; Penetrode upgraded to TPS
+              Premium</div>
+            <div class="meta">$4,999.00/mo &middot; was TPS Standard &middot;
+              ap@penetrode.com</div>
+            <div class="insight info">Expansion revenue +$3,000/mo</div>
+          </div>
+        </div>
+      </div>
       <div class="msg">
         <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
         <div>
@@ -786,4 +824,16 @@ def shoot(target: Page, name: str, path: str, full_page: bool = True) -> None:
     # Let entrance animations (fade/slide) settle before the capture
     target.wait_for_timeout(400)
     target.screenshot(path=str(OUTPUT_DIR / f"{name}.png"), full_page=full_page)
+    print(f"captured {name}.png")
+
+
+def snap(page: Page, name: str, full_page: bool = False) -> None:
+    """Capture ``output/<name>.png`` at the current point in a flow.
+
+    Viewport-only by default so a full-page scroll doesn't disturb an
+    in-progress screencast recording. Use inside a recorded scenario to
+    harvest reusable stills alongside the video, without re-driving the UI.
+    """
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    page.screenshot(path=str(OUTPUT_DIR / f"{name}.png"), full_page=full_page)
     print(f"captured {name}.png")

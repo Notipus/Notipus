@@ -6,6 +6,10 @@ the product on an auto-provisioned free workspace → connect Slack (OAuth
 mocked server-side, passkey ceremony real via a virtual authenticator) →
 pick the #billing-alerts channel → connect Stripe with a webhook signing
 secret → land on a dashboard full of activity.
+
+Alongside the video, it harvests reusable stills at each beat via
+``snap()`` (``output/onboarding-*.png``) for the marketing site and
+listing pages.
 """
 
 import pytest
@@ -16,6 +20,7 @@ from conftest import (
     mock_slack_api,  # noqa: F401  (fixture)
     pace,
     play_slack_finale,
+    snap,
     type_text,
 )
 from core.models import WorkspaceMember
@@ -37,6 +42,7 @@ def onboarding(recording_page: Page, mock_slack_api: None) -> None:  # noqa: F81
     pace(page, 300)
     type_text(page.locator("#modal-email"), "peter.gibbons@initech.com")
     pace(page, 500)
+    snap(page, "onboarding-signup")
 
     # The virtual authenticator approves the passkey ceremony instantly.
     # "Build before you commit": signup drops the user straight into the
@@ -59,6 +65,7 @@ def onboarding(recording_page: Page, mock_slack_api: None) -> None:  # noqa: F81
     workspace.save(update_fields=["name"])
     page.reload(wait_until="networkidle")
     pace(page, 1500)
+    snap(page, "onboarding-integrations")
 
     # --- Connect Slack (OAuth round-trip, mocked at the edges) ------------
     intercept_slack_oauth(page)
@@ -73,6 +80,7 @@ def onboarding(recording_page: Page, mock_slack_api: None) -> None:  # noqa: F81
     pace(page, 600)
     channel_select.select_option("#billing-alerts")
     pace(page, 600)
+    snap(page, "onboarding-slack-config")
     hover_and_click(page, page.locator("#slack-config-save"))
     pace(page, 1500)
 
@@ -81,6 +89,10 @@ def onboarding(recording_page: Page, mock_slack_api: None) -> None:  # noqa: F81
     page.wait_for_url("**/integrate/stripe/", timeout=15_000)
     page.wait_for_load_state("networkidle")
     pace(page, 1500)
+    # Snapped at the top of the page, before the scroll down to the secret
+    # field: a mid-flow scroll position crops off the nav and page heading,
+    # which makes the still unusable outside the video.
+    snap(page, "onboarding-stripe-connect")
 
     secret_input = page.locator("input[name='webhook_secret']")
     secret_input.scroll_into_view_if_needed()
@@ -97,6 +109,8 @@ def onboarding(recording_page: Page, mock_slack_api: None) -> None:  # noqa: F81
     _seed_activity(workspace)
     page.goto("/dashboard/", wait_until="networkidle")
     pace(page, 3000)
+    snap(page, "onboarding-dashboard")
 
     # --- And the notification landing in Slack -----------------------------
     play_slack_finale(page)
+    snap(page, "onboarding-slack-alert")
