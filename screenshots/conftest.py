@@ -50,11 +50,17 @@ from playwright.sync_api import (
 # tooling, not the app, so the guard adds nothing here.
 os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
 
-# Full HD desktop frame captured at 2x, so output files are 3840px
-# wide (Full HD is the floor, never the ceiling). Full-page captures
-# grow taller as the page requires.
+# Every capture lands on a standard broadcast resolution, so assets drop
+# into marketing pages, app-store listings, and video timelines without
+# rescaling. Captures are viewport-only for exactly this reason: a
+# full-page capture grows to whatever height the page happens to be,
+# which yields off-spec sizes like 3840x3194.
+#
+# Full HD desktop frame at 2x -> 3840x2160 (4K UHD).
 DESKTOP_VIEWPORT = {"width": 1920, "height": 1080}
-MOBILE_VIEWPORT = {"width": 390, "height": 844}
+# 360x640 at 3x -> 1080x1920 (Full HD in portrait). Both the CSS width
+# and the 3x density match a real flagship phone.
+MOBILE_VIEWPORT = {"width": 360, "height": 640}
 # Slack App Directory listing requirement: screenshots must be exactly
 # 1600x1000 pixels — captured at 1:1 scale, viewport only (no
 # full-page scrolling).
@@ -296,7 +302,7 @@ def mobile_page(
         live_server,
         session_cookie,
         viewport=MOBILE_VIEWPORT,
-        device_scale_factor=2,  # retina-density, matches real phones
+        device_scale_factor=3,  # 360x640 at 3x -> 1080x1920, as on a real phone
         is_mobile=True,
         has_touch=True,
     )
@@ -817,8 +823,15 @@ def play_telegram_finale(page: Page, hold_ms: int = 4500) -> None:
     pace(page, hold_ms)
 
 
-def shoot(target: Page, name: str, path: str, full_page: bool = True) -> None:
-    """Navigate to ``path`` and save ``output/<name>.png``."""
+def shoot(target: Page, name: str, path: str, full_page: bool = False) -> None:
+    """Navigate to ``path`` and save ``output/<name>.png``.
+
+    Viewport-only by default, which pins the output to the fixture's
+    frame — 3840x2160 from ``page``, 1080x1920 from ``mobile_page``.
+    Passing ``full_page=True`` trades that guarantee for the whole
+    scroll height, so only reach for it when an asset genuinely needs
+    below-the-fold content and its odd dimensions are acceptable.
+    """
     OUTPUT_DIR.mkdir(exist_ok=True)
     target.goto(path, wait_until="networkidle")
     # Let entrance animations (fade/slide) settle before the capture
