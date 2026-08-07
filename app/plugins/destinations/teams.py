@@ -25,6 +25,7 @@ from typing import Any
 import requests
 from plugins.base import PluginCapability, PluginMetadata, PluginType
 from plugins.destinations.base import BaseDestinationPlugin
+from plugins.destinations.utm import ATTRIBUTION_LABEL, attribution_url, tag_url
 from webhooks.models.rich_notification import (
     CustomerInfo,
     PaymentInfo,
@@ -177,6 +178,18 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
         if facts:
             body.append({"type": "FactSet", "facts": facts})
 
+        # Attribution footer, last in the body so it never displaces event
+        # content. The label is our own constant, so it needs no escaping.
+        body.append(
+            {
+                "type": "TextBlock",
+                "text": f"[{ATTRIBUTION_LABEL}]({attribution_url()})",
+                "wrap": True,
+                "isSubtle": True,
+                "spacing": "Small",
+            }
+        )
+
         card: dict[str, Any] = {
             "type": "AdaptiveCard",
             "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
@@ -186,7 +199,11 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
 
         # Only Action.OpenUrl works for a fire-and-forget webhook post.
         actions = [
-            {"type": "Action.OpenUrl", "title": action.text, "url": action.url}
+            {
+                "type": "Action.OpenUrl",
+                "title": action.text,
+                "url": tag_url(action.url),
+            }
             for action in (n.actions or [])[:6]
             if action.url
         ]

@@ -17,6 +17,11 @@ from plugins.destinations.slack_utils import (
     safe_mrkdwn,
     safe_mrkdwn_link,
 )
+from plugins.destinations.utm import (
+    ATTRIBUTION_LABEL,
+    attribution_url,
+    tag_url,
+)
 from webhooks.models.rich_notification import (
     ActionButton,
     CompanyInfo,
@@ -247,6 +252,10 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         # Action buttons (if present)
         if n.actions:
             blocks.append(self._format_actions(n.actions))
+
+        # Attribution footer, last so it never pushes content below
+        # Slack's "Show more" fold.
+        blocks.append(self._format_attribution())
 
         # Use attachments format for colored sidebar
         # Top-level "color" is invalid for incoming webhooks
@@ -675,7 +684,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             and company.name.strip().casefold() == company.domain.strip().casefold()
         )
         domain_link = (
-            safe_mrkdwn_link(f"https://{company.domain}", company.domain)
+            safe_mrkdwn_link(tag_url(f"https://{company.domain}"), company.domain)
             if company.domain
             else None
         )
@@ -733,7 +742,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         Returns:
             Slack context block dict, or None if no LinkedIn available.
         """
-        link_text = safe_mrkdwn_link(company.linkedin_url, "LinkedIn")
+        link_text = safe_mrkdwn_link(tag_url(company.linkedin_url), "LinkedIn")
         if not link_text:
             return None
 
@@ -833,7 +842,9 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             ),
         ]
         links = [
-            link for url, label in candidates if (link := safe_mrkdwn_link(url, label))
+            link
+            for url, label in candidates
+            if (link := safe_mrkdwn_link(tag_url(url), label))
         ]
 
         if not links:
@@ -928,6 +939,19 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             "elements": [{"type": "mrkdwn", "text": " • ".join(elements)}],
         }
 
+    def _format_attribution(self) -> dict[str, Any]:
+        """Format the "Powered by Notipus" footer.
+
+        Returns:
+            Slack context block dict; context styling keeps it muted so
+            it reads as a footer rather than part of the event.
+        """
+        link = safe_mrkdwn_link(attribution_url(), ATTRIBUTION_LABEL)
+        return {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": link or ATTRIBUTION_LABEL}],
+        }
+
     def _format_actions(self, actions: list[ActionButton]) -> dict[str, Any]:
         """Format action buttons.
 
@@ -943,7 +967,7 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             button: dict[str, Any] = {
                 "type": "button",
                 "text": {"type": "plain_text", "text": action.text, "emoji": True},
-                "url": action.url,
+                "url": tag_url(action.url),
             }
 
             # Map style to Slack style

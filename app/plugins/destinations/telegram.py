@@ -11,6 +11,7 @@ from typing import Any
 import requests
 from plugins.base import PluginCapability, PluginMetadata, PluginType
 from plugins.destinations.base import BaseDestinationPlugin
+from plugins.destinations.utm import ATTRIBUTION_LABEL, attribution_url, tag_url
 from webhooks.models.rich_notification import (
     ActionButton,
     CompanyInfo,
@@ -205,6 +206,13 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             customer_footer = self._format_customer_footer(n.customer)
             if customer_footer:
                 lines.append(customer_footer)
+
+        # Attribution footer, last so it never displaces event content.
+        lines.append("")
+        lines.append(
+            f'<a href="{self._escape_html_attr(attribution_url())}">'
+            f"{self._escape_html(ATTRIBUTION_LABEL)}</a>"
+        )
 
         result: dict[str, Any] = {
             "text": "\n".join(lines).strip(),
@@ -527,13 +535,15 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         # Website link. Escape the enrichment-supplied values for the href
         # attribute so a domain/URL with quotes or angle brackets can't break
         # out of the tag or inject markup.
+        # Tag before escaping: tag_url parses the URL, so it has to see the
+        # real one rather than an HTML-escaped rendering of it.
         if company.domain:
-            domain = self._escape_html_attr(company.domain)
-            elements.append(f'🌐 <a href="https://{domain}">Website</a>')
+            website = self._escape_html_attr(tag_url(f"https://{company.domain}") or "")
+            elements.append(f'🌐 <a href="{website}">Website</a>')
 
         # LinkedIn link
         if company.linkedin_url:
-            linkedin_url = self._escape_html_attr(company.linkedin_url)
+            linkedin_url = self._escape_html_attr(tag_url(company.linkedin_url) or "")
             elements.append(f'💼 <a href="{linkedin_url}">LinkedIn</a>')
 
         if not elements:
@@ -602,7 +612,7 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         for action in actions[:6]:
             button: dict[str, str] = {
                 "text": action.text,
-                "url": action.url,
+                "url": tag_url(action.url) or action.url,
             }
             row.append(button)
 

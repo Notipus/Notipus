@@ -298,7 +298,7 @@ class TestTeamsFormatActions:
         assert len(actions) == 2
         assert all(a["type"] == "Action.OpenUrl" for a in actions)
         assert actions[0]["title"] == "View in Stripe"
-        assert actions[0]["url"] == "https://stripe.com"
+        assert actions[0]["url"] == "https://stripe.com?utm_source=notipus"
 
     def test_actions_without_url_are_dropped(
         self, plugin: TeamsDestinationPlugin, basic_notification: RichNotification
