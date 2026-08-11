@@ -521,7 +521,7 @@ class TestTelegramFormatCompany:
         """Test that website link is included."""
         result = plugin.format(notification_with_company)
         assert "acme.com" in result["text"]
-        assert 'href="https://acme.com"' in result["text"]
+        assert 'href="https://acme.com?utm_source=notipus"' in result["text"]
 
     def test_format_includes_linkedin_link(
         self,
@@ -682,8 +682,8 @@ class TestTelegramFormatActions:
         buttons = result["reply_markup"]["inline_keyboard"]
         all_buttons = [b for row in buttons for b in row]
         urls = [b["url"] for b in all_buttons]
-        assert "https://stripe.com" in urls
-        assert "https://acme.com" in urls
+        assert "https://stripe.com?utm_source=notipus" in urls
+        assert "https://acme.com?utm_source=notipus" in urls
 
     def test_format_no_actions_no_reply_markup(
         self, plugin: TelegramDestinationPlugin, basic_notification: RichNotification

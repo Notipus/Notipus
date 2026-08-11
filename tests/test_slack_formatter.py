@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from plugins.destinations.base import BaseDestinationPlugin
 from plugins.destinations.slack import SlackDestinationPlugin
+from plugins.destinations.utm import ATTRIBUTION_LABEL
 from webhooks.models.rich_notification import (
     ActionButton,
     CompanyInfo,
@@ -38,6 +39,29 @@ def get_blocks(result: dict[str, Any]) -> list[dict[str, Any]]:
     if "attachments" in result and result["attachments"]:
         return result["attachments"][0].get("blocks", [])
     return []
+
+
+def get_content_context_blocks(
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return the context blocks that carry notification content.
+
+    Every message ends with the "Powered by Notipus" attribution context
+    block, which is not content; dropping it keeps ``[-1]`` pointing at
+    the last real context block (usually the customer footer).
+
+    Args:
+        blocks: Blocks from a formatted Slack message.
+
+    Returns:
+        Context blocks excluding the attribution footer.
+    """
+    return [
+        b
+        for b in blocks
+        if b["type"] == "context"
+        and ATTRIBUTION_LABEL not in str(b.get("elements", [{}])[0].get("text", ""))
+    ]
 
 
 def get_fallback(result: dict[str, Any]) -> str:
@@ -310,7 +334,7 @@ class TestSlackDestinationPluginProviderBadge:
         result = formatter.format(basic_notification)
 
         # Provider badge is a context block
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         assert len(context_blocks) >= 1
 
     def test_provider_badge_contains_provider(
@@ -617,7 +641,7 @@ class TestSlackDestinationPluginCompanySection:
         for block in get_blocks(result):
             if block["type"] == "section" and "Test Corp" in str(block.get("text", {})):
                 text = str(block.get("text", {}).get("text", ""))
-                assert "<https://test.com|test.com>" in text
+                assert "<https://test.com?utm_source=notipus|test.com>" in text
                 return
         pytest.fail("Company section not found")
 
@@ -641,7 +665,7 @@ class TestSlackDestinationPluginCompanySection:
                 and "test.com" in str(block.get("text", {})).casefold()
             ):
                 text = str(block.get("text", {}).get("text", ""))
-                assert "*<https://Test.com|Test.com>*" in text
+                assert "*<https://Test.com?utm_source=notipus|Test.com>*" in text
                 assert " · " not in text
                 return
         pytest.fail("Company section not found")
@@ -768,7 +792,7 @@ class TestSlackDestinationPluginCompanyLinks:
         result = formatter.format(basic_notification)
 
         # Should not have a links context block (only provider badge + customer footer)
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         for block in context_blocks:
             text = str(block.get("elements", [{}])[0].get("text", ""))
             assert "Website" not in text
@@ -785,7 +809,7 @@ class TestSlackDestinationPluginCustomerFooter:
         result = formatter.format(basic_notification)
 
         # Customer footer is the last context block
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         assert len(context_blocks) >= 1
 
     def test_customer_footer_contains_email(
@@ -795,7 +819,7 @@ class TestSlackDestinationPluginCustomerFooter:
         result = formatter.format(basic_notification)
 
         # Check last context block
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         last_context = context_blocks[-1]
         text = str(last_context.get("elements", [{}])[0].get("text", ""))
 
@@ -807,7 +831,7 @@ class TestSlackDestinationPluginCustomerFooter:
         """Test customer footer contains tenure."""
         result = formatter.format(basic_notification)
 
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         last_context = context_blocks[-1]
         text = str(last_context.get("elements", [{}])[0].get("text", ""))
 
@@ -831,7 +855,7 @@ class TestSlackDestinationPluginCustomerFooter:
         )
         result = formatter.format(basic_notification)
 
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         footer_text = str(context_blocks[-1].get("elements", [{}])[0].get("text", ""))
 
         assert "cus_TestCustomer123" in footer_text
@@ -843,7 +867,7 @@ class TestSlackDestinationPluginCustomerFooter:
         """Test the identity fallback stays silent when an email exists."""
         result = formatter.format(basic_notification)
 
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         footer_text = str(context_blocks[-1].get("elements", [{}])[0].get("text", ""))
 
         assert "alice@acme.com" in footer_text
@@ -860,7 +884,7 @@ class TestSlackDestinationPluginCustomerFooter:
         )
         result = formatter.format(basic_notification)
 
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         footer_text = str(context_blocks[-1].get("elements", [{}])[0].get("text", ""))
 
         assert "alice@acme.com" in footer_text
@@ -933,7 +957,7 @@ class TestSlackDestinationPluginCustomerFooter:
         )
         result = formatter.format(notification)
 
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         last_context = context_blocks[-1]
         text = str(last_context.get("elements", [{}])[0].get("text", ""))
 
@@ -1425,7 +1449,7 @@ class TestSlackDestinationPluginNonPaymentEvents:
         assert len(blocks) > 0
 
         # Should not have customer footer
-        context_blocks = [b for b in blocks if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(blocks)
         for block in context_blocks:
             text = str(block.get("elements", [{}])[0].get("text", ""))
             assert "@" not in text  # No email in footer
@@ -1453,7 +1477,7 @@ class TestSlackDestinationPluginNonPaymentEvents:
         assert get_color(result) == "#dc3545"
 
         # Customer footer should show at_risk flag
-        context_blocks = [b for b in get_blocks(result) if b["type"] == "context"]
+        context_blocks = get_content_context_blocks(get_blocks(result))
         customer_footer = context_blocks[-1]
         text = str(customer_footer.get("elements", [{}])[0].get("text", ""))
         assert "At Risk" in text
