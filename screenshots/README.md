@@ -57,11 +57,21 @@ def my_page(page: Page) -> None:
     shoot(page, "my-page", "/my-page/")
 ```
 
-Keep captures at the fixture defaults (1920x1080 desktop frame and
-390x844 mobile frame, both at 2x — output is 3840px / 780px wide, so
-Full HD is the floor) so the set stays visually consistent.
+## Resolutions
 
-`slack_listing.py` is the exception: the Slack App Directory requires
-screenshots that are exactly 1600x1000, so its captures come from the
-`slack_listing_page` fixture (1600x1000 viewport at 1:1) with
-`full_page=False`.
+Every capture lands on a standard broadcast resolution, so assets drop
+into marketing pages, listings, and video timelines without rescaling:
+
+| Fixture | Frame | Output |
+| --- | --- | --- |
+| `page`, `recording_page` | 1920x1080 at 2x | **3840x2160** (4K UHD) |
+| `mobile_page` | 360x640 at 3x | **1080x1920** (Full HD portrait) |
+| `slack_listing_page` | 1600x1000 at 1x | **1600x1000** |
+
+`shoot()` and `snap()` are therefore viewport-only. A full-page capture
+grows to whatever height the page happens to be, which yields off-spec
+sizes like 3840x3194 — pass `full_page=True` only when an asset really
+needs below-the-fold content, and expect a non-standard size.
+
+`slack_listing.py` sits outside the 1080p/4K set on purpose: the Slack
+App Directory requires screenshots that are exactly 1600x1000.
