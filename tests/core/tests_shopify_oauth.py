@@ -23,6 +23,55 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 
+def _graphql_response(data: dict) -> Mock:
+    """Build a mocked GraphQL Admin API response.
+
+    Args:
+        data: The payload to return under the response's ``data`` key.
+
+    Returns:
+        A Mock shaped like a successful ``requests`` response.
+    """
+    response = Mock()
+    response.status_code = 200
+    response.raise_for_status = Mock()
+    response.json.return_value = {"data": data}
+    return response
+
+
+def _subscriptions_response(subscriptions: list[dict]) -> Mock:
+    """Build a mocked ``webhookSubscriptions`` query response.
+
+    Args:
+        subscriptions: Node dicts with ``id``, ``topic`` and ``uri``.
+
+    Returns:
+        A Mock shaped like a successful ``requests`` response.
+    """
+    return _graphql_response(
+        {"webhookSubscriptions": {"edges": [{"node": s} for s in subscriptions]}}
+    )
+
+
+def _create_response(webhook_id: str) -> Mock:
+    """Build a mocked ``webhookSubscriptionCreate`` mutation response.
+
+    Args:
+        webhook_id: The subscription GID to report as created.
+
+    Returns:
+        A Mock shaped like a successful ``requests`` response.
+    """
+    return _graphql_response(
+        {
+            "webhookSubscriptionCreate": {
+                "webhookSubscription": {"id": webhook_id},
+                "userErrors": [],
+            }
+        }
+    )
+
+
 class TestShopifyOAuthHelpers(TestCase):
     """Test helper functions for Shopify OAuth."""
 
@@ -551,17 +600,19 @@ class TestDisconnectShopifyView:
         messages = list(get_messages(response.wsgi_request))
         assert any("no active" in str(m).lower() for m in messages)
 
-    @override_settings(SHOPIFY_API_VERSION="2025-01")
-    @patch("core.views.integrations.shopify.requests.delete")
+    @override_settings(SHOPIFY_API_VERSION="2026-07")
+    @patch("core.views.integrations.shopify.requests.post")
     def test_disconnect_success(
-        self, mock_delete: Mock, client: Client, setup_user_with_integration: tuple
+        self, mock_post: Mock, client: Client, setup_user_with_integration: tuple
     ) -> None:
         """Test successful disconnection."""
         user, workspace, _, integration = setup_user_with_integration
         client.force_login(user)
 
-        # Mock webhook deletion
-        mock_delete.return_value = Mock(status_code=200)
+        # Mock webhook deletion via the GraphQL Admin API
+        mock_post.return_value = _graphql_response(
+            {"webhookSubscriptionDelete": {"userErrors": []}}
+        )
 
         response = client.post(reverse("core:disconnect_shopify"))
 
@@ -573,22 +624,32 @@ class TestDisconnectShopifyView:
         assert integration.is_active is False
 
         # Verify webhooks were deleted
-        assert mock_delete.call_count == 2  # Two webhook IDs
+        assert mock_post.call_count == 2  # Two webhook IDs
+
+        # Legacy numeric REST ids must be promoted to GIDs so the stored
+        # subscriptions are actually deletable.
+        deleted_ids = [
+            call.kwargs["json"]["variables"]["id"] for call in mock_post.call_args_list
+        ]
+        assert deleted_ids == [
+            "gid://shopify/WebhookSubscription/12345",
+            "gid://shopify/WebhookSubscription/67890",
+        ]
 
         messages = list(get_messages(response.wsgi_request))
         assert any("disconnected" in str(m).lower() for m in messages)
 
-    @override_settings(SHOPIFY_API_VERSION="2025-01")
-    @patch("core.views.integrations.shopify.requests.delete")
+    @override_settings(SHOPIFY_API_VERSION="2026-07")
+    @patch("core.views.integrations.shopify.requests.post")
     def test_disconnect_webhook_deletion_failure(
-        self, mock_delete: Mock, client: Client, setup_user_with_integration: tuple
+        self, mock_post: Mock, client: Client, setup_user_with_integration: tuple
     ) -> None:
         """Test disconnection succeeds even if webhook deletion fails."""
         user, workspace, _, integration = setup_user_with_integration
         client.force_login(user)
 
         # Mock webhook deletion failure
-        mock_delete.side_effect = requests.exceptions.RequestException("API error")
+        mock_post.side_effect = requests.exceptions.RequestException("API error")
 
         response = client.post(reverse("core:disconnect_shopify"))
 
@@ -622,42 +683,56 @@ class TestWebhookCreation:
         )
         return user, workspace, user_profile
 
-    @override_settings(
-        SHOPIFY_CLIENT_ID="test_client_id",
-        SHOPIFY_CLIENT_SECRET="test_secret",
-        SHOPIFY_API_VERSION="2025-01",
-        BASE_URL="http://localhost:8000",
-    )
-    @patch("core.views.integrations.shopify.requests.post")
-    def test_webhook_creation_all_topics(
-        self, mock_post: Mock, client: Client, setup_user: tuple
-    ) -> None:
-        """Test that all webhook topics are created."""
-        user, workspace, _ = setup_user
-        client.force_login(user)
+    @staticmethod
+    def _token_response() -> Mock:
+        """Build a mocked OAuth token-exchange response.
 
-        # Set up session
+        Returns:
+            A Mock shaped like a successful ``requests`` response.
+        """
+        token_response = Mock()
+        token_response.status_code = 200
+        token_response.json.return_value = {
+            "access_token": "test_access_token",
+            "scope": "read_orders,read_customers",
+        }
+        token_response.raise_for_status = Mock()
+        return token_response
+
+    def _start_callback(self, client: Client) -> None:
+        """Prime the session so the OAuth callback passes state checks.
+
+        Args:
+            client: The Django test client.
+        """
         session = client.session
         session["shopify_oauth_state"] = "test_state"
         session["shopify_shop_domain"] = "teststore.myshopify.com"
         session.save()
 
-        # Mock responses
-        token_response = Mock()
-        token_response.status_code = 200
-        token_response.json.return_value = {
-            "access_token": "test_access_token",
-            "scope": "read_orders,read_customers,write_webhooks",
-        }
-        token_response.raise_for_status = Mock()
+    @override_settings(
+        SHOPIFY_CLIENT_ID="test_client_id",
+        SHOPIFY_CLIENT_SECRET="test_secret",
+        SHOPIFY_API_VERSION="2026-07",
+        BASE_URL="https://notipus.example.com",
+    )
+    @patch("core.views.integrations.shopify.requests.post")
+    def test_webhook_creation_all_topics(
+        self, mock_post: Mock, client: Client, setup_user: tuple
+    ) -> None:
+        """Test that all webhook topics are created via GraphQL."""
+        user, workspace, _ = setup_user
+        client.force_login(user)
+        self._start_callback(client)
 
-        webhook_response = Mock()
-        webhook_response.status_code = 201
-        webhook_response.json.return_value = {"webhook": {"id": 12345}}
-
-        # Token exchange + 5 webhook creations
-        # Token exchange + one call per default webhook topic (7)
-        mock_post.side_effect = [token_response] + [webhook_response] * 7
+        # Token exchange, then the existing-subscription lookup (none),
+        # then one create mutation per default topic (7).
+        mock_post.side_effect = [
+            self._token_response(),
+            _subscriptions_response([]),
+        ] + [
+            _create_response(f"gid://shopify/WebhookSubscription/{i}") for i in range(7)
+        ]
 
         response = client.get(
             reverse("core:shopify_connect_callback"),
@@ -670,65 +745,80 @@ class TestWebhookCreation:
 
         assert response.status_code == 302
 
-        # Verify all 7 default webhook topics were requested
-        # First call is token exchange, the rest are webhooks
-        webhook_calls = mock_post.call_args_list[1:]
+        # First call is the token exchange, second the lookup query,
+        # the rest are create mutations - one per default topic.
+        webhook_calls = mock_post.call_args_list[2:]
         assert len(webhook_calls) == 7
 
-        # Verify webhook URL format
+        # Every mutation targets this workspace's callback URL and uses
+        # the GraphQL enum spelling of the topic.
+        topics = []
         for call in webhook_calls:
-            call_kwargs = call[1] if len(call) > 1 else {}
-            call_json = call_kwargs.get("json", {})
-            webhook_data = call_json.get("webhook", {})
-            assert str(workspace.uuid) in webhook_data.get("address", "")
+            variables = call.kwargs["json"]["variables"]
+            assert str(workspace.uuid) in variables["webhookSubscription"]["uri"]
+            topics.append(variables["topic"])
+
+        assert topics == [
+            "ORDERS_CREATE",
+            "ORDERS_PAID",
+            "ORDERS_CANCELLED",
+            "ORDERS_FULFILLED",
+            "FULFILLMENTS_CREATE",
+            "FULFILLMENTS_UPDATE",
+            "CUSTOMERS_UPDATE",
+        ]
+
+        integration = Integration.objects.get(
+            workspace=workspace, integration_type="shopify"
+        )
+        assert len(integration.integration_settings["webhook_ids"]) == 7
 
     @override_settings(
         SHOPIFY_CLIENT_ID="test_client_id",
         SHOPIFY_CLIENT_SECRET="test_secret",
-        SHOPIFY_API_VERSION="2025-01",
-        BASE_URL="http://localhost:8000",
+        SHOPIFY_API_VERSION="2026-07",
+        BASE_URL="https://notipus.example.com",
     )
     @patch("core.views.integrations.shopify.requests.post")
-    def test_webhook_creation_handles_existing(
+    def test_webhook_creation_reuses_existing(
         self, mock_post: Mock, client: Client, setup_user: tuple
     ) -> None:
-        """Test that existing webhooks (422) are handled gracefully."""
+        """Test that subscriptions already pointing at us are reused."""
         user, workspace, _ = setup_user
         client.force_login(user)
+        self._start_callback(client)
 
-        # Set up session
-        session = client.session
-        session["shopify_oauth_state"] = "test_state"
-        session["shopify_shop_domain"] = "teststore.myshopify.com"
-        session.save()
+        webhook_url = (
+            f"https://notipus.example.com/webhook/customer/{workspace.uuid}/shopify/"
+        )
 
-        # Mock responses
-        token_response = Mock()
-        token_response.status_code = 200
-        token_response.json.return_value = {
-            "access_token": "test_access_token",
-            "scope": "read_orders,read_customers,write_webhooks",
-        }
-        token_response.raise_for_status = Mock()
-
-        # Mix of success and "already exists" responses
-        success_response = Mock()
-        success_response.status_code = 201
-        success_response.json.return_value = {"webhook": {"id": 12345}}
-
-        exists_response = Mock()
-        exists_response.status_code = 422
-        exists_response.text = "Webhook already exists"
-
+        # Two topics are already subscribed to this workspace's URL, so
+        # only the remaining five need a create mutation.
         mock_post.side_effect = [
-            token_response,
-            success_response,
-            exists_response,
-            success_response,
-            exists_response,
-            success_response,
-            success_response,
-            success_response,
+            self._token_response(),
+            _subscriptions_response(
+                [
+                    {
+                        "id": "gid://shopify/WebhookSubscription/1",
+                        "topic": "ORDERS_CREATE",
+                        "uri": webhook_url,
+                    },
+                    {
+                        "id": "gid://shopify/WebhookSubscription/2",
+                        "topic": "ORDERS_PAID",
+                        "uri": webhook_url,
+                    },
+                    # Belongs to a different workspace - must be ignored.
+                    {
+                        "id": "gid://shopify/WebhookSubscription/3",
+                        "topic": "CUSTOMERS_UPDATE",
+                        "uri": "https://notipus.example.com/webhook/customer/other/",
+                    },
+                ]
+            ),
+        ] + [
+            _create_response(f"gid://shopify/WebhookSubscription/{i}")
+            for i in range(10, 15)
         ]
 
         response = client.get(
@@ -743,11 +833,108 @@ class TestWebhookCreation:
         assert response.status_code == 302
         assert response.url == reverse("core:integrations")
 
-        # Integration should still be created
+        # Only the five unsubscribed topics were created.
+        create_calls = mock_post.call_args_list[2:]
+        assert [c.kwargs["json"]["variables"]["topic"] for c in create_calls] == [
+            "ORDERS_CANCELLED",
+            "ORDERS_FULFILLED",
+            "FULFILLMENTS_CREATE",
+            "FULFILLMENTS_UPDATE",
+            "CUSTOMERS_UPDATE",
+        ]
+
+        # All 7 topics are tracked: 2 reused plus 5 created.
         integration = Integration.objects.get(
             workspace=workspace,
             integration_type="shopify",
         )
         assert integration.is_active is True
-        # Should have 5 successful webhook IDs (7 topics, 2 already existed)
-        assert len(integration.integration_settings.get("webhook_ids", [])) == 5
+        assert len(integration.integration_settings["webhook_ids"]) == 7
+        assert (
+            "gid://shopify/WebhookSubscription/1"
+            in (integration.integration_settings["webhook_ids"])
+        )
+
+    @override_settings(
+        SHOPIFY_CLIENT_ID="test_client_id",
+        SHOPIFY_CLIENT_SECRET="test_secret",
+        SHOPIFY_API_VERSION="2026-07",
+        BASE_URL="https://notipus.example.com",
+    )
+    @patch("core.views.integrations.shopify.requests.post")
+    def test_webhook_creation_skips_user_errors(
+        self, mock_post: Mock, client: Client, setup_user: tuple
+    ) -> None:
+        """Test that a topic failing with userErrors doesn't abort the rest."""
+        user, workspace, _ = setup_user
+        client.force_login(user)
+        self._start_callback(client)
+
+        error_response = _graphql_response(
+            {
+                "webhookSubscriptionCreate": {
+                    "webhookSubscription": None,
+                    "userErrors": [{"field": ["topic"], "message": "Not supported"}],
+                }
+            }
+        )
+
+        mock_post.side_effect = [
+            self._token_response(),
+            _subscriptions_response([]),
+            error_response,
+        ] + [
+            _create_response(f"gid://shopify/WebhookSubscription/{i}") for i in range(6)
+        ]
+
+        response = client.get(
+            reverse("core:shopify_connect_callback"),
+            {
+                "code": "test_code",
+                "state": "test_state",
+                "shop": "teststore.myshopify.com",
+            },
+        )
+
+        assert response.status_code == 302
+
+        integration = Integration.objects.get(
+            workspace=workspace,
+            integration_type="shopify",
+        )
+        # The failed topic is dropped; the other six are still stored.
+        assert len(integration.integration_settings["webhook_ids"]) == 6
+
+    @override_settings(
+        SHOPIFY_CLIENT_ID="test_client_id",
+        SHOPIFY_CLIENT_SECRET="test_secret",
+        SHOPIFY_API_VERSION="2026-07",
+        BASE_URL="http://localhost:8000",
+    )
+    @patch("core.views.integrations.shopify.requests.post")
+    def test_webhook_creation_requires_https_base_url(
+        self, mock_post: Mock, client: Client, setup_user: tuple
+    ) -> None:
+        """Test that a plain-HTTP BASE_URL fails fast with a clear message."""
+        user, workspace, _ = setup_user
+        client.force_login(user)
+        self._start_callback(client)
+
+        mock_post.side_effect = [self._token_response()]
+
+        response = client.get(
+            reverse("core:shopify_connect_callback"),
+            {
+                "code": "test_code",
+                "state": "test_state",
+                "shop": "teststore.myshopify.com",
+            },
+        )
+
+        assert response.status_code == 302
+
+        # No GraphQL calls at all - only the token exchange happened.
+        assert mock_post.call_count == 1
+
+        messages = list(get_messages(response.wsgi_request))
+        assert any("https" in str(m).lower() for m in messages)

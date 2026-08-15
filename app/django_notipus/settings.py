@@ -778,8 +778,14 @@ SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "")
 SHOPIFY_REDIRECT_URI = os.environ.get(
     "SHOPIFY_REDIRECT_URI", "http://localhost:8000/api/connect/shopify/callback/"
 )
-SHOPIFY_API_VERSION = "2025-01"  # Stable API version for webhook management
-SHOPIFY_SCOPES = "read_orders,read_customers,write_webhooks"
+# Stable API version for webhook management. Shopify supports each stable
+# version for 12 months and falls forward to the oldest accessible version
+# when an app targets a retired one, so keep this current.
+SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2026-07")
+# There is no write_webhooks scope in Shopify: permission to subscribe to a
+# webhook topic comes from holding the matching read scope for the resource.
+# Requesting a non-existent scope makes the OAuth authorize step fail.
+SHOPIFY_SCOPES = "read_orders,read_customers"
 
 # Base URL for webhook endpoints (used in OAuth callbacks). Trailing
 # slash stripped so f"{BASE_URL}/webhook/..." concatenations cannot

@@ -13,7 +13,8 @@ application_url = "https://app.notipus.com"
 embedded = false
 
 [webhooks]
-api_version = "2026-01"
+# Keep in sync with SHOPIFY_API_VERSION in the Django settings.
+api_version = "2026-07"
 
 [access_scopes]
 # Required scopes for webhook subscriptions:

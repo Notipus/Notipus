@@ -558,6 +558,9 @@ To enable Shopify OAuth integration, you need to create a Shopify app in the [Sh
 | `SHOPIFY_CLIENT_ID` | Client ID from Shopify Partner Dashboard |
 | `SHOPIFY_CLIENT_SECRET` | Client secret from Shopify Partner Dashboard |
 | `SHOPIFY_REDIRECT_URI` | OAuth callback URL (e.g., `https://your-domain.com/api/connect/shopify/callback/`) |
+| `SHOPIFY_API_VERSION` | Optional. Admin API version used for webhook management (defaults to `2026-07`) |
+
+> **Note:** `BASE_URL` must be an HTTPS address. Shopify only delivers webhooks to HTTPS endpoints, so connecting a store from a plain-HTTP instance fails at webhook registration. For local end-to-end testing, put a tunnel (`cloudflared`, `ngrok`) in front of the dev server and point `BASE_URL`, `SHOPIFY_REDIRECT_URI`, and the app's allowed redirection URLs at the tunnel hostname.
 
 **Shopify CLI Configuration:**
 
@@ -582,6 +585,8 @@ shopify app deploy
 | `read_customers` | Subscribe to customer webhooks (`customers/create`, `customers/update`, etc.) |
 
 > **Note:** There is no `write_webhooks` scope in Shopify. Webhook creation permissions are controlled by having the appropriate read scope for the resource you want to subscribe to.
+
+Webhook subscriptions are managed through the GraphQL Admin API (`webhookSubscriptionCreate` / `webhookSubscriptionDelete`). The REST Admin API is legacy, and apps created after April 1, 2025 cannot use it at all.
 
 ### Domain Enrichment (Brandfetch)
 

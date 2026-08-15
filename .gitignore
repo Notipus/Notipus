@@ -122,7 +122,10 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-# app/.env - Not used (app reads environment variables directly)
+# docker compose auto-loads a root .env; it holds real API secrets.
+.env
+.env.*
+!.env.example
 .venv
 env/
 venv/

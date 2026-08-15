@@ -651,13 +651,215 @@ def _exchange_code_for_token(request: HttpRequest, shop: str, code: str) -> dict
     return result
 
 
+def _graphql_topic(rest_topic: str) -> str:
+    """Convert a REST webhook topic to its GraphQL enum name.
+
+    Shopify names ``WebhookSubscriptionTopic`` enum values after the REST
+    topics with separators replaced by underscores and the whole thing
+    uppercased, e.g. ``orders/create`` -> ``ORDERS_CREATE``.
+
+    Args:
+        rest_topic: REST-style topic string (e.g. "orders/create").
+
+    Returns:
+        The GraphQL enum name for the topic.
+    """
+    return rest_topic.replace("/", "_").replace("-", "_").upper()
+
+
+def _webhook_gid(webhook_id: str | int) -> str:
+    """Return a WebhookSubscription GID for a stored webhook id.
+
+    Integrations connected before the GraphQL migration stored numeric
+    REST webhook ids. Those refer to the same subscriptions, so promote
+    them to GIDs rather than leaving them undeletable.
+
+    Args:
+        webhook_id: A GID string or a numeric REST webhook id.
+
+    Returns:
+        A ``gid://shopify/WebhookSubscription/...`` identifier.
+    """
+    value = str(webhook_id)
+    if value.startswith("gid://"):
+        return value
+    return f"gid://shopify/WebhookSubscription/{value}"
+
+
+def _shopify_graphql(
+    shop: str, access_token: str, query: str, variables: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Execute a GraphQL Admin API request against a shop.
+
+    The REST Admin API is legacy and unavailable to apps created after
+    April 1, 2025, so all webhook management goes through GraphQL.
+
+    Args:
+        shop: The shop domain (already validated by the caller).
+        access_token: The Shopify access token.
+        query: The GraphQL document to execute.
+        variables: Variables for the document.
+
+    Returns:
+        The ``data`` object from the response, or None on transport
+        failure or a top-level GraphQL error.
+    """
+    api_version = settings.SHOPIFY_API_VERSION
+    try:
+        response = requests.post(
+            f"https://{shop}/admin/api/{api_version}/graphql.json",
+            headers={
+                "X-Shopify-Access-Token": access_token,
+                "Content-Type": "application/json",
+            },
+            json={"query": query, "variables": variables or {}},
+            timeout=DEFAULT_API_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Shopify GraphQL request failed for {shop}: {e!s}")
+        return None
+    except ValueError as e:
+        logger.error(f"Shopify GraphQL returned non-JSON for {shop}: {e!s}")
+        return None
+
+    if payload.get("errors"):
+        logger.error(f"Shopify GraphQL errors for {shop}: {payload['errors']}")
+        return None
+
+    data: dict[str, Any] | None = payload.get("data")
+    return data
+
+
+WEBHOOK_SUBSCRIPTIONS_QUERY = """
+query webhookSubscriptions($first: Int!) {
+  webhookSubscriptions(first: $first) {
+    edges {
+      node {
+        id
+        topic
+        uri
+      }
+    }
+  }
+}
+"""
+
+WEBHOOK_SUBSCRIPTION_CREATE_MUTATION = """
+mutation webhookSubscriptionCreate(
+  $topic: WebhookSubscriptionTopic!
+  $webhookSubscription: WebhookSubscriptionInput!
+) {
+  webhookSubscriptionCreate(
+    topic: $topic
+    webhookSubscription: $webhookSubscription
+  ) {
+    webhookSubscription {
+      id
+      topic
+      uri
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+WEBHOOK_SUBSCRIPTION_DELETE_MUTATION = """
+mutation webhookSubscriptionDelete($id: ID!) {
+  webhookSubscriptionDelete(id: $id) {
+    deletedWebhookSubscriptionId
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+
+def _existing_webhook_ids_by_topic(
+    shop: str, access_token: str, webhook_url: str
+) -> dict[str, str]:
+    """Map GraphQL topic -> subscription id for subscriptions we own.
+
+    Only subscriptions already pointing at ``webhook_url`` are returned,
+    so reconnecting a shop reuses its existing subscriptions instead of
+    failing on Shopify's "address already taken" error.
+
+    Args:
+        shop: The shop domain.
+        access_token: The Shopify access token.
+        webhook_url: The callback URL this workspace expects.
+
+    Returns:
+        Mapping of topic enum name to subscription GID. Empty when the
+        lookup fails - callers then simply attempt creation.
+    """
+    data = _shopify_graphql(
+        shop, access_token, WEBHOOK_SUBSCRIPTIONS_QUERY, {"first": 250}
+    )
+    if not data:
+        return {}
+
+    existing: dict[str, str] = {}
+    edges = data.get("webhookSubscriptions", {}).get("edges", [])
+    for edge in edges:
+        node = edge.get("node") or {}
+        if node.get("uri") == webhook_url and node.get("topic") and node.get("id"):
+            existing[node["topic"]] = node["id"]
+    return existing
+
+
+def _create_one_subscription(
+    shop: str, access_token: str, topic: str, webhook_url: str
+) -> str | None:
+    """Create a single webhook subscription.
+
+    Args:
+        shop: The shop domain.
+        access_token: The Shopify access token.
+        topic: REST-style topic name (e.g. "orders/create").
+        webhook_url: The HTTPS callback URL.
+
+    Returns:
+        The subscription GID, or None if the create failed. A failure on
+        one topic is logged and does not abort the remaining topics.
+    """
+    data = _shopify_graphql(
+        shop,
+        access_token,
+        WEBHOOK_SUBSCRIPTION_CREATE_MUTATION,
+        {
+            "topic": _graphql_topic(topic),
+            "webhookSubscription": {"uri": webhook_url, "format": "JSON"},
+        },
+    )
+    if not data:
+        return None
+
+    result = data.get("webhookSubscriptionCreate") or {}
+    user_errors = result.get("userErrors") or []
+    if user_errors:
+        logger.warning(f"Failed to create Shopify webhook for {topic}: {user_errors}")
+        return None
+
+    webhook_id: str | None = (result.get("webhookSubscription") or {}).get("id")
+    if webhook_id:
+        logger.info(f"Created Shopify webhook for {topic}: {webhook_id}")
+    return webhook_id
+
+
 def _create_webhook_subscriptions(
     request: HttpRequest,
     workspace: Workspace,
     shop: str,
     access_token: str,
     enabled_categories: list[str] | None = None,
-) -> list[int] | None:
+) -> list[str] | None:
     """Create webhook subscriptions on the Shopify store.
 
     Args:
@@ -669,7 +871,8 @@ def _create_webhook_subscriptions(
             If None, uses all default categories.
 
     Returns:
-        List of created webhook IDs or None if failed.
+        List of webhook subscription GIDs, or None if none could be
+        created.
     """
     if not _is_valid_shop_domain(shop):
         logger.error(f"Invalid shop domain in webhook creation: {shop}")
@@ -686,45 +889,29 @@ def _create_webhook_subscriptions(
         return []
 
     webhook_url = f"{settings.BASE_URL}/webhook/customer/{workspace.uuid}/shopify/"
-    api_version = settings.SHOPIFY_API_VERSION
-    webhook_ids = []
 
-    headers = {
-        "X-Shopify-Access-Token": access_token,
-        "Content-Type": "application/json",
-    }
+    # Shopify only delivers to HTTPS endpoints, so a plain-HTTP BASE_URL
+    # (the local-development default) would make every create fail with
+    # an opaque userError. Say so explicitly instead.
+    if not webhook_url.startswith("https://"):
+        logger.error(f"BASE_URL must be HTTPS for Shopify webhooks: {webhook_url}")
+        messages.error(
+            request,
+            "Shopify only delivers webhooks to HTTPS URLs. "
+            "Configure BASE_URL with an HTTPS address and reconnect.",
+        )
+        return None
+
+    existing = _existing_webhook_ids_by_topic(shop, access_token, webhook_url)
+    webhook_ids: list[str] = []
 
     for topic in topics:
-        try:
-            response = requests.post(
-                f"https://{shop}/admin/api/{api_version}/webhooks.json",
-                headers=headers,
-                json={
-                    "webhook": {
-                        "topic": topic,
-                        "address": webhook_url,
-                        "format": "json",
-                    }
-                },
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-
-            if response.status_code == 201:
-                webhook_data = response.json()
-                webhook_id = webhook_data.get("webhook", {}).get("id")
-                if webhook_id:
-                    webhook_ids.append(webhook_id)
-                    logger.info(f"Created Shopify webhook for {topic}: {webhook_id}")
-            elif response.status_code == 422:
-                # Webhook might already exist - this is okay
-                logger.info(f"Shopify webhook for {topic} may already exist")
-            else:
-                logger.warning(
-                    f"Failed to create Shopify webhook for {topic}: "
-                    f"{response.status_code} - {response.text}"
-                )
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error creating Shopify webhook for {topic}: {e!s}")
+        # Reuse a subscription that already points at this workspace.
+        webhook_id = existing.get(_graphql_topic(topic)) or _create_one_subscription(
+            shop, access_token, topic, webhook_url
+        )
+        if webhook_id:
+            webhook_ids.append(webhook_id)
 
     if not webhook_ids:
         logger.warning(f"No webhooks created for shop {shop}")
@@ -752,25 +939,18 @@ def _delete_webhook_subscriptions(integration: Integration) -> None:
     if not shop or not access_token or not _is_valid_shop_domain(shop):
         return
 
-    api_version = settings.SHOPIFY_API_VERSION
-    headers = {
-        "X-Shopify-Access-Token": access_token,
-    }
-
     for webhook_id in webhook_ids:
-        try:
-            response = requests.delete(
-                f"https://{shop}/admin/api/{api_version}/webhooks/{webhook_id}.json",
-                headers=headers,
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            if response.status_code in (200, 204, 404):
-                logger.info(f"Deleted Shopify webhook {webhook_id}")
-            else:
-                logger.warning(
-                    f"Failed to delete Shopify webhook {webhook_id}: "
-                    f"{response.status_code}"
-                )
-        except requests.exceptions.RequestException as e:
-            # Log but don't fail - the webhook might already be deleted
-            logger.warning(f"Error deleting Shopify webhook {webhook_id}: {e!s}")
+        gid = _webhook_gid(webhook_id)
+        data = _shopify_graphql(
+            shop, access_token, WEBHOOK_SUBSCRIPTION_DELETE_MUTATION, {"id": gid}
+        )
+        if not data:
+            # Log but don't fail - the webhook might already be deleted.
+            continue
+
+        result = data.get("webhookSubscriptionDelete") or {}
+        user_errors = result.get("userErrors") or []
+        if user_errors:
+            logger.warning(f"Failed to delete Shopify webhook {gid}: {user_errors}")
+        else:
+            logger.info(f"Deleted Shopify webhook {gid}")
