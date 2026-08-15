@@ -577,6 +577,8 @@ def _process_webhook(
         return _handle_webhook_exceptions(e, provider_name)
 
 
+# Unauthenticated liveness probe: no session, no state change.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["GET"])
 def health_check(request: HttpRequest) -> JsonResponse:
@@ -595,6 +597,9 @@ def health_check(request: HttpRequest) -> JsonResponse:
 # === CUSTOMER-SPECIFIC WEBHOOKS ===
 
 
+# Signed webhook from Shopify: authenticity comes from the HMAC check below,
+# not from a session cookie, so there is no CSRF surface to protect.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def customer_shopify_webhook(
@@ -640,6 +645,9 @@ def customer_shopify_webhook(
         return JsonResponse(error_response, status=500)
 
 
+# Signed webhook from Maxio/Chargify: authenticity comes from the HMAC check
+# below, not from a session cookie, so there is no CSRF surface to protect.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def customer_chargify_webhook(
@@ -684,6 +692,9 @@ def customer_chargify_webhook(
         return JsonResponse(error_response, status=500)
 
 
+# Signed webhook from Stripe: authenticity comes from the signature check
+# below, not from a session cookie, so there is no CSRF surface to protect.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def customer_stripe_webhook(
@@ -732,6 +743,9 @@ def customer_stripe_webhook(
 # === GLOBAL BILLING WEBHOOKS (Notipus revenue) ===
 
 
+# Signed webhook from Stripe: authenticity comes from the signature check
+# below, not from a session cookie, so there is no CSRF surface to protect.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:

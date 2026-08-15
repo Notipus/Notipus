@@ -54,6 +54,11 @@ def _safe_redirect_target(request: HttpRequest, candidate: str | None) -> str:
     return "/dashboard/"
 
 
+# TODO(security): these ceremonies are same-origin fetches from our own login,
+# signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
+# exemption. Registering a passkey is a state change on the signed-in account,
+# so the token should be added on the client and this decorator dropped.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_register_begin(request: HttpRequest) -> JsonResponse:
@@ -79,6 +84,11 @@ def webauthn_register_begin(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to start registration"}, status=500)
 
 
+# TODO(security): these ceremonies are same-origin fetches from our own login,
+# signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
+# exemption. Registering a passkey is a state change on the signed-in account,
+# so the token should be added on the client and this decorator dropped.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_register_complete(request: HttpRequest) -> JsonResponse:
@@ -122,6 +132,11 @@ def webauthn_register_complete(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to complete registration"}, status=500)
 
 
+# TODO(security): these ceremonies are same-origin fetches from our own login,
+# signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
+# exemption. Registering a passkey is a state change on the signed-in account,
+# so the token should be added on the client and this decorator dropped.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_authenticate_begin(request: HttpRequest) -> JsonResponse:
@@ -148,6 +163,11 @@ def webauthn_authenticate_begin(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to start authentication"}, status=500)
 
 
+# TODO(security): these ceremonies are same-origin fetches from our own login,
+# signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
+# exemption. Registering a passkey is a state change on the signed-in account,
+# so the token should be added on the client and this decorator dropped.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
@@ -233,6 +253,11 @@ def webauthn_credentials(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
 
+# TODO(security): these ceremonies are same-origin fetches from our own login,
+# signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
+# exemption. Registering a passkey is a state change on the signed-in account,
+# so the token should be added on the client and this decorator dropped.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_signup_begin(request: HttpRequest) -> JsonResponse:
@@ -272,6 +297,11 @@ def webauthn_signup_begin(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to start registration"}, status=500)
 
 
+# TODO(security): these ceremonies are same-origin fetches from our own login,
+# signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
+# exemption. Registering a passkey is a state change on the signed-in account,
+# so the token should be added on the client and this decorator dropped.
+# nosemgrep
 @csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:

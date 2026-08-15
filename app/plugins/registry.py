@@ -157,6 +157,9 @@ class PluginRegistry:
 
         for subpackage, allowed_types in subpackages.items():
             try:
+                # Plugin auto-discovery (ADR-001): the name comes from the
+                # hardcoded subpackages map, never from a request.
+                # nosemgrep
                 package = importlib.import_module(f"plugins.{subpackage}")
                 package_path = package.__path__
 
@@ -168,6 +171,9 @@ class PluginRegistry:
                         continue
 
                     try:
+                        # Module names come from pkgutil walking our own
+                        # package directory, never from a request.
+                        # nosemgrep
                         module = importlib.import_module(
                             f"plugins.{subpackage}.{module_name}"
                         )

@@ -68,6 +68,9 @@ RUN rm -rf /app/node_modules /app/src /app/package.json /app/bun.lock /app/postc
 
 # Runtime stage: distroless (no shell, no package manager), runs as nonroot.
 # Same Chainguard release as the builder stage above — keep in lockstep.
+# The `USER root` above belongs to the discarded builder stage; this image
+# inherits Chainguard's nonroot (65532) default.
+# nosemgrep
 FROM cgr.dev/chainguard/python:latest@sha256:a0365f7b90bf7b78a5e35f2709efb7c9263acf9c7b1905e0ec4c3e943c88e64d
 
 ENV PYTHONUNBUFFERED=1

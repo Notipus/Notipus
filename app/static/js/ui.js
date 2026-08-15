@@ -134,6 +134,9 @@ const NotipusUI = (function () {
 
       // Set variant styles
       iconContainer.className = `mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full sm:mx-0 sm:h-10 sm:w-10 ${variantConfig.iconBg}`;
+      // Both halves come from the VARIANTS constant above; no caller input
+      // reaches this markup (title/message go in via textContent).
+      // nosemgrep
       iconContainer.innerHTML = `<span class="${variantConfig.iconColor}">${variantConfig.icon}</span>`;
 
       // Reset confirm button classes and apply variant
@@ -298,17 +301,17 @@ const NotipusUI = (function () {
     toastEl.id = toastId;
     toastEl.className =
       "pointer-events-auto w-full max-w-sm overflow-hidden rounded-lg bg-white shadow-lg ring-1 ring-black ring-opacity-5 transform transition-all duration-300 translate-x-full opacity-0";
+    // Structure is static markup; the caller's message goes in as text below,
+    // so a company or channel name containing markup can never become HTML.
     toastEl.innerHTML = `
       <div class="p-4">
         <div class="flex items-start">
-          <div class="flex-shrink-0">
-            ${icon}
-          </div>
+          <div class="flex-shrink-0" data-toast-icon></div>
           <div class="ml-3 flex-1 pt-0.5">
-            <p class="text-sm font-medium text-gray-900">${message}</p>
+            <p class="text-sm font-medium text-gray-900" data-toast-message></p>
           </div>
           <div class="ml-4 flex-shrink-0">
-            <button type="button" onclick="NotipusUI._dismissToast('${toastId}')"
+            <button type="button" data-toast-dismiss
                     class="inline-flex rounded-md bg-white text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2">
               <span class="sr-only">Close</span>
               <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
@@ -319,6 +322,14 @@ const NotipusUI = (function () {
         </div>
       </div>
     `;
+
+    toastEl.querySelector("[data-toast-message]").textContent = message;
+    // Icons come from the TOAST_ICONS constant above, never from a caller.
+    // nosemgrep
+    toastEl.querySelector("[data-toast-icon]").innerHTML = icon;
+    toastEl
+      .querySelector("[data-toast-dismiss]")
+      .addEventListener("click", () => _dismissToast(toastId));
 
     container.appendChild(toastEl);
 

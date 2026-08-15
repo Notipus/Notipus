@@ -21,6 +21,8 @@
   {% endfor %}
 </ul>
 
+<!-- The form carries {% csrf_token %} on the next line; the rule misses it. -->
+<!-- nosemgrep -->
 <form method="post">
   {% csrf_token %}
   <div>

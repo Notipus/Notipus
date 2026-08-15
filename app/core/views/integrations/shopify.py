@@ -212,6 +212,8 @@ def shopify_connect(request: HttpRequest) -> HttpResponseRedirect:
         messages.error(request, "Invalid Shopify store URL format")
         return redirect("core:integrate_shopify")
 
+    # shop_domain passed _is_valid_shop_domain immediately above.
+    # nosemgrep
     auth_url = f"https://{shop_domain}/admin/oauth/authorize?{urlencode(auth_params)}"
 
     logger.info(f"Redirecting to Shopify OAuth for shop: {shop_domain}")

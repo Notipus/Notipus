@@ -83,18 +83,27 @@ jobs:
           git fetch -q --depth 1 origin "${OPENGREP_RULES_REF}"
           git checkout -q FETCH_HEAD
 
-      # --error turns findings into a red build; .gitignore is honoured by
-      # default, so .venv/node_modules/build output are already out of scope.
+      # Security rule sets only. The maintainability/best-practice trees were
+      # tried first and produced ~75 findings that were all style opinions or
+      # false positives (is-function-without-parentheses alone fired 39 times
+      # on stdlib and Django @property access) — ruff and mypy already own that
+      # ground. --error turns a finding into a red build; .gitignore is honoured
+      # by default, so .venv/node_modules/build output are out of scope.
       - name: Run Opengrep
         run: |
           "${RUNNER_TEMP}/opengrep" scan \
             --error \
             --sarif-output=opengrep.sarif \
-            --config "${RUNNER_TEMP}/opengrep-rules/python" \
-            --config "${RUNNER_TEMP}/opengrep-rules/dockerfile" \
-            --config "${RUNNER_TEMP}/opengrep-rules/javascript" \
-            --config "${RUNNER_TEMP}/opengrep-rules/html" \
-            --config "${RUNNER_TEMP}/opengrep-rules/generic" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/django/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/requests/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/cryptography/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/jwt/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/browser/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/dockerfile/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/generic/nginx/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/html/security" \
             .
 
       # Uploaded even when the scan fails, so findings land in the Security tab
