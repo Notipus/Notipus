@@ -53,18 +53,23 @@ topics = [
 ]
 uri = "https://app.notipus.com/webhook/shopify/events/"
 
-# Subscription topics need read_own_subscription_contracts, which is an
-# optional scope, so they are declared separately: a store that has not
-# granted it simply never sends these.
-[[webhooks.subscriptions]]
-topics = [
-  "subscription_contracts/create",
-  "subscription_contracts/update",
-  "subscription_billing_attempts/success",
-  "subscription_billing_attempts/failure",
-  "subscription_billing_attempts/challenged",
-]
-uri = "https://app.notipus.com/webhook/shopify/events/"
+# Subscription topics are deliberately NOT declared.
+#
+# They need read_own_subscription_contracts, which Shopify gates behind
+# an access request - and which grants the SubscriptionContract object
+# only "for records that belong to your app". Notipus creates no
+# contracts: merchants run subscriptions through Recharge, Shopify
+# Subscriptions and the like. So the scope would cover nothing we care
+# about, and Shopify documents no scope for reading another app's
+# contracts.
+#
+# The parser handles these payloads (see plugins/sources/shopify.py) so
+# the capability is there if Notipus ever owns contracts, but declaring
+# the topics now would only add subscriptions nothing can deliver.
+#
+# Recurring revenue is instead visible through the order stream, which
+# needs no extra scope: a subscription charge produces an ordinary
+# order.
 
 [access_scopes]
 # The minimum needed to receive the declared topics:
@@ -78,10 +83,7 @@ uri = "https://app.notipus.com/webhook/shopify/events/"
 # Note: There is no "write_webhooks" scope in Shopify. Permission to
 # subscribe comes from holding the matching read scope for the resource.
 scopes = "read_orders,read_customers"
-# Requested only by merchants who turn the Subscriptions category on:
-# subscription_contracts/* and subscription_billing_attempts/* topics
-# cannot be registered without it.
-optional_scopes = ["read_own_subscription_contracts"]
+optional_scopes = []
 use_legacy_install_flow = false
 
 [auth]

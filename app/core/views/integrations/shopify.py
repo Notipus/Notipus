@@ -50,9 +50,16 @@ SHOPIFY_EVENT_CATEGORIES: dict[str, dict[str, str | list[str] | bool]] = {
         "topics": ["refunds/create", "orders/refunded"],
         "default": True,
     },
-    # Off by default: these topics need read_own_subscription_contracts,
-    # which most stores won't have granted. Enabling them for everyone
-    # would fail registration on every non-subscription store.
+    # Off, and not currently deliverable. These topics need
+    # read_own_subscription_contracts, which Shopify gates behind an
+    # access request and which only covers contracts belonging to the
+    # requesting app. Notipus creates none - merchants use Recharge,
+    # Shopify Subscriptions and similar - so the scope would grant
+    # nothing, and no scope exists for reading another app's contracts.
+    #
+    # The category is kept because the parsing is written and tested: if
+    # the topics ever become available it is a config change, not a
+    # rewrite. Until then a merchant can enable it and receive nothing.
     "subscriptions": {
         "label": "Subscriptions",
         "description": "Subscription contracts and recurring billing",
