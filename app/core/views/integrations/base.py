@@ -8,6 +8,7 @@ import logging
 from typing import Protocol
 
 from django.contrib import messages
+from django.contrib.auth.views import redirect_to_login
 from django.http import HttpRequest, HttpResponseRedirect
 from django.shortcuts import redirect
 
@@ -106,9 +107,28 @@ def require_workspace(
     workspace = get_user_workspace(request)
     if workspace is None:
         if not request.user.is_authenticated:
-            return None, redirect("account_login")
+            return None, _login_and_return(request)
         return None, redirect("core:create_workspace")
     return workspace, None
+
+
+def _login_and_return(request: HttpRequest) -> HttpResponseRedirect:
+    """Send an anonymous visitor to log in, then back where they were going.
+
+    A bare redirect to the login page drops the intent: someone who clicks
+    "Add to Slack" on the marketing site lands on the dashboard after
+    signing in, with no sign of the thing they came to do. Django's login
+    view validates the ``next`` it receives against allowed hosts, so this
+    cannot be turned into an open redirect.
+
+    Args:
+        request: The request that hit an authentication gate.
+
+    Returns:
+        Redirect to the login page carrying a ``next`` parameter.
+    """
+    response: HttpResponseRedirect = redirect_to_login(request.get_full_path())
+    return response
 
 
 def require_admin_role(
@@ -127,7 +147,7 @@ def require_admin_role(
         If not, workspace is None and redirect is set with error message.
     """
     if not request.user.is_authenticated:
-        return None, redirect("account_login")
+        return None, _login_and_return(request)
 
     # Get workspace membership
     member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()

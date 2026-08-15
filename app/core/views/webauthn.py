@@ -12,6 +12,7 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import HttpRequest, JsonResponse
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
@@ -28,6 +29,29 @@ logger = logging.getLogger(__name__)
 # rather than AUTHENTICATION_BACKENDS[0]: WebAuthn verification is our
 # own, and reordering settings must not change its attribution.
 PASSKEY_LOGIN_BACKEND = "django.contrib.auth.backends.ModelBackend"
+
+
+def _safe_redirect_target(request: HttpRequest, candidate: str | None) -> str:
+    """Return ``candidate`` if it is safe to redirect to, else the dashboard.
+
+    The value arrives from the browser, so it is attacker-controllable:
+    without this check, /accounts/login/?next=https://evil.example would
+    hand a freshly authenticated user straight to another origin.
+
+    Args:
+        request: The request being handled, for the allowed-host check.
+        candidate: Proposed destination, typically a relative path.
+
+    Returns:
+        A URL that is safe to send the browser to.
+    """
+    if candidate and url_has_allowed_host_and_scheme(
+        candidate,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return candidate
+    return "/dashboard/"
 
 
 @csrf_exempt
@@ -153,7 +177,7 @@ def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
                 {
                     "success": True,
                     "message": "Authentication successful",
-                    "redirect_url": "/dashboard/",
+                    "redirect_url": _safe_redirect_target(request, data.get("next")),
                 }
             )
         else:
