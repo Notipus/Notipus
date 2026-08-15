@@ -3,8 +3,9 @@
 Notipus has exactly one activation moment: connecting an event source.
 Until a workspace has one, no webhook ever arrives, so the dashboard stays
 empty and not a single notification fires - the product looks broken
-through no fault of the user. Connecting Slack alone does not get anyone
-there, and that is precisely where new signups have been stopping.
+through no fault of the user. Connecting a notification channel alone
+does not get anyone there, and that is precisely where new signups have
+been stopping.
 
 So this email drives one action and no others: connect a billing tool.
 No feature tour, no secondary links competing for the click.
@@ -74,8 +75,8 @@ needed.
 
 One thing left: connect your billing tool. Notipus watches Stripe,
 Shopify, or Maxio (Chargify) and posts every payment, failed charge,
-upgrade, and cancellation into Slack with the customer's company
-attached. Until one is connected there is nothing for us to tell you
+upgrade, and cancellation into Slack, Telegram, or Microsoft Teams with the
+customer's company attached. Until one is connected there is nothing for us to tell you
 about.
 
 Connect your billing tool:
