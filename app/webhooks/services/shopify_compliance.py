@@ -28,6 +28,7 @@ from typing import Any
 
 from core.encrypted_cache import decrypt_cache_value
 from core.models import Person, Workspace
+from core.services.mail import send_email, workspace_admin_emails
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -176,6 +177,94 @@ def collect_customer_data(
             "included."
         ),
     }
+
+
+def fulfil_data_request(
+    workspace: Workspace,
+    customer_id: str | None,
+    email: str | None,
+    request_id: Any = None,
+) -> dict[str, Any]:
+    """Send the merchant everything Notipus holds about one customer.
+
+    Shopify requires the app to supply this within 30 days, and it must
+    go to the merchant - they are the data controller and the only party
+    who can verify who asked. Acknowledging the webhook is not
+    fulfilment, so the export is emailed to the workspace's owners and
+    admins as a JSON attachment.
+
+    Args:
+        workspace: The workspace whose data to search.
+        customer_id: Shopify customer id, if supplied.
+        email: Customer email, if supplied.
+        request_id: Shopify's data request id, for the merchant's records.
+
+    Returns:
+        Counts of what was found, plus whether the mail was accepted.
+    """
+    collected = collect_customer_data(workspace, customer_id, email)
+    record_count = len(collected["notification_records"])
+    people_count = len(collected["enriched_people"])
+
+    recipients = workspace_admin_emails(workspace)
+    subject = f"[Notipus] Shopify customer data request for {workspace.name}"
+    identifier = email or customer_id or "unidentified customer"
+    body = (
+        f"Shopify forwarded a customer data request (id {request_id}) for "
+        f"{identifier}.\n\n"
+        f"Attached is everything Notipus holds for that customer in the "
+        f'"{workspace.name}" workspace: {record_count} notification '
+        f"record(s) and {people_count} enrichment record(s).\n\n"
+        "Notipus is a processor here, not the controller. Forward this to "
+        "the customer yourself once you have verified their identity - "
+        "Shopify gives you 30 days from the request.\n\n"
+        "Company brand data is not included: it is public information "
+        "looked up by domain and holds nothing personal.\n\n"
+        "If the customer has also asked to be erased, Shopify sends that "
+        "separately as a redaction request and Notipus acts on it "
+        "automatically.\n"
+    )
+
+    sent = send_email(
+        subject=subject,
+        text_body=body,
+        recipients=recipients,
+        attachments=[
+            (
+                f"notipus-data-request-{request_id or 'export'}.json",
+                json.dumps(collected, indent=2, default=str),
+                "application/json",
+            )
+        ],
+    )
+
+    if not sent:
+        # Loud, and with every identifier needed to redo it by hand: this
+        # is a legal obligation with a deadline, and the webhook is only
+        # delivered once.
+        logger.error(
+            "UNFULFILLED Shopify data request: workspace=%s request_id=%s "
+            "customer_id=%s email=%s recipients=%s records=%d people=%d",
+            workspace.uuid,
+            request_id,
+            customer_id,
+            email,
+            recipients or "NONE",
+            record_count,
+            people_count,
+        )
+    else:
+        logger.info(
+            "Fulfilled Shopify data request %s for workspace %s: "
+            "%d records, %d people sent to %d recipient(s)",
+            request_id,
+            workspace.uuid,
+            record_count,
+            people_count,
+            len(recipients),
+        )
+
+    return {"records": record_count, "people": people_count, "delivered": sent}
 
 
 def redact_customer(

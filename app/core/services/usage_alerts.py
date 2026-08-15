@@ -22,7 +22,7 @@ from typing import Any
 from django.conf import settings
 from django.core.cache import cache
 
-from .mail import send_email
+from .mail import send_email, workspace_admin_emails
 
 logger = logging.getLogger(__name__)
 
@@ -184,12 +184,7 @@ def _admin_emails(workspace: Any) -> list[str]:
     Returns:
         Sorted, de-duplicated list of non-empty email addresses.
     """
-    from core.models import WorkspaceMember
-
-    members = WorkspaceMember.objects.filter(
-        workspace=workspace, role__in=("owner", "admin"), is_active=True
-    ).select_related("user")
-    return sorted({member.user.email for member in members if member.user.email})
+    return workspace_admin_emails(workspace)
 
 
 def _billing_url() -> str:

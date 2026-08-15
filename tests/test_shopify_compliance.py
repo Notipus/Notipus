@@ -333,3 +333,134 @@ class TestAppUninstalled:
         assert response.status_code == 200
         assert Integration.objects.get(workspace=workspace).is_active is False
         assert cache.get(webhook_key) is not None
+
+
+@pytest.mark.django_db
+class TestDataRequestFulfilment:
+    """Answering the webhook is not the same as fulfilling the request."""
+
+    @pytest.fixture
+    def owner(self, workspace: Workspace) -> Any:
+        """Give the workspace an owner who can receive the export.
+
+        Args:
+            workspace: The workspace fixture.
+
+        Returns:
+            The created user.
+        """
+        from core.models import WorkspaceMember
+        from django.contrib.auth.models import User
+
+        user = User.objects.create_user(
+            username="merchant", password="x", email="merchant@example.com"
+        )
+        WorkspaceMember.objects.create(
+            workspace=workspace, user=user, role="owner", is_active=True
+        )
+        return user
+
+    def test_export_is_emailed_to_the_merchant(
+        self, client: Client, workspace: Workspace, owner: Any
+    ) -> None:
+        """The merchant is the controller, so the data goes to them."""
+        from django.core import mail
+
+        store_record(
+            str(workspace.uuid),
+            f"webhook:{workspace.uuid}:order:1",
+            {"customer_id": "42", "customer_email": "who@example.com"},
+        )
+
+        response = post(
+            client,
+            "shopify_customer_data_request",
+            "customers/data_request",
+            {
+                "shop_domain": SHOP,
+                "customer": {"id": 42, "email": "who@example.com"},
+                "data_request": {"id": 5001},
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["delivered"] is True
+        assert len(mail.outbox) == 1
+        assert mail.outbox[0].to == ["merchant@example.com"]
+
+    def test_the_customer_record_is_attached(
+        self, client: Client, workspace: Workspace, owner: Any
+    ) -> None:
+        """An email saying "we found 1 record" is not fulfilment."""
+        from django.core import mail
+
+        store_record(
+            str(workspace.uuid),
+            f"webhook:{workspace.uuid}:order:1",
+            {"customer_id": "42", "customer_email": "who@example.com"},
+        )
+
+        post(
+            client,
+            "shopify_customer_data_request",
+            "customers/data_request",
+            {
+                "shop_domain": SHOP,
+                "customer": {"id": 42, "email": "who@example.com"},
+                "data_request": {"id": 5001},
+            },
+        )
+
+        attachments = mail.outbox[0].attachments
+        assert len(attachments) == 1
+        filename, content, mimetype = attachments[0]
+        assert mimetype == "application/json"
+        exported = json.loads(content)
+        assert exported["notification_records"][0]["customer_id"] == "42"
+
+    def test_other_customers_are_not_disclosed(
+        self, client: Client, workspace: Workspace, owner: Any
+    ) -> None:
+        """A data request must not leak the rest of the store."""
+        from django.core import mail
+
+        store_record(
+            str(workspace.uuid),
+            f"webhook:{workspace.uuid}:order:target",
+            {"customer_id": "42"},
+        )
+        store_record(
+            str(workspace.uuid),
+            f"webhook:{workspace.uuid}:order:other",
+            {"customer_id": "99"},
+        )
+
+        post(
+            client,
+            "shopify_customer_data_request",
+            "customers/data_request",
+            {"shop_domain": SHOP, "customer": {"id": 42}, "data_request": {"id": 1}},
+        )
+
+        exported = json.loads(mail.outbox[0].attachments[0][1])
+        ids = {r["customer_id"] for r in exported["notification_records"]}
+        assert ids == {"42"}
+
+    def test_undeliverable_request_still_acknowledges(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """No recipient means no fulfilment, but Shopify must not retry.
+
+        The webhook arrived correctly; the failure is entirely ours, so
+        it is reported in the response and logged rather than bounced
+        back as an error.
+        """
+        response = post(
+            client,
+            "shopify_customer_data_request",
+            "customers/data_request",
+            {"shop_domain": SHOP, "customer": {"id": 42}, "data_request": {"id": 1}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["delivered"] is False

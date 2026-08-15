@@ -27,7 +27,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .services.shopify_compliance import (
-    collect_customer_data,
+    fulfil_data_request,
     redact_customer,
     redact_shop,
 )
@@ -177,23 +177,15 @@ def shopify_compliance_webhook(request: HttpRequest) -> JsonResponse:
             workspace, str(customer_id) if customer_id else None, email
         )
     else:
-        collected = collect_customer_data(
-            workspace, str(customer_id) if customer_id else None, email
-        )
-        # Logged rather than transmitted: Shopify gives the merchant 30
-        # days to supply this, and it must go to the merchant, not to
-        # whoever happened to trigger the request.
-        logger.info(
-            "Shopify customers/data_request for workspace %s: "
-            "%d records, %d enriched people (request id %s)",
-            workspace.uuid,
-            len(collected["notification_records"]),
-            len(collected["enriched_people"]),
+        # Emailed to the merchant, who is the controller and the only
+        # party able to verify who asked. Failure is logged loudly rather
+        # than returned as an error: a non-2xx would make Shopify retry a
+        # webhook whose problem is on our side, not theirs.
+        result = fulfil_data_request(
+            workspace,
+            str(customer_id) if customer_id else None,
+            email,
             (data.get("data_request") or {}).get("id"),
         )
-        result = {
-            "records": len(collected["notification_records"]),
-            "people": len(collected["enriched_people"]),
-        }
 
     return JsonResponse({"status": "ok", **result}, status=200)

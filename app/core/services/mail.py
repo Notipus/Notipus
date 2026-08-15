@@ -12,6 +12,7 @@ webhook.
 """
 
 import logging
+from typing import Any
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
@@ -19,11 +20,41 @@ from django.core.mail import EmailMultiAlternatives
 logger = logging.getLogger(__name__)
 
 
+def workspace_admin_emails(workspace: Any) -> list[str]:
+    """Return email addresses of a workspace's owners and admins.
+
+    Falls back to the ``UserProfile`` link when a workspace predates
+    ``WorkspaceMember``: a message with no recipient is silently dropped,
+    which is unacceptable for anything obligatory.
+
+    Args:
+        workspace: Workspace to collect recipients for.
+
+    Returns:
+        Sorted, de-duplicated list of non-empty email addresses.
+    """
+    from core.models import UserProfile, WorkspaceMember
+
+    members = WorkspaceMember.objects.filter(
+        workspace=workspace, role__in=("owner", "admin"), is_active=True
+    ).select_related("user")
+    emails = {member.user.email for member in members if member.user.email}
+
+    if not emails:
+        profiles = UserProfile.objects.filter(workspace=workspace).select_related(
+            "user"
+        )
+        emails = {profile.user.email for profile in profiles if profile.user.email}
+
+    return sorted(emails)
+
+
 def send_email(
     subject: str,
     text_body: str,
     recipients: list[str],
     html_body: str | None = None,
+    attachments: list[tuple[str, str, str]] | None = None,
 ) -> bool:
     """Send one message to ``recipients``.
 
@@ -32,6 +63,7 @@ def send_email(
         text_body: Plain-text body, always sent as the primary part.
         recipients: Recipient addresses; a no-op when empty.
         html_body: Optional HTML alternative.
+        attachments: Optional ``(filename, content, mimetype)`` tuples.
 
     Returns:
         True when the message was handed to the mail backend, False when
@@ -50,6 +82,8 @@ def send_email(
     )
     if html_body:
         message.attach_alternative(html_body, "text/html")
+    for filename, content, mimetype in attachments or []:
+        message.attach(filename, content, mimetype)
 
     try:
         message.send(fail_silently=False)
