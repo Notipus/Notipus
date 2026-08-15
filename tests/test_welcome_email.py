@@ -14,6 +14,19 @@ from core.services.welcome_email import SUBJECT, send_welcome_email
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core import mail
+from webhooks.services.rate_limiter import RateLimiter
+
+
+def _flat(text: str) -> str:
+    """Collapse whitespace so assertions survive the text part's hard wrapping.
+
+    Args:
+        text: Body of an email part.
+
+    Returns:
+        The text with every whitespace run reduced to a single space.
+    """
+    return " ".join(text.split())
 
 
 @pytest.fixture
@@ -100,6 +113,44 @@ class TestWelcomeEmail:
         send_welcome_email(user)
 
         assert mail.outbox[0].alternatives[0][0].count('class="cta-button"') == 1
+
+    def test_says_the_free_plan_needs_no_card(self, user: User) -> None:
+        """The first email must not read as a demand for payment.
+
+        "Connect a payment provider" was misreading as "add your card";
+        the copy now names the billing tool and leads with the free plan.
+        """
+        send_welcome_email(user)
+
+        message = mail.outbox[0]
+        for part in (message.body, message.alternatives[0][0]):
+            flat = _flat(part)
+            assert "free plan" in flat
+            assert "no card needed" in flat
+            assert "payment provider" not in flat
+
+    def test_quotes_the_enforced_free_allowance(self, user: User) -> None:
+        """The advertised event count is the one the limiter enforces."""
+        send_welcome_email(user)
+
+        expected = str(RateLimiter.PLAN_LIMITS["free"])
+        assert expected in mail.outbox[0].body
+        assert expected in mail.outbox[0].alternatives[0][0]
+
+    def test_promises_only_free_tier_enrichment(self, user: User) -> None:
+        """Contact details and lifetime value are Pro, so never promise them.
+
+        Person enrichment needs a Pro/Enterprise plan and the workspace's
+        own Hunter.io key, and lifetime value is absent from Stripe
+        payloads entirely.
+        """
+        send_welcome_email(user)
+
+        for part in (mail.outbox[0].body, mail.outbox[0].alternatives[0][0]):
+            flat = _flat(part)
+            assert "company attached" in flat
+            assert "what they are worth" not in flat
+            assert "who the customer is" not in flat
 
     def test_skips_users_without_an_address(self, db) -> None:
         """No address means no send, and no crash."""

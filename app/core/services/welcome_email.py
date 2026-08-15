@@ -6,7 +6,7 @@ empty and not a single notification fires - the product looks broken
 through no fault of the user. Connecting Slack alone does not get anyone
 there, and that is precisely where new signups have been stopping.
 
-So this email drives one action and no others: connect a payment provider.
+So this email drives one action and no others: connect a billing tool.
 No feature tour, no secondary links competing for the click.
 
 Called from each of the three signup paths (allauth email/social via the
@@ -20,12 +20,17 @@ import logging
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.template.loader import render_to_string
+from webhooks.services.rate_limiter import RateLimiter
 
 from .mail import send_email
 
 logger = logging.getLogger(__name__)
 
 SUBJECT = "Welcome to Notipus"
+
+# Read from the limiter that actually enforces it, so the figure quoted to a
+# new customer cannot drift from the one their workspace is held to.
+FREE_PLAN_MONTHLY_EVENTS = RateLimiter.PLAN_LIMITS["free"]
 
 
 def _first_name(user: User) -> str:
@@ -59,23 +64,27 @@ def send_welcome_email(user: User) -> bool:
         "first_name": _first_name(user),
         "integrations_url": integrations_url,
         "support_email": settings.SUPPORT_EMAIL,
+        "free_plan_events": FREE_PLAN_MONTHLY_EVENTS,
     }
 
     text_body = f"""Hi {context["first_name"]},
 
-Welcome to Notipus. Your workspace is ready.
+Welcome to Notipus. Your workspace is ready on the free plan - no card
+needed.
 
-One thing left: connect a payment provider. Notipus watches Stripe,
+One thing left: connect your billing tool. Notipus watches Stripe,
 Shopify, or Maxio (Chargify) and posts every payment, failed charge,
-upgrade, and cancellation into Slack, enriched with who the customer is
-and what they are worth. Until a provider is connected there is nothing
-for us to tell you about.
+upgrade, and cancellation into Slack with the customer's company
+attached. Until one is connected there is nothing for us to tell you
+about.
 
-Connect your first payment source:
+Connect your billing tool:
 {integrations_url}
 
-It takes about two minutes: add a webhook in your provider's dashboard
-and paste the signing secret into Notipus.
+It takes about two minutes: add a webhook in your billing tool's
+dashboard and paste the signing secret into Notipus.
+
+Your free plan covers {FREE_PLAN_MONTHLY_EVENTS} events a month.
 
 Reply to this email if you get stuck. A person reads it, and we answer
 within two business days.

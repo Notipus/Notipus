@@ -4,7 +4,7 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta name="description"
-              content="Your Notipus workspace is ready - connect a payment provider to start getting alerts in Slack">
+              content="Your Notipus workspace is ready on the free plan - connect your billing tool to start getting alerts in Slack">
         <meta name="keywords" content="notipus, welcome, onboarding">
         <title>Welcome to Notipus</title>
         <style>
@@ -92,23 +92,24 @@
 
             <h1>Welcome, {{ first_name }}</h1>
 
-            <p>Your workspace is ready.</p>
+            <p>Your workspace is ready on the free plan - no card needed.</p>
 
             <p>
-                One thing left: connect a payment provider. Notipus watches Stripe, Shopify, or
+                One thing left: connect your billing tool. Notipus watches Stripe, Shopify, or
                 Maxio (Chargify) and posts every payment, failed charge, upgrade, and cancellation
-                into Slack, enriched with who the customer is and what they are worth.
+                into Slack with the customer's company attached.
             </p>
 
-            <p>Until a provider is connected, there is nothing for us to tell you about.</p>
+            <p>Until one is connected, there is nothing for us to tell you about.</p>
 
             <div class="cta-container">
-                <a href="{{ integrations_url }}" class="cta-button">Connect your first payment source</a>
+                <a href="{{ integrations_url }}" class="cta-button">Connect your billing tool</a>
             </div>
 
             <p class="aside">
-                It takes about two minutes: add a webhook in your provider's dashboard and paste
-                the signing secret into Notipus.
+                It takes about two minutes: add a webhook in your billing tool's dashboard and
+                paste the signing secret into Notipus. Your free plan covers
+                {{ free_plan_events }} events a month.
             </p>
 
             <div class="footer">
