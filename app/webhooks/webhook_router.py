@@ -248,6 +248,18 @@ def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     scopes keys per workspace); events missing a ``provider`` field fall
     back to the "unknown" namespace so the key is never un-namespaced.
 
+    The parsed event type is part of the key. Shopify sends byte-identical
+    bodies for genuinely different topics - orders/create, orders/paid,
+    orders/cancelled and orders/fulfilled all serialise the same order
+    resource - so hashing the body alone collapses four events into one
+    and silently drops three payment notifications.
+
+    That does mean the key depends on the topic header, which Shopify
+    does not cover with its HMAC: someone holding a captured body could
+    replay it under another topic and mint one extra notification per
+    topic. That is a bounded forgery requiring an already-intercepted
+    webhook, weighed against certain, routine loss of real events.
+
     Falls back to ``event_id`` for providers whose unique event id is
     inside the signed payload (Stripe's ``evt_...``), then to a
     composite of event type and object id so distinct events for the
@@ -257,7 +269,8 @@ def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     content_hash = event_data.get("content_hash")
     if content_hash:
         provider = event_data.get("provider") or "unknown"
-        return f"{provider}:sha256:{content_hash}"
+        event_type = event_data.get("type") or "unknown"
+        return f"{provider}:{event_type}:sha256:{content_hash}"
     event_id = event_data.get("event_id")
     if event_id:
         return str(event_id)
