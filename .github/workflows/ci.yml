@@ -92,10 +92,32 @@ jobs:
       # it cannot tell a re-declared header from a dropped one.
       # --error turns a finding into a red build; .gitignore is honoured by
       # default, so .venv/node_modules/build output are out of scope.
+      #
+      # Deliberately no --sarif-output here: that flag makes opengrep report
+      # (and count) findings that carry a nosemgrep suppression, which would
+      # fail the build on every annotated line. The SARIF for code scanning is
+      # produced by the separate ungated step below.
       - name: Run Opengrep
         run: |
           "${RUNNER_TEMP}/opengrep" scan \
             --error \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/django/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/requests/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/cryptography/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/jwt/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/browser/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/dockerfile/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/html/security" \
+            .
+
+      # Second pass purely to produce the SARIF, so the gate above stays a
+      # clean pass/fail. No --error: this step reports, it does not judge.
+      - name: Generate SARIF
+        if: always()
+        run: |
+          "${RUNNER_TEMP}/opengrep" scan \
             --sarif-output=opengrep.sarif \
             --config "${RUNNER_TEMP}/opengrep-rules/python/django/security" \
             --config "${RUNNER_TEMP}/opengrep-rules/python/lang/security" \
