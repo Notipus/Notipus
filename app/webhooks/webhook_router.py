@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Any, Dict, Optional, cast
+from urllib.parse import urlparse
 
 from core.models import Integration, Workspace
 from django.conf import settings
@@ -613,7 +614,27 @@ def health_check(request: HttpRequest) -> JsonResponse:
 def customer_shopify_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
-    """Handle customer-specific Shopify webhook requests with rate limiting"""
+    """Handle Shopify webhooks addressed to one workspace.
+
+    The per-tenant address is the stronger of the two bindings Notipus
+    has. Shopify's HMAC covers the request body only, never the headers,
+    so the app-level endpoint's ``X-Shopify-Shop-Domain`` routing can in
+    principle be redirected by replaying a captured body under a
+    different shop header. Delivering to a workspace-specific URL means
+    an event has to satisfy the address as well, and the shop check
+    below means it has to satisfy both at once.
+
+    Used by merchants who register webhooks themselves in the Shopify
+    admin - who supply their own signing secret, so Notipus needs no app
+    install and no credential of any kind.
+
+    Args:
+        request: The incoming request.
+        organization_uuid: Workspace UUID from the URL.
+
+    Returns:
+        The processing result, or an error response.
+    """
     logger.info(
         f"Processing customer Shopify webhook for workspace {organization_uuid}",
         extra={
@@ -634,9 +655,18 @@ def customer_shopify_webhook(
             is_active=True,
         )
 
+        shop_mismatch = _reject_shop_mismatch(request, integration, organization_uuid)
+        if shop_mismatch is not None:
+            return shop_mismatch
+
         from plugins.sources.shopify import ShopifySourcePlugin
 
-        provider = ShopifySourcePlugin(webhook_secret=integration.webhook_secret)
+        # A merchant-registered webhook carries its own secret. An
+        # app-installed one has none, and is signed with the app's
+        # client secret like every other app-level delivery.
+        provider = ShopifySourcePlugin(
+            webhook_secret=integration.webhook_secret or settings.SHOPIFY_CLIENT_SECRET
+        )
 
         return _process_webhook(
             request,
@@ -651,6 +681,91 @@ def customer_shopify_webhook(
         logger.error(f"Error in customer Shopify webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
         return JsonResponse(error_response, status=500)
+
+
+def _reject_shop_mismatch(
+    request: HttpRequest, integration: Integration, workspace_uuid: str
+) -> JsonResponse | None:
+    """Reject an event whose shop is not the one this workspace connected.
+
+    The signature proves Shopify sent the body; it proves nothing about
+    which shop it came from, because the HMAC does not cover headers. So
+    a body captured from one store could otherwise be posted to another
+    workspace's address and be attributed to it - one tenant seeing
+    another's orders.
+
+    Args:
+        request: The incoming request.
+        integration: The addressed workspace's Shopify integration.
+        workspace_uuid: The workspace UUID, for logging.
+
+    Returns:
+        A 403 response on mismatch, None when the shop agrees or when
+        either side is unknown.
+    """
+    header_shop = request.headers.get("X-Shopify-Shop-Domain")
+    configured_shop = integration.integration_settings.get("shop_domain")
+
+    if not header_shop or not configured_shop:
+        # Nothing to compare: a merchant-registered webhook need not have
+        # a shop recorded, and Shopify omits the header on some tooling.
+        return None
+
+    if header_shop.lower() != str(configured_shop).lower():
+        logger.warning(
+            "Rejecting Shopify webhook for workspace %s: shop %s does not "
+            "match connected shop %s",
+            workspace_uuid,
+            header_shop,
+            configured_shop,
+        )
+        return JsonResponse(
+            {
+                "status": "error",
+                "error": "ShopMismatch",
+                "message": "Webhook shop does not match the connected store",
+                "code": 403,
+            },
+            status=403,
+        )
+    return None
+
+
+def _signed_shop_domain(request: HttpRequest) -> str | None:
+    """Return the shop domain carried inside the signed request body.
+
+    ``X-Shopify-Shop-Domain`` is not covered by the HMAC, so on its own
+    it cannot be trusted to select a tenant. Order payloads do name the
+    store inside the signed body, in ``order_status_url``, which can be
+    checked against the header.
+
+    Only a ``*.myshopify.com`` host is returned. A store with a custom
+    primary domain may use it here, and that cannot be compared against
+    the myshopify domain the header carries - so those simply go
+    unchecked rather than being wrongly rejected.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The shop's myshopify domain, or None when the body does not
+        carry one that can be compared.
+    """
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+
+    status_url = body.get("order_status_url")
+    if not isinstance(status_url, str):
+        return None
+
+    host = urlparse(status_url).hostname
+    if host and host.lower().endswith(".myshopify.com"):
+        return host.lower()
+    return None
 
 
 def _topic_is_enabled(integration: Integration, topic: str) -> bool:
@@ -720,6 +835,28 @@ def shopify_events_webhook(request: HttpRequest) -> JsonResponse:
             logger.warning("Rejected Shopify webhook for %s: invalid HMAC", shop_domain)
             return JsonResponse(
                 create_error_response(WebhookSignatureError(), 401), status=401
+            )
+
+        # This endpoint picks the tenant from an unsigned header, so a
+        # captured body could otherwise be re-pointed at another
+        # workspace. Where the signed body names the store too, the two
+        # must agree.
+        signed_shop = _signed_shop_domain(request)
+        if signed_shop and shop_domain and signed_shop != shop_domain.lower():
+            logger.warning(
+                "Rejecting Shopify webhook: header claims %s but the signed "
+                "body is from %s",
+                shop_domain,
+                signed_shop,
+            )
+            return JsonResponse(
+                {
+                    "status": "error",
+                    "error": "ShopMismatch",
+                    "message": "Webhook shop does not match the signed payload",
+                    "code": 403,
+                },
+                status=403,
             )
 
         integration = (

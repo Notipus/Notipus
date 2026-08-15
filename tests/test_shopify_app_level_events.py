@@ -212,3 +212,57 @@ class TestCategoryFiltering:
         response = deliver(client, "checkouts/create")
         assert response.status_code == 200
         assert "not enabled" not in response.json()["message"]
+
+
+@pytest.mark.django_db
+class TestSignedShopBinding:
+    """The unsigned header is checked against the signed body."""
+
+    def test_header_cannot_redirect_an_order_to_another_tenant(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """The strongest guarantee this endpoint can offer.
+
+        Order payloads name their store inside the signed body, so a
+        captured body cannot be re-pointed at a different workspace by
+        rewriting the header.
+        """
+        body = dict(
+            ORDER_BODY,
+            order_status_url="https://someone-else.myshopify.com/1/orders/x",
+        )
+        response = deliver(client, "orders/create", body=body)
+
+        assert response.status_code == 403
+        assert response.json()["error"] == "ShopMismatch"
+
+    def test_matching_signed_shop_passes(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """The legitimate case is unaffected."""
+        body = dict(ORDER_BODY, order_status_url=f"https://{SHOP}/1/orders/x")
+        response = deliver(client, "orders/create", body=body)
+        assert response.status_code == 200
+
+    def test_custom_primary_domain_is_not_rejected(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """A store may use its own domain in order_status_url.
+
+        That cannot be compared against the myshopify domain in the
+        header, so it goes unchecked rather than being wrongly dropped.
+        """
+        body = dict(ORDER_BODY, order_status_url="https://shop.brand.com/1/orders/x")
+        response = deliver(client, "orders/create", body=body)
+        assert response.status_code == 200
+
+    def test_payload_without_shop_identity_still_delivers(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """Fulfillments and customer events carry no store name.
+
+        Those fall back to the header alone, which is why the per-tenant
+        address remains the stronger target.
+        """
+        response = deliver(client, "orders/create")
+        assert response.status_code == 200
