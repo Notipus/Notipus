@@ -1,5 +1,7 @@
 # Notipus — Enriched Slack Notifications for Payment Events
 
+[![Opengrep](https://img.shields.io/github/check-runs/Notipus/Notipus/master?nameFilter=Opengrep&label=opengrep&logo=github)](https://github.com/Notipus/Notipus/actions/workflows/ci.yml?query=branch%3Amaster)
+
 Notipus turns payment and subscription webhooks from **Stripe**, **Shopify**, and **Maxio (formerly Chargify)** into enriched Slack notifications. It's more than a webhook relay: every alert tells you who the customer is, what they're worth, and whether they need attention — company background, contact name and role, lifetime value, tenure, and churn-risk flags, delivered where your team actually looks.
 
 Managed service: [notipus.com](https://notipus.com) · Self-hosting: [see below](#self-hosting)
