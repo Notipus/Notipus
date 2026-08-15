@@ -4,9 +4,9 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta name="description"
-              content="Your Notipus workspace is ready on the free plan - connect your billing tool to start getting alerts in your team chat">
-        <meta name="keywords" content="notipus, welcome, onboarding">
-        <title>Welcome to Notipus</title>
+              content="Your Notipus workspace has a notification channel but no billing tool sending it events">
+        <meta name="keywords" content="notipus, setup, integrations">
+        <title>Your Notipus workspace is not receiving events yet</title>
         <style>
             body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -90,32 +90,34 @@
                 <div class="logo">Notipus</div>
             </div>
 
-            <h1>Welcome, {{ first_name }}</h1>
-
-            <p>Your workspace is ready on the free plan - no card needed.</p>
+            <h1>Nothing to post yet</h1>
 
             <p>
-                One thing left: connect your billing tool. Notipus watches Stripe, Shopify, or
-                Maxio (Chargify) and posts every payment, failed charge, upgrade, and cancellation
-                into Slack, Telegram, or Microsoft Teams with the customer's company attached.
+                Your workspace <strong>{{ workspace_name }}</strong> is connected to a notification
+                channel, but no billing tool is sending it events - so there is nothing for us to
+                post.
             </p>
-
-            <p>Until one is connected, there is nothing for us to tell you about.</p>
 
             <div class="cta-container">
                 <a href="{{ integrations_url }}" class="cta-button">Connect your billing tool</a>
             </div>
 
+            <p>
+                Notipus watches Stripe, Shopify, or Maxio (Chargify) and posts every payment,
+                failed charge, upgrade, and cancellation into your channel with the customer's
+                company attached.
+            </p>
+
             <p class="aside">
-                It takes about two minutes: add a webhook in your billing tool's dashboard and
-                paste the signing secret into Notipus. Your free plan covers
-                {{ free_plan_events }} events a month.
+                Setup takes about two minutes: add a webhook in your billing tool's dashboard and
+                paste the signing secret into Notipus.
             </p>
 
             <div class="footer">
                 <p>
-                    Reply to this email if you get stuck. A person reads it, and we answer within
-                    two business days.
+                    Stuck on that step? Reply to this email and a person will help. If you have
+                    decided Notipus is not for you, no reply is needed - this is the only reminder
+                    we will send.
                 </p>
                 <p>
                     <a href="mailto:{{ support_email }}">{{ support_email }}</a>

@@ -85,6 +85,12 @@ class Workspace(models.Model):
     created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
     updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 
+    # Set when the "you have a destination but no event source" nudge goes
+    # out, so the reminder job can never mail the same workspace twice.
+    onboarding_nudge_sent_at: models.DateTimeField = models.DateTimeField(
+        null=True, blank=True
+    )
+
     # Billing and subscription
     # max_length=100 to accommodate Stripe price IDs (e.g., price_1NvT4OJADkUcvxXxx)
     subscription_plan: models.CharField = models.CharField(
@@ -408,6 +414,16 @@ class Integration(models.Model):
         "stripe_customer",
         "shopify",
         "chargify",
+    )
+
+    # The subset that Notipus delivers notifications to. Keep in sync when
+    # adding a channel above — the onboarding nudge uses it to find
+    # workspaces that wired up somewhere to send, then never connected
+    # anything to send about.
+    DESTINATION_INTEGRATION_TYPES: ClassVar[tuple[str, ...]] = (
+        "slack_notifications",
+        "telegram_notifications",
+        "teams_notifications",
     )
 
     workspace: Any = models.ForeignKey(
