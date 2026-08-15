@@ -21,7 +21,8 @@ from typing import Any
 
 from django.conf import settings
 from django.core.cache import cache
-from django.core.mail import send_mail
+
+from .mail import send_email
 
 logger = logging.getLogger(__name__)
 
@@ -207,17 +208,7 @@ def _send(subject: str, body: str, recipients: list[str]) -> None:
     if not recipients:
         logger.warning("Usage alert '%s' has no recipients; skipping", subject)
         return
-    try:
-        send_mail(
-            subject=subject,
-            message=body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=recipients,
-            fail_silently=False,
-        )
-        logger.info("Sent usage alert '%s' to %s", subject, recipients)
-    except Exception as e:
-        logger.error("Failed to send usage alert '%s': %s", subject, e, exc_info=True)
+    send_email(subject=subject, text_body=body, recipients=recipients)
 
 
 def _send_warning_alert(workspace: Any, new_usage: int, limit: int) -> None:

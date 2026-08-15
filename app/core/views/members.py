@@ -19,17 +19,17 @@ from core.permissions import (
     can_remove_member,
     get_remaining_seats,
 )
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
-from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
+
+from ..services.mail import send_email
 
 logger = logging.getLogger(__name__)
 
@@ -78,20 +78,12 @@ If you weren't expecting this invitation, you can safely ignore this email.
         },
     )
 
-    try:
-        send_mail(
-            subject=subject,
-            message=text_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[invitation.email],
-            html_message=html_message,
-            fail_silently=False,
-        )
-        logger.info(f"Invitation email sent to {invitation.email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send invitation email to {invitation.email}: {e}")
-        return False
+    return send_email(
+        subject=subject,
+        text_body=text_message,
+        recipients=[invitation.email],
+        html_body=html_message,
+    )
 
 
 @login_required

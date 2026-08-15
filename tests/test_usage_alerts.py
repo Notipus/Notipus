@@ -241,7 +241,7 @@ class TestUsageAlertEmails:
     def test_send_failure_does_not_raise(self, workspace: Workspace) -> None:
         """A broken mail backend must never break webhook processing."""
         with patch(
-            "core.services.usage_alerts.send_mail",
+            "core.services.usage_alerts.send_email",
             side_effect=Exception("smtp down"),
         ):
             maybe_send_usage_alerts(workspace, new_usage=16, limit=20)
@@ -308,7 +308,7 @@ class TestTrialEndingAlert:
     def test_send_failure_does_not_raise(self, workspace: Workspace) -> None:
         """A broken mail backend must never break billing webhooks."""
         with patch(
-            "core.services.usage_alerts.send_mail",
+            "core.services.usage_alerts.send_email",
             side_effect=Exception("smtp down"),
         ):
             send_trial_ending_alert(workspace, ends_on="February 8, 2026")

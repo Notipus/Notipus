@@ -386,6 +386,12 @@ EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@notipus.com")
 
+# Monitored inbox used as Reply-To on outbound product email. DEFAULT_FROM_EMAIL
+# is a no-reply address, so without this a reply lands nowhere: that costs
+# engagement, which mailbox providers weigh when deciding placement, and it
+# strands anyone who answers the email instead of opening a support page.
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "support@notipus.com")
+
 # Email and verification
 ACCOUNT_EMAIL_VERIFICATION = os.environ.get("ACCOUNT_EMAIL_VERIFICATION", "optional")
 
