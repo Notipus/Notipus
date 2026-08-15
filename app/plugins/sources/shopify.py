@@ -40,11 +40,12 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         "orders/create": "order_created",
         "orders/paid": "payment_success",
         "orders/cancelled": "order_cancelled",
-        "orders/refunded": "refund_issued",
         "orders/fulfilled": "order_fulfilled",
-        # Refund events. Shopify's own refund topic is refunds/create;
-        # orders/refunded only fires when a refund settles the whole
-        # order, so subscribing to it alone misses partial refunds.
+        # The refund topic is refunds/create. There is no orders/refunded
+        # topic: it was mapped here for a long time, and Shopify rejects
+        # it outright ("The following topic is invalid") when an app
+        # tries to subscribe. Kept parsed rather than mapped would be
+        # pointless, so it is simply gone.
         "refunds/create": "refund_issued",
         # Fulfillment events
         "fulfillments/create": "fulfillment_created",

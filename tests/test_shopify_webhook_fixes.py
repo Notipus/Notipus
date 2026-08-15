@@ -1,7 +1,7 @@
 """Tests for the Shopify integration end-to-end fixes.
 
 Covers webhook secret storage/backfill, event type mappings
-(orders/cancelled, orders/refunded, customers/create, checkouts/create),
+(orders/cancelled, refunds/create, customers/create, checkouts/create),
 guest checkout handling, null line-item prices, consolidation bucket
 integrity, and Decimal monetary precision.
 """
@@ -141,7 +141,7 @@ class TestShopifyWebhookEndToEnd:
         workspace: Workspace,
         shopify_integration: Integration,
     ) -> None:
-        """orders/refunded must be accepted and map to refund_issued."""
+        """refunds/create must be accepted and map to refund_issued."""
         payload = {
             "id": 820982911946154509,
             "order_number": 1002,
@@ -153,7 +153,7 @@ class TestShopifyWebhookEndToEnd:
         with patch("django.conf.settings.EVENT_PROCESSOR") as mock_processor:
             mock_processor.build_rich_notification.return_value = {"blocks": []}
             response = _post_shopify_webhook(
-                client, workspace, "orders/refunded", payload
+                client, workspace, "refunds/create", payload
             )
 
         assert response.status_code == 200
@@ -276,7 +276,7 @@ class TestShopifyEventTypeMapping:
     ) -> None:
         """New topic mappings must all be valid EventProcessor types."""
         expected = {
-            "orders/refunded": "refund_issued",
+            "refunds/create": "refund_issued",
             "customers/create": "customer_created",
             "checkouts/create": "checkout_started",
         }

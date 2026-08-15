@@ -195,8 +195,8 @@ class TestTopicCoverage:
     def test_every_mapped_topic_is_subscribable(self) -> None:
         """A parsed topic nobody can subscribe to is dead code.
 
-        orders/refunded was mapped for months while no category offered
-        it, so refunds could never arrive.
+        orders/refunded was mapped for months while no category
+        offered it - and it is not even a real Shopify topic.
         """
         from core.views.integrations.shopify import SHOPIFY_WEBHOOK_TOPICS
 

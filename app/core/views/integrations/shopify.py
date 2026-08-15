@@ -45,9 +45,9 @@ SHOPIFY_EVENT_CATEGORIES: dict[str, dict[str, str | list[str] | bool]] = {
     "refunds": {
         "label": "Refunds",
         "description": "Full and partial refunds",
-        # refunds/create covers partial refunds too; orders/refunded only
-        # fires once a refund settles the entire order.
-        "topics": ["refunds/create", "orders/refunded"],
+        # refunds/create is the only refund topic Shopify has, and it
+        # covers partial refunds as well as full ones.
+        "topics": ["refunds/create"],
         "default": True,
     },
     # Off, and not currently deliverable. These topics need
