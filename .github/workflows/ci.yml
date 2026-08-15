@@ -45,6 +45,69 @@ jobs:
           uv run djlint app/core/templates --check
           uv run djlint app/core/templates --lint
 
+  # Static analysis with Opengrep (the OSS Semgrep fork). Gating: findings turn
+  # this check red and deploy waits on it, so a hit holds up the release. Both
+  # the binary and the rule set are pinned, so results only change when we bump
+  # them here.
+  opengrep:
+    name: Opengrep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      OPENGREP_VERSION: v1.27.1
+      OPENGREP_SHA256: 58053da76672bbeb5b0a5441021c58338707052e10f81d777140ca879bd491ce
+      OPENGREP_RULES_REF: f1d2b562b414783763fd02a6ed2736eaed622efa
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Opengrep
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/opengrep" \
+            "https://github.com/opengrep/opengrep/releases/download/${OPENGREP_VERSION}/opengrep_manylinux_x86"
+          echo "${OPENGREP_SHA256}  ${RUNNER_TEMP}/opengrep" | sha256sum -c -
+          chmod +x "${RUNNER_TEMP}/opengrep"
+
+      # Cloned outside the workspace on purpose: the rule repo ships
+      # deliberately vulnerable fixtures, which opengrep would otherwise pick
+      # up as scan targets. Sparse checkout keeps it to the languages we ship.
+      - name: Fetch Opengrep rules
+        run: |
+          mkdir -p "${RUNNER_TEMP}/opengrep-rules"
+          cd "${RUNNER_TEMP}/opengrep-rules"
+          git init -q
+          git remote add origin https://github.com/opengrep/opengrep-rules.git
+          git sparse-checkout set python dockerfile javascript html generic
+          git fetch -q --depth 1 origin "${OPENGREP_RULES_REF}"
+          git checkout -q FETCH_HEAD
+
+      # --error turns findings into a red build; .gitignore is honoured by
+      # default, so .venv/node_modules/build output are already out of scope.
+      - name: Run Opengrep
+        run: |
+          "${RUNNER_TEMP}/opengrep" scan \
+            --error \
+            --sarif-output=opengrep.sarif \
+            --config "${RUNNER_TEMP}/opengrep-rules/python" \
+            --config "${RUNNER_TEMP}/opengrep-rules/dockerfile" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript" \
+            --config "${RUNNER_TEMP}/opengrep-rules/html" \
+            --config "${RUNNER_TEMP}/opengrep-rules/generic" \
+            .
+
+      # Uploaded even when the scan fails, so findings land in the Security tab
+      # instead of only the log. Fork PRs get a read-only token and cannot
+      # upload, hence continue-on-error.
+      - name: Upload SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@988661ebb5e81487b3fb31b2185d2856c0a10679 # v4
+        with:
+          sarif_file: opengrep.sarif
+          category: opengrep
+
   # Smoke-test build for every event; runs with a read-only token
   docker-build:
     name: Docker Build
@@ -109,7 +172,7 @@ jobs:
   deploy:
     name: Deploy to Fly.io
     runs-on: ubuntu-latest
-    needs: [test, docker-publish]
+    needs: [test, opengrep, docker-publish]
     # Only deploy on push to master (not PRs)
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     concurrency: deploy-group

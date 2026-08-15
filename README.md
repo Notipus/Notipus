@@ -195,6 +195,15 @@ uv run ruff check --fix .
 uv run mypy app/
 ```
 
+CI additionally runs [Opengrep](https://github.com/opengrep/opengrep) (the OSS
+Semgrep fork) over the codebase; findings show up in the job log and in the
+repository's Security tab. A finding fails the check and blocks the deploy. To reproduce a CI finding locally, install the
+binary with `curl -fsSL https://raw.githubusercontent.com/opengrep/opengrep/main/install.sh | bash`,
+clone [opengrep-rules](https://github.com/opengrep/opengrep-rules) somewhere
+outside the repo, and run `opengrep scan --error --config <rules>/python .`.
+Suppress an individual false positive with a `# nosemgrep: <rule-id>` comment
+on the offending line.
+
 ### Pre-commit hooks
 
 ```bash
