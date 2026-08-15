@@ -1,12 +1,38 @@
 from django.urls import path, re_path
 
-from . import webhook_router
+from . import compliance_router, webhook_router
 
 app_name = "webhooks"
 
 urlpatterns = [
     # Health check
     path("health/", webhook_router.health_check, name="health_check"),
+    # Shopify's mandatory privacy webhooks. App-level, not per workspace:
+    # Shopify registers one URL per app, so the shop is resolved from the
+    # payload. All three topics share a handler; the paths are separate
+    # because the app configuration names them individually.
+    path(
+        "shopify/compliance/customers/data-request/",
+        compliance_router.shopify_compliance_webhook,
+        name="shopify_customer_data_request",
+    ),
+    path(
+        "shopify/compliance/customers/redact/",
+        compliance_router.shopify_compliance_webhook,
+        name="shopify_customer_redact",
+    ),
+    path(
+        "shopify/compliance/shop/redact/",
+        compliance_router.shopify_compliance_webhook,
+        name="shopify_shop_redact",
+    ),
+    # Not mandatory, but without it an uninstall leaves an active
+    # integration holding a token the store no longer honours.
+    path(
+        "shopify/app/uninstalled/",
+        compliance_router.shopify_compliance_webhook,
+        name="shopify_app_uninstalled",
+    ),
     # Customer payment webhooks (organization-specific with UUID obfuscation)
     re_path(
         r"^customer/(?P<organization_uuid>[0-9a-f-]+)/shopify/$",

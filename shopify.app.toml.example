@@ -16,6 +16,20 @@ embedded = false
 # Keep in sync with SHOPIFY_API_VERSION in the Django settings.
 api_version = "2026-07"
 
+# Mandatory for every public app. Shopify rejects a submission that does
+# not provide these, or that does not answer them correctly - note it
+# requires 401 (not 400) when the HMAC is invalid.
+[webhooks.privacy_compliance]
+customer_data_request_url = "https://app.notipus.com/webhook/shopify/compliance/customers/data-request/"
+customer_deletion_url = "https://app.notipus.com/webhook/shopify/compliance/customers/redact/"
+shop_deletion_url = "https://app.notipus.com/webhook/shopify/compliance/shop/redact/"
+
+# Not mandatory, but without it an uninstall leaves the integration
+# active holding a token the store no longer honours.
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "https://app.notipus.com/webhook/shopify/app/uninstalled/"
+
 [access_scopes]
 # Required scopes for webhook subscriptions:
 # - read_orders: Subscribe to order webhooks (orders/create, orders/paid, orders/cancelled, etc.)
