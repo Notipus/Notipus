@@ -25,18 +25,58 @@ customer_deletion_url = "https://app.notipus.com/webhook/shopify/compliance/cust
 shop_deletion_url = "https://app.notipus.com/webhook/shopify/compliance/shop/redact/"
 
 # Not mandatory, but without it an uninstall leaves the integration
-# active holding a token the store no longer honours.
+# marked active for a store that no longer sends anything.
 [[webhooks.subscriptions]]
 topics = ["app/uninstalled"]
 uri = "https://app.notipus.com/webhook/shopify/app/uninstalled/"
 
-[access_scopes]
-# Required scopes for webhook subscriptions:
-# - read_orders: Subscribe to order webhooks (orders/create, orders/paid, orders/cancelled, etc.)
-# - read_customers: Subscribe to customer webhooks (customers/create, customers/update, etc.)
+# Event subscriptions are declared here rather than created per shop
+# through the Admin API. That is deliberate: declaring them means
+# Notipus never needs an access token, so it holds no standing ability
+# to read a merchant's orders or customers.
 #
-# Note: There is no "write_webhooks" scope in Shopify. Webhook creation permissions are
-# controlled by having the appropriate read scope for the resource you want to subscribe to.
+# The trade-off is that every installed store sends every topic listed
+# here. Which of them a workspace actually wants is decided on receipt,
+# from the categories chosen on the integration page - see
+# _topic_is_enabled in app/webhooks/webhook_router.py.
+[[webhooks.subscriptions]]
+topics = [
+  "orders/create",
+  "orders/paid",
+  "orders/cancelled",
+  "orders/fulfilled",
+  "orders/refunded",
+  "refunds/create",
+  "fulfillments/create",
+  "fulfillments/update",
+  "customers/update",
+]
+uri = "https://app.notipus.com/webhook/shopify/events/"
+
+# Subscription topics need read_own_subscription_contracts, which is an
+# optional scope, so they are declared separately: a store that has not
+# granted it simply never sends these.
+[[webhooks.subscriptions]]
+topics = [
+  "subscription_contracts/create",
+  "subscription_contracts/update",
+  "subscription_billing_attempts/success",
+  "subscription_billing_attempts/failure",
+  "subscription_billing_attempts/challenged",
+]
+uri = "https://app.notipus.com/webhook/shopify/events/"
+
+[access_scopes]
+# The minimum needed to receive the declared topics:
+# - read_orders: order, refund and fulfillment events
+# - read_customers: customer events
+#
+# These grant the right to *receive* those webhooks. Notipus does not
+# keep the resulting access token, so it cannot read anything from the
+# store beyond the events Shopify pushes to it.
+#
+# Note: There is no "write_webhooks" scope in Shopify. Permission to
+# subscribe comes from holding the matching read scope for the resource.
 scopes = "read_orders,read_customers"
 # Requested only by merchants who turn the Subscriptions category on:
 # subscription_contracts/* and subscription_billing_attempts/* topics

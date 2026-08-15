@@ -33,6 +33,14 @@ urlpatterns = [
         compliance_router.shopify_compliance_webhook,
         name="shopify_app_uninstalled",
     ),
+    # Shopify events for every installed shop. Subscriptions are declared
+    # in the app configuration, so Shopify delivers here without Notipus
+    # holding an Admin API token; the shop is identified by header.
+    path(
+        "shopify/events/",
+        webhook_router.shopify_events_webhook,
+        name="shopify_events_webhook",
+    ),
     # Customer payment webhooks (organization-specific with UUID obfuscation)
     re_path(
         r"^customer/(?P<organization_uuid>[0-9a-f-]+)/shopify/$",

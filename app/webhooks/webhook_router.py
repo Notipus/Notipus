@@ -653,6 +653,120 @@ def customer_shopify_webhook(
         return JsonResponse(error_response, status=500)
 
 
+def _topic_is_enabled(integration: Integration, topic: str) -> bool:
+    """Check whether a workspace wants events of this topic.
+
+    App-level subscriptions are declared once for the whole app, so every
+    installing store sends every declared topic. The merchant's category
+    choice is therefore honoured here rather than by subscribing
+    selectively - which is what kept an Admin API token necessary.
+
+    Args:
+        integration: The workspace's Shopify integration.
+        topic: The Shopify topic header.
+
+    Returns:
+        True when the topic belongs to an enabled category. Unknown
+        topics pass through so the parser decides their fate.
+    """
+    from core.views.integrations.shopify import (
+        SHOPIFY_EVENT_CATEGORIES,
+        _get_default_categories,
+    )
+
+    enabled = integration.integration_settings.get(
+        "enabled_categories", _get_default_categories()
+    )
+
+    owning_categories = [
+        key
+        for key, config in SHOPIFY_EVENT_CATEGORIES.items()
+        if isinstance(config.get("topics"), list) and topic in config["topics"]
+    ]
+    if not owning_categories:
+        return True
+    return any(category in enabled for category in owning_categories)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def shopify_events_webhook(request: HttpRequest) -> JsonResponse:
+    """Receive Shopify events for every installed shop on one endpoint.
+
+    Subscriptions are declared in the app configuration rather than
+    created per shop, so Shopify delivers here without Notipus ever
+    holding an Admin API token. The sending store is identified by the
+    ``X-Shopify-Shop-Domain`` header, which Shopify sets on every
+    delivery, and the signature is the app's own client secret.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        401 for an unverifiable signature, 200 otherwise. Anything a
+        merchant did not ask for is acknowledged and dropped: retrying
+        it would achieve nothing.
+    """
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain")
+    logger.info("Processing app-level Shopify webhook for shop %s", shop_domain)
+
+    try:
+        from plugins.sources.shopify import ShopifySourcePlugin
+
+        # Signed with the app's client secret: there is no per-shop
+        # secret because there is no per-shop subscription.
+        provider = ShopifySourcePlugin(webhook_secret=settings.SHOPIFY_CLIENT_SECRET)
+        if not provider.validate_webhook(request):
+            logger.warning("Rejected Shopify webhook for %s: invalid HMAC", shop_domain)
+            return JsonResponse(
+                create_error_response(WebhookSignatureError(), 401), status=401
+            )
+
+        integration = (
+            Integration.objects.filter(
+                integration_type="shopify",
+                integration_settings__shop_domain=shop_domain,
+                is_active=True,
+            )
+            .select_related("workspace")
+            .first()
+            if shop_domain
+            else None
+        )
+
+        if integration is None:
+            # A store that installed the app but never finished connecting
+            # a workspace, or one that has disconnected.
+            logger.info("No active workspace for shop %s; acknowledging", shop_domain)
+            return JsonResponse(
+                create_success_response("no workspace for shop"), status=200
+            )
+
+        topic = request.headers.get("X-Shopify-Topic", "")
+        if not _topic_is_enabled(integration, topic):
+            logger.info(
+                "Topic %s not enabled for workspace %s; acknowledging",
+                topic,
+                integration.workspace.uuid,
+            )
+            return JsonResponse(
+                create_success_response("topic not enabled"), status=200
+            )
+
+        return _process_webhook(
+            request,
+            provider,
+            "customer_shopify",
+            integration.workspace,
+            integration,
+            log_provider_name="shopify",
+        )
+
+    except Exception as e:
+        logger.error(f"Error in Shopify webhook: {e!s}", exc_info=True)
+        return JsonResponse(create_error_response(e, 500), status=500)
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def customer_chargify_webhook(
