@@ -34,6 +34,10 @@ x-common-variables: &common-variables
   # See README "Security: encryption at rest".
   FIELD_ENCRYPTION_KEYS: ${FIELD_ENCRYPTION_KEYS:-}
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,django,notipus_django}
+  CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-}
+  # Public URL of this instance. Providers build their webhook callbacks
+  # from it, so when testing through a tunnel set it to the tunnel host.
+  BASE_URL: ${BASE_URL:-http://localhost:8000}
 
   # Global Authentication (Notipus's OAuth apps)
   # These are for app-level OAuth, not tenant-specific configurations
@@ -44,7 +48,8 @@ x-common-variables: &common-variables
   SLACK_CONNECT_REDIRECT_URI: ${SLACK_CONNECT_REDIRECT_URI:-http://localhost/api/connect/slack/callback/}
   SHOPIFY_CLIENT_ID: ${SHOPIFY_CLIENT_ID:-your_shopify_auth_client_id}
   SHOPIFY_CLIENT_SECRET: ${SHOPIFY_CLIENT_SECRET:-your_shopify_auth_client_secret}
-  SHOPIFY_REDIRECT_URI: ${SHOPIFY_REDIRECT_URI:-http://localhost/integrate/shopify/callback/}
+  SHOPIFY_REDIRECT_URI: ${SHOPIFY_REDIRECT_URI:-http://localhost/api/connect/shopify/callback/}
+  SHOPIFY_API_VERSION: ${SHOPIFY_API_VERSION:-}
 
   # Global Billing (Notipus's revenue) - These are for our own billing, not customer payments
   # CodeQL[SM02380]: Development test keys - not real billing credentials
@@ -86,7 +91,10 @@ services:
       POSTGRES_USER: notipus_user
       POSTGRES_PASSWORD: dev_password_123
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # postgres:18+ stores data in a major-version subdirectory and
+      # refuses to start when the volume is mounted at the old
+      # .../data path. Mount the parent instead.
+      - postgres_data:/var/lib/postgresql
     ports:
       - "5432:5432"
     networks:

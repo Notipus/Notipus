@@ -553,20 +553,20 @@ if not DEBUG:
 
 # CSRF Protection
 CSRF_TRUSTED_ORIGINS = []
-if not DEBUG:
-    csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
-    if csrf_origins_env:
-        CSRF_TRUSTED_ORIGINS = [
-            origin.strip() for origin in csrf_origins_env.split(",")
-        ]
-    else:
-        # Default trusted origins for production
-        CSRF_TRUSTED_ORIGINS = [
-            "https://notipus.com",
-            "https://www.notipus.com",
-        ]
-        if APP_NAME:
-            CSRF_TRUSTED_ORIGINS.append(f"https://{APP_NAME}.fly.dev")
+# Honoured in DEBUG too: local end-to-end testing against Shopify runs the
+# dev server behind an HTTPS tunnel, and Django rejects POSTs whose Origin
+# header doesn't match a trusted origin.
+csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
+if csrf_origins_env:
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in csrf_origins_env.split(",")]
+elif not DEBUG:
+    # Default trusted origins for production
+    CSRF_TRUSTED_ORIGINS = [
+        "https://notipus.com",
+        "https://www.notipus.com",
+    ]
+    if APP_NAME:
+        CSRF_TRUSTED_ORIGINS.append(f"https://{APP_NAME}.fly.dev")
 
 
 # Password validation
@@ -781,7 +781,9 @@ SHOPIFY_REDIRECT_URI = os.environ.get(
 # Stable API version for webhook management. Shopify supports each stable
 # version for 12 months and falls forward to the oldest accessible version
 # when an app targets a retired one, so keep this current.
-SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2026-07")
+# ``or`` rather than a get() default: docker-compose passes the variable
+# through as an empty string when it is unset on the host.
+SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION") or "2026-07"
 # There is no write_webhooks scope in Shopify: permission to subscribe to a
 # webhook topic comes from holding the matching read scope for the resource.
 # Requesting a non-existent scope makes the OAuth authorize step fail.
