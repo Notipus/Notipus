@@ -35,6 +35,8 @@ x-common-variables: &common-variables
   FIELD_ENCRYPTION_KEYS: ${FIELD_ENCRYPTION_KEYS:-}
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,django,notipus_django}
   CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-}
+  # Capture raw webhook bodies (7-day Redis retention) for debugging.
+  LOG_WEBHOOKS: ${LOG_WEBHOOKS:-False}
   # Public URL of this instance. Providers build their webhook callbacks
   # from it, so when testing through a tunnel set it to the tunnel host.
   BASE_URL: ${BASE_URL:-http://localhost:8000}
