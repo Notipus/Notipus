@@ -80,8 +80,13 @@ class TestPasskeySignupEmailVerification:
 
         assert status == 200
         assert body["success"] is True
-        assert len(mail.outbox) == 1
-        assert "pat@example.com" in mail.outbox[0].to
+        # Two messages: allauth's verification link, and the welcome email
+        # that every signup path now sends.
+        assert len(mail.outbox) == 2
+        assert all("pat@example.com" in m.to for m in mail.outbox)
+        subjects = [m.subject for m in mail.outbox]
+        assert any("Welcome to Notipus" == s for s in subjects), subjects
+        assert any("Welcome to Notipus" != s for s in subjects), subjects
 
     def test_signup_registers_unverified_email_address(self) -> None:
         """Test that the email lands in allauth as unverified.

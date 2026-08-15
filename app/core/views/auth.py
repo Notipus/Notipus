@@ -18,6 +18,7 @@ from django.shortcuts import redirect
 from .. import analytics
 from ..constants import SLACK_TEAM_NAME_CLAIM, SLACK_TEAM_NAME_SESSION_KEY
 from ..models import UserProfile, Workspace
+from ..services.welcome_email import send_welcome_email
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,7 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
     login(request, user)
     if created:
         analytics.track_event(request, "sign_up", {"method": "slack"})
+        send_welcome_email(user)
 
     # Remember the Slack team name so onboarding can prefill the workspace
     # name instead of asking the user to retype it. Set after login():

@@ -21,13 +21,13 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.core.mail import send_mail
 from django.core.validators import validate_email
 from django.http import HttpRequest, HttpResponseRedirect
 from django.shortcuts import redirect
 from django.template.loader import render_to_string
 
 from ...models import Workspace
+from ...services.mail import send_email
 from .base import require_admin_role, require_post_method
 from .chargify import DISPLAY_NAME as CHARGIFY_DISPLAY_NAME
 from .stripe import DISPLAY_NAME as STRIPE_DISPLAY_NAME
@@ -228,23 +228,12 @@ def send_setup_instructions_email(
         },
     )
 
-    try:
-        sent_count = send_mail(
-            subject=subject,
-            message=text_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[recipient],
-            html_message=html_message,
-            fail_silently=False,
-        )
-    except Exception:
-        logger.exception(f"Failed to send setup instructions to {recipient}")
-        return False
-    if sent_count == 0:
-        logger.error(
-            f"Email backend accepted no messages sending setup "
-            f"instructions to {recipient}"
-        )
+    if not send_email(
+        subject=subject,
+        text_body=text_message,
+        recipients=[recipient],
+        html_body=html_message,
+    ):
         return False
     logger.info(f"{instructions.display_name} setup instructions sent to {recipient}")
     return True

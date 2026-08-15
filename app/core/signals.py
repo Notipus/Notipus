@@ -12,6 +12,7 @@ from .models import (
     NotificationSettings,
     Workspace,
 )
+from .services.welcome_email import send_welcome_email
 
 
 @receiver(post_save, sender=Workspace)
@@ -31,6 +32,7 @@ def track_sign_up(request: HttpRequest, user: User, **kwargs: Any) -> None:
     sociallogin = kwargs.get("sociallogin")
     method = sociallogin.account.provider if sociallogin else "email"
     analytics.track_event(request, "sign_up", {"method": method})
+    send_welcome_email(user)
 
 
 @receiver(user_logged_in)
