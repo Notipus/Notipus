@@ -42,6 +42,30 @@ SHOPIFY_EVENT_CATEGORIES: dict[str, dict[str, str | list[str] | bool]] = {
         "topics": ["orders/create", "orders/paid", "orders/cancelled"],
         "default": True,
     },
+    "refunds": {
+        "label": "Refunds",
+        "description": "Full and partial refunds",
+        # refunds/create covers partial refunds too; orders/refunded only
+        # fires once a refund settles the entire order.
+        "topics": ["refunds/create", "orders/refunded"],
+        "default": True,
+    },
+    # Off by default: these topics need read_own_subscription_contracts,
+    # which most stores won't have granted. Enabling them for everyone
+    # would fail registration on every non-subscription store.
+    "subscriptions": {
+        "label": "Subscriptions",
+        "description": "Subscription contracts and recurring billing",
+        "topics": [
+            "subscription_contracts/create",
+            "subscription_contracts/update",
+            "subscription_billing_attempts/success",
+            "subscription_billing_attempts/failure",
+            # Payment needs customer authentication (SCA) to complete.
+            "subscription_billing_attempts/challenged",
+        ],
+        "default": False,
+    },
     "fulfillment": {
         "label": "Fulfillment",
         "description": "Shipping and delivery updates",

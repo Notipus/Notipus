@@ -24,7 +24,10 @@ api_version = "2026-07"
 # Note: There is no "write_webhooks" scope in Shopify. Webhook creation permissions are
 # controlled by having the appropriate read scope for the resource you want to subscribe to.
 scopes = "read_orders,read_customers"
-optional_scopes = []
+# Requested only by merchants who turn the Subscriptions category on:
+# subscription_contracts/* and subscription_billing_attempts/* topics
+# cannot be registered without it.
+optional_scopes = ["read_own_subscription_contracts"]
 use_legacy_install_flow = false
 
 [auth]

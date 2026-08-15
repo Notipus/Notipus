@@ -14,6 +14,9 @@ import pytest
 import requests
 from core.models import Integration, UserProfile, Workspace
 from core.views.integrations.shopify import (
+    _get_default_categories,
+    _get_topics_for_categories,
+    _graphql_topic,
     _is_valid_shop_domain,
     _normalize_shop_domain,
 )
@@ -21,6 +24,18 @@ from django.contrib.auth.models import User
 from django.contrib.messages import get_messages
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+
+
+def _default_topics() -> list[str]:
+    """Return the REST topics registered for a default connect.
+
+    Derived from the category config so a new category updates the
+    expectations instead of breaking unrelated assertions.
+
+    Returns:
+        Ordered list of REST-style topic names.
+    """
+    return _get_topics_for_categories(_get_default_categories())
 
 
 def _graphql_response(data: dict) -> Mock:
@@ -726,12 +741,15 @@ class TestWebhookCreation:
         self._start_callback(client)
 
         # Token exchange, then the existing-subscription lookup (none),
-        # then one create mutation per default topic (7).
+        # then one create mutation per default topic. Derived rather than
+        # hardcoded so adding a category doesn't silently break this.
+        expected = _default_topics()
         mock_post.side_effect = [
             self._token_response(),
             _subscriptions_response([]),
         ] + [
-            _create_response(f"gid://shopify/WebhookSubscription/{i}") for i in range(7)
+            _create_response(f"gid://shopify/WebhookSubscription/{i}")
+            for i in range(len(expected))
         ]
 
         response = client.get(
@@ -748,7 +766,7 @@ class TestWebhookCreation:
         # First call is the token exchange, second the lookup query,
         # the rest are create mutations - one per default topic.
         webhook_calls = mock_post.call_args_list[2:]
-        assert len(webhook_calls) == 7
+        assert len(webhook_calls) == len(expected)
 
         # Every mutation targets this workspace's callback URL and uses
         # the GraphQL enum spelling of the topic.
@@ -758,20 +776,17 @@ class TestWebhookCreation:
             assert str(workspace.uuid) in variables["webhookSubscription"]["uri"]
             topics.append(variables["topic"])
 
-        assert topics == [
-            "ORDERS_CREATE",
-            "ORDERS_PAID",
-            "ORDERS_CANCELLED",
-            "ORDERS_FULFILLED",
-            "FULFILLMENTS_CREATE",
-            "FULFILLMENTS_UPDATE",
-            "CUSTOMERS_UPDATE",
-        ]
+        assert topics == [_graphql_topic(t) for t in expected]
+
+        # Refunds must be in the default set: the parser has always
+        # mapped a refund event, but for a long time no category
+        # subscribed to one, so refunds could never arrive.
+        assert "REFUNDS_CREATE" in topics
 
         integration = Integration.objects.get(
             workspace=workspace, integration_type="shopify"
         )
-        assert len(integration.integration_settings["webhook_ids"]) == 7
+        assert len(integration.integration_settings["webhook_ids"]) == len(expected)
 
     @override_settings(
         SHOPIFY_CLIENT_ID="test_client_id",
@@ -818,7 +833,7 @@ class TestWebhookCreation:
             ),
         ] + [
             _create_response(f"gid://shopify/WebhookSubscription/{i}")
-            for i in range(10, 15)
+            for i in range(10, 10 + len(_default_topics()))
         ]
 
         response = client.get(
@@ -833,23 +848,25 @@ class TestWebhookCreation:
         assert response.status_code == 302
         assert response.url == reverse("core:integrations")
 
-        # Only the five unsubscribed topics were created.
+        # Only the topics not already pointing at us were created.
+        reused = {"ORDERS_CREATE", "ORDERS_PAID"}
         create_calls = mock_post.call_args_list[2:]
-        assert [c.kwargs["json"]["variables"]["topic"] for c in create_calls] == [
-            "ORDERS_CANCELLED",
-            "ORDERS_FULFILLED",
-            "FULFILLMENTS_CREATE",
-            "FULFILLMENTS_UPDATE",
-            "CUSTOMERS_UPDATE",
+        created = [c.kwargs["json"]["variables"]["topic"] for c in create_calls]
+        assert created == [
+            _graphql_topic(t)
+            for t in _default_topics()
+            if _graphql_topic(t) not in reused
         ]
 
-        # All 7 topics are tracked: 2 reused plus 5 created.
+        # Every default topic is tracked: the reused ones plus the created.
         integration = Integration.objects.get(
             workspace=workspace,
             integration_type="shopify",
         )
         assert integration.is_active is True
-        assert len(integration.integration_settings["webhook_ids"]) == 7
+        assert len(integration.integration_settings["webhook_ids"]) == len(
+            _default_topics()
+        )
         assert (
             "gid://shopify/WebhookSubscription/1"
             in (integration.integration_settings["webhook_ids"])
@@ -884,7 +901,8 @@ class TestWebhookCreation:
             _subscriptions_response([]),
             error_response,
         ] + [
-            _create_response(f"gid://shopify/WebhookSubscription/{i}") for i in range(6)
+            _create_response(f"gid://shopify/WebhookSubscription/{i}")
+            for i in range(len(_default_topics()) - 1)
         ]
 
         response = client.get(
@@ -902,8 +920,10 @@ class TestWebhookCreation:
             workspace=workspace,
             integration_type="shopify",
         )
-        # The failed topic is dropped; the other six are still stored.
-        assert len(integration.integration_settings["webhook_ids"]) == 6
+        # The failed topic is dropped; every other one is still stored.
+        assert len(integration.integration_settings["webhook_ids"]) == (
+            len(_default_topics()) - 1
+        )
 
     @override_settings(
         SHOPIFY_CLIENT_ID="test_client_id",
