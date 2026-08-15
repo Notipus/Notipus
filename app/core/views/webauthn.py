@@ -58,8 +58,7 @@ def _safe_redirect_target(request: HttpRequest, candidate: str | None) -> str:
 # signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
 # exemption. Registering a passkey is a state change on the signed-in account,
 # so the token should be added on the client and this decorator dropped.
-# nosemgrep
-@csrf_exempt
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def webauthn_register_begin(request: HttpRequest) -> JsonResponse:
     """Start WebAuthn registration flow for adding a passkey.
@@ -88,8 +87,7 @@ def webauthn_register_begin(request: HttpRequest) -> JsonResponse:
 # signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
 # exemption. Registering a passkey is a state change on the signed-in account,
 # so the token should be added on the client and this decorator dropped.
-# nosemgrep
-@csrf_exempt
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def webauthn_register_complete(request: HttpRequest) -> JsonResponse:
     """Complete WebAuthn registration and store the credential.
@@ -136,8 +134,7 @@ def webauthn_register_complete(request: HttpRequest) -> JsonResponse:
 # signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
 # exemption. Registering a passkey is a state change on the signed-in account,
 # so the token should be added on the client and this decorator dropped.
-# nosemgrep
-@csrf_exempt
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def webauthn_authenticate_begin(request: HttpRequest) -> JsonResponse:
     """Start WebAuthn authentication flow for passkey login.
@@ -167,8 +164,7 @@ def webauthn_authenticate_begin(request: HttpRequest) -> JsonResponse:
 # signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
 # exemption. Registering a passkey is a state change on the signed-in account,
 # so the token should be added on the client and this decorator dropped.
-# nosemgrep
-@csrf_exempt
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
     """Complete WebAuthn authentication and log the user in.
@@ -257,8 +253,7 @@ def webauthn_credentials(request: HttpRequest) -> JsonResponse:
 # signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
 # exemption. Registering a passkey is a state change on the signed-in account,
 # so the token should be added on the client and this decorator dropped.
-# nosemgrep
-@csrf_exempt
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def webauthn_signup_begin(request: HttpRequest) -> JsonResponse:
     """Start WebAuthn registration flow for passwordless signup.
@@ -301,8 +296,7 @@ def webauthn_signup_begin(request: HttpRequest) -> JsonResponse:
 # signup and settings pages, but the JS does not send X-CSRFToken yet, hence the
 # exemption. Registering a passkey is a state change on the signed-in account,
 # so the token should be added on the client and this decorator dropped.
-# nosemgrep
-@csrf_exempt
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:
     """Complete WebAuthn registration and create user account.

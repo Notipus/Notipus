@@ -136,8 +136,7 @@ const NotipusUI = (function () {
       iconContainer.className = `mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full sm:mx-0 sm:h-10 sm:w-10 ${variantConfig.iconBg}`;
       // Both halves come from the VARIANTS constant above; no caller input
       // reaches this markup (title/message go in via textContent).
-      // nosemgrep
-      iconContainer.innerHTML = `<span class="${variantConfig.iconColor}">${variantConfig.icon}</span>`;
+      iconContainer.innerHTML = `<span class="${variantConfig.iconColor}">${variantConfig.icon}</span>`; // nosemgrep
 
       // Reset confirm button classes and apply variant
       confirmBtn.className = `inline-flex w-full justify-center rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-200 sm:w-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${variantConfig.buttonBg}`;
@@ -325,8 +324,7 @@ const NotipusUI = (function () {
 
     toastEl.querySelector("[data-toast-message]").textContent = message;
     // Icons come from the TOAST_ICONS constant above, never from a caller.
-    // nosemgrep
-    toastEl.querySelector("[data-toast-icon]").innerHTML = icon;
+    toastEl.querySelector("[data-toast-icon]").innerHTML = icon; // nosemgrep
     toastEl
       .querySelector("[data-toast-dismiss]")
       .addEventListener("click", () => _dismissToast(toastId));

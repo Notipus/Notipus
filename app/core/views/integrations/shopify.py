@@ -213,8 +213,8 @@ def shopify_connect(request: HttpRequest) -> HttpResponseRedirect:
         return redirect("core:integrate_shopify")
 
     # shop_domain passed _is_valid_shop_domain immediately above.
-    # nosemgrep
-    auth_url = f"https://{shop_domain}/admin/oauth/authorize?{urlencode(auth_params)}"
+    query = urlencode(auth_params)
+    auth_url = f"https://{shop_domain}/admin/oauth/authorize?{query}"  # nosemgrep
 
     logger.info(f"Redirecting to Shopify OAuth for shop: {shop_domain}")
     return redirect(auth_url)
