@@ -28,7 +28,8 @@ from typing import Any
 
 from core.encrypted_cache import decrypt_cache_value
 from core.models import Person, Workspace
-from core.services.mail import send_email, workspace_admin_emails
+from core.services.mail import send_email
+from core.services.recipients import admin_emails
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -206,7 +207,7 @@ def fulfil_data_request(
     record_count = len(collected["notification_records"])
     people_count = len(collected["enriched_people"])
 
-    recipients = workspace_admin_emails(workspace)
+    recipients = admin_emails(workspace)
     subject = f"[Notipus] Shopify customer data request for {workspace.name}"
     identifier = email or customer_id or "unidentified customer"
     body = (

@@ -22,7 +22,8 @@ from typing import Any
 from django.conf import settings
 from django.core.cache import cache
 
-from .mail import send_email, workspace_admin_emails
+from .mail import send_email
+from .recipients import admin_emails
 
 logger = logging.getLogger(__name__)
 
@@ -175,18 +176,6 @@ def _dispatch_crossing_alert(
         _send_warning_alert(workspace, new_usage, limit)
 
 
-def _admin_emails(workspace: Any) -> list[str]:
-    """Return email addresses of the workspace's owners and admins.
-
-    Args:
-        workspace: Workspace to collect recipients for.
-
-    Returns:
-        Sorted, de-duplicated list of non-empty email addresses.
-    """
-    return workspace_admin_emails(workspace)
-
-
 def _billing_url() -> str:
     """Return the absolute URL of the billing dashboard."""
     return f"{settings.BASE_URL}/billing/"
@@ -222,7 +211,7 @@ Your event count resets on the first day of next month.
 
 - The Notipus Team
 """
-    _send(subject, body, _admin_emails(workspace))
+    _send(subject, body, admin_emails(workspace))
 
 
 def _send_exceeded_alert(workspace: Any, limit: int, hard_at: int) -> None:
@@ -242,7 +231,7 @@ You can upgrade any time here:
 
 - The Notipus Team
 """
-    _send(subject, body, _admin_emails(workspace))
+    _send(subject, body, admin_emails(workspace))
 
 
 def send_trial_ending_alert(
@@ -300,7 +289,7 @@ If you'd like to change or cancel your plan, you can do that any time here:
 
 - The Notipus Team
 """
-    _send(subject, body, _admin_emails(workspace))
+    _send(subject, body, admin_emails(workspace))
 
 
 def _send_trial_cancel_alert(workspace: Any, ends_on: str | None) -> None:
@@ -328,7 +317,7 @@ the trial ends:
 
 - The Notipus Team
 """
-    _send(subject, body, _admin_emails(workspace))
+    _send(subject, body, admin_emails(workspace))
 
 
 def _send_paused_alert(workspace: Any, limit: int, hard_at: int) -> None:
@@ -344,4 +333,4 @@ first day of next month, or immediately after you upgrade:
 
 - The Notipus Team
 """
-    _send(subject, body, _admin_emails(workspace))
+    _send(subject, body, admin_emails(workspace))

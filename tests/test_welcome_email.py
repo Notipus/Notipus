@@ -137,6 +137,20 @@ class TestWelcomeEmail:
         assert expected in mail.outbox[0].body
         assert expected in mail.outbox[0].alternatives[0][0]
 
+    def test_names_every_destination_channel(self, user: User) -> None:
+        """Notipus delivers to three channels, so the copy cannot assume one.
+
+        A new signup has not picked a destination yet, and plenty choose
+        Telegram or Teams - an email promising alerts "in Slack" is wrong
+        for them before they have even started.
+        """
+        send_welcome_email(user)
+
+        for part in (mail.outbox[0].body, mail.outbox[0].alternatives[0][0]):
+            flat = _flat(part)
+            for channel in ("Slack", "Telegram", "Microsoft Teams"):
+                assert channel in flat
+
     def test_promises_only_free_tier_enrichment(self, user: User) -> None:
         """Contact details and lifetime value are Pro, so never promise them.
 

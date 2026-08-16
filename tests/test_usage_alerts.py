@@ -318,7 +318,7 @@ class TestTrialEndingAlert:
     ) -> None:
         """Even a failing recipient query is swallowed and logged."""
         with patch(
-            "core.services.usage_alerts._admin_emails",
+            "core.services.usage_alerts.admin_emails",
             side_effect=Exception("db down"),
         ):
             send_trial_ending_alert(workspace, ends_on="February 8, 2026")

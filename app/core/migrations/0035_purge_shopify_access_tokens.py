@@ -59,7 +59,7 @@ def noop_reverse(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0033_add_teams_notifications"),
+        ("core", "0034_add_onboarding_nudge_sent_at"),
     ]
 
     operations = [
