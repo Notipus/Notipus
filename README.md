@@ -568,7 +568,7 @@ To enable Shopify OAuth integration, you need to create a Shopify app in the [Sh
 
 It contains no secrets. The client ID is public — it appears in every OAuth authorize URL — and the client secret is supplied through the environment.
 
-CI needs one repository secret, `SHOPIFY_CLI_PARTNERS_TOKEN`, created in the Partner Dashboard under **Settings → CLI token**. Pull requests that touch the file deploy with `--no-release`, which validates it against Shopify without changing what merchants have; pushes to `master` release it.
+CI needs a token secret. The CLI accepts either `SHOPIFY_APP_AUTOMATION_TOKEN` (created in the Developer Dashboard, and what it looks for first) or `SHOPIFY_CLI_PARTNERS_TOKEN` (the legacy Partner Dashboard equivalent, under **Settings → CLI token**). The workflow passes both, so set whichever your dashboard offers. Pull requests that touch the file deploy with `--no-release`, which validates it against Shopify without changing what merchants have; pushes to `master` release it.
 
 For local work against a throwaway app, copy it to `shopify.app.<name>.toml` (gitignored), point the URLs at your tunnel, and use `shopify app deploy --config <name>`.
 
