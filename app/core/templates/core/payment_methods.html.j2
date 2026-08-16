@@ -4,25 +4,22 @@
     Payment methods - Notipus
 {% endblock title %}
 
+{% comment %}
+Cards live in Stripe, not here: the view returns an empty list because we never
+fetch them, and the Stripe customer portal is what actually adds, replaces and
+removes them. This page used to render Add / Make default / Remove buttons whose
+handlers showed a success toast and did nothing, so it told people their card
+had been removed while it was still on file. Everything now routes to the portal,
+which is the only thing that can carry the action out.
+{% endcomment %}
+
 {% block content %}
     <c-page width="narrow"
             back="{% url 'core:billing_dashboard' %}"
             back_label="Billing"
             title="Payment methods"
-            subtitle="The cards we charge for this workspace.">
-        {% if not has_payment_method %}
-            <c-card>
-                <c-empty-state icon="credit-card"
-                               title="No payment method yet"
-                               description="Add a card so your subscription keeps running when the trial ends.">
-                    <c-slot name="actions">
-                        <c-button icon="plus" onclick="addPaymentMethod()">
-                            Add a card
-                        </c-button>
-                    </c-slot>
-                </c-empty-state>
-            </c-card>
-        {% else %}
+            subtitle="The card we charge for this workspace.">
+        {% if payment_methods %}
             <c-card title="Saved cards" icon="credit-card" flush>
                 <c-list>
                     {% for payment_method in payment_methods %}
@@ -30,69 +27,43 @@
                                     description="Expires {{ payment_method.exp_month }}/{{ payment_method.exp_year }}"
                                     icon="credit-card">
                             <c-slot name="actions">
-                                {% if payment_method.is_default %}
-                                    <c-badge tone="success">
-                                        Default
-                                    </c-badge>
-                                {% else %}
-                                    <c-button variant="link"
-                                              size="sm"
-                                              onclick="setDefaultPaymentMethod('{{ payment_method.id }}')">
-                                        Make default
-                                    </c-button>
-                                {% endif %}
-                                <c-button variant="link-danger"
-                                          size="sm"
-                                          onclick="deletePaymentMethod('{{ payment_method.id }}')">
-                                    Remove
-                                </c-button>
+                                {% if payment_method.is_default %}<c-badge tone="success">Default</c-badge>{% endif %}
                             </c-slot>
                         </c-list.row>
                     {% endfor %}
                 </c-list>
                 <c-slot name="footer">
-                    <c-button variant="secondary"
+                    <c-button href="{% url 'core:billing_portal' %}"
+                              variant="secondary"
                               size="sm"
-                              icon="plus"
-                              onclick="addPaymentMethod()">
-                        Add another card
-                    </c-button>
+                              icon="external-link">Manage cards in Stripe</c-button>
                 </c-slot>
+            </c-card>
+        {% elif has_payment_method %}
+            <c-card title="A card is on file" icon="credit-card">
+                <p class="text-body text-content-muted">
+                    Stripe holds your card details, so we can't show them here. Use the billing portal to see the card
+                    we charge, replace it, or add a backup.
+                </p>
+                <c-slot name="actions">
+                    <c-button href="{% url 'core:billing_portal' %}" icon="external-link">Open billing portal</c-button>
+                </c-slot>
+            </c-card>
+        {% else %}
+            <c-card>
+                <c-empty-state icon="credit-card"
+                               title="No payment method yet"
+                               description="Add a card in the billing portal so your subscription keeps running when the trial ends.">
+                    <c-slot name="actions">
+                        <c-button href="{% url 'core:billing_portal' %}" icon="external-link">Open billing portal</c-button>
+                    </c-slot>
+                </c-empty-state>
             </c-card>
         {% endif %}
 
         <c-alert tone="info" title="Card details never reach our servers">
-            Stripe collects and stores them directly. We only see the brand, the last four digits and the expiry date.
+            Stripe collects and stores them directly. We only ever see the brand, the last four digits and the expiry
+            date.
         </c-alert>
     </c-page>
 {% endblock content %}
-
-{% block extra_scripts %}
-    <script>
-        function addPaymentMethod() {
-            // Placeholder until the Stripe setup flow is wired up.
-            NotipusUI.toast('Adding a card is not available yet.', 'info');
-        }
-
-        async function setDefaultPaymentMethod(paymentMethodId) {
-            const confirmed = await NotipusUI.confirmAction(
-                'Make this the default card?',
-                'Future charges for this workspace use this card.',
-                'Make default'
-            );
-            if (confirmed) {
-                NotipusUI.toast('Default card updated', 'success');
-            }
-        }
-
-        async function deletePaymentMethod(paymentMethodId) {
-            const confirmed = await NotipusUI.confirmDelete(
-                'Any subscription paying with this card needs a new one before its next charge.',
-                'card'
-            );
-            if (confirmed) {
-                NotipusUI.toast('Card removed', 'success');
-            }
-        }
-    </script>
-{% endblock extra_scripts %}

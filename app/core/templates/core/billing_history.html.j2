@@ -61,12 +61,12 @@
                                     </c-badge>
                                 {% endif %}
                             </c-table.cell>
+                            {% comment %}
+                            Stripe hosts the receipts; we never generate PDFs. This used to
+                            call a downloadInvoice() stub that only raised a toast.
+                            {% endcomment %}
                             <c-table.cell align="right">
-                                <c-button variant="link"
-                                          size="sm"
-                                          onclick="downloadInvoice('{{ invoice.id }}')">
-                                    Download
-                                </c-button>
+                                <c-button href="{% url 'core:billing_portal' %}" variant="link" size="sm">Receipt</c-button>
                             </c-table.cell>
                         </tr>
                     {% endfor %}
@@ -113,12 +113,3 @@
         </c-alert>
     </c-page>
 {% endblock content %}
-
-{% block extra_scripts %}
-    <script>
-        function downloadInvoice(invoiceId) {
-            // Placeholder until invoice PDFs are wired up to the billing provider.
-            NotipusUI.toast('Invoice downloads are not available yet.', 'info');
-        }
-    </script>
-{% endblock extra_scripts %}

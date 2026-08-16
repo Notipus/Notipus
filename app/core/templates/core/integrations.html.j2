@@ -284,9 +284,8 @@
                 <i class="ti ti-loader-2 animate-spin" aria-hidden="true"></i>
                 Loading your channels…
             </p>
-            <select id="slack-channel-select"
-                    class="hidden block w-full rounded-control border border-border-control bg-surface px-3 py-2 text-body text-content focus:outline-none focus:ring-2 focus:ring-focus focus:ring-offset-1">
-            </select>
+            {% comment %}Options are filled in by openSlackConfigModal below.{% endcomment %}
+            <c-select id="slack-channel-select" bare class="hidden" />
             <p id="slack-channel-error"
                class="mt-1.5 hidden text-body text-danger-text"
                role="alert"></p>

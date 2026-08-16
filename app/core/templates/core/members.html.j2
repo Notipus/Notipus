@@ -78,17 +78,18 @@
                                           action="{% url 'core:change_role' member.id %}"
                                           class="flex items-center">
                                         {% csrf_token %}
-                                        <label for="role-{{ member.id }}" class="sr-only">Role for {{ member.user.email }}</label>
-                                        <select name="role"
-                                                id="role-{{ member.id }}"
-                                                onchange="this.form.submit()"
-                                                class="rounded-control border border-border-control bg-surface px-2 py-1 text-caption text-content focus:outline-none focus:ring-2 focus:ring-focus focus:ring-offset-1">
+                                        <c-select name="role"
+                                                  id="role-{{ member.id }}"
+                                                  size="sm"
+                                                  bare
+                                                  aria-label="Role for {{ member.user.email }}"
+                                                  onchange="this.form.submit()">
                                             <option value="user" {% if member.role == "user" %}selected{% endif %}>Member</option>
                                             <option value="admin" {% if member.role == "admin" %}selected{% endif %}>Admin</option>
                                             {% if current_member.role == "owner" %}
                                                 <option value="owner" {% if member.role == "owner" %}selected{% endif %}>Owner</option>
                                             {% endif %}
-                                        </select>
+                                        </c-select>
                                     </form>
 
                                     <form method="post"
