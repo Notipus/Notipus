@@ -50,16 +50,21 @@ SHOPIFY_EVENT_CATEGORIES: dict[str, dict[str, str | list[str] | bool]] = {
         "topics": ["refunds/create"],
         "default": True,
     },
-    # Off, and not currently deliverable. These topics need
+    # Hidden, because it cannot deliver. These topics need
     # read_own_subscription_contracts, which Shopify gates behind an
     # access request and which only covers contracts belonging to the
-    # requesting app. Notipus creates none - merchants use Recharge,
-    # Shopify Subscriptions and similar - so the scope would grant
-    # nothing, and no scope exists for reading another app's contracts.
+    # requesting app. Notipus creates none - merchants run subscriptions
+    # through Recharge, Shopify Subscriptions and similar - so the scope
+    # would grant nothing, and Shopify documents no scope for reading
+    # another app's contracts. The topics are not declared in
+    # shopify.app.toml for the same reason.
     #
-    # The category is kept because the parsing is written and tested: if
-    # the topics ever become available it is a config change, not a
-    # rewrite. Until then a merchant can enable it and receive nothing.
+    # Offering it would advertise something that returns nothing: a
+    # merchant ticks the box and never hears about a subscription again.
+    #
+    # The entry stays because it is still the mapping from these topics to
+    # a category - the parsing is written and tested, so making them
+    # available again means deleting one flag, not a rewrite.
     "subscriptions": {
         "label": "Subscriptions",
         "description": "Subscription contracts and recurring billing",
@@ -72,6 +77,7 @@ SHOPIFY_EVENT_CATEGORIES: dict[str, dict[str, str | list[str] | bool]] = {
             "subscription_billing_attempts/challenged",
         ],
         "default": False,
+        "hidden": True,
     },
     "fulfillment": {
         "label": "Fulfillment",
@@ -112,6 +118,23 @@ def _get_topics_for_categories(enabled_categories: list[str]) -> list[str]:
             if isinstance(category_topics, list):
                 topics.extend(category_topics)
     return topics
+
+
+def _selectable_categories() -> dict[str, dict[str, str | list[str] | bool]]:
+    """Return the categories a merchant may actually choose.
+
+    Hidden categories still map their topics, but are neither offered nor
+    accepted: a category that can never deliver is a promise the app does
+    not keep.
+
+    Returns:
+        The category config minus anything marked hidden.
+    """
+    return {
+        key: config
+        for key, config in SHOPIFY_EVENT_CATEGORIES.items()
+        if not config.get("hidden")
+    }
 
 
 def _get_default_categories() -> list[str]:
@@ -160,7 +183,7 @@ def integrate_shopify(request: HttpRequest) -> HttpResponse | HttpResponseRedire
         "workspace": workspace,
         "integration": existing_integration,
         "shopify_configured": bool(settings.SHOPIFY_CLIENT_ID),
-        "event_categories": SHOPIFY_EVENT_CATEGORIES,
+        "event_categories": _selectable_categories(),
         "enabled_categories": enabled_categories,
     }
     return render(request, "core/integrate_shopify.html.j2", context)
@@ -214,7 +237,7 @@ def shopify_connect(request: HttpRequest) -> HttpResponseRedirect:
 
     # Get selected event categories and validate against known categories
     raw_categories = request.POST.getlist("event_categories")
-    valid_category_keys = set(SHOPIFY_EVENT_CATEGORIES.keys())
+    valid_category_keys = set(_selectable_categories())
     selected_categories = [c for c in raw_categories if c in valid_category_keys]
 
     # Default to all categories if none selected or all were invalid
@@ -446,7 +469,7 @@ def update_shopify_events(request: HttpRequest) -> HttpResponseRedirect:
 
     # Get new selected categories and validate against known categories
     raw_categories = request.POST.getlist("event_categories")
-    valid_category_keys = set(SHOPIFY_EVENT_CATEGORIES.keys())
+    valid_category_keys = set(_selectable_categories())
     new_categories = [c for c in raw_categories if c in valid_category_keys]
 
     if not new_categories:
