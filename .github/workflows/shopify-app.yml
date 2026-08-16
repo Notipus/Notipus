@@ -8,17 +8,17 @@ name: Shopify App Config
 # merchant's webhooks are delivered, so a stale value silently stops the
 # integration for everyone.
 #
-# Runs only when the file changes. Each deploy creates a new app version
-# in Shopify, so deploying on unrelated pushes would bury real changes
-# in noise.
+# Runs when the file changes. Pushes and pull requests validate it
+# against Shopify without touching the app; releasing is a manual
+# dispatch, because the configuration names webhook URLs the running app
+# has to serve and this workflow races the application deploy.
 
 on:
   push:
     branches: [master]
-    # The workflow itself counts: a change to how the config is deployed
+    # The workflow itself counts: a change to how the config is checked
     # is worth exercising immediately rather than leaving it untested
-    # until the next config edit. Re-applying an unchanged config is
-    # harmless - it creates a version identical to the live one.
+    # until the next config edit.
     paths:
       - shopify.app.toml
       - .github/workflows/shopify-app.yml
@@ -29,9 +29,12 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: Release to merchants (uncheck to only create the version)
+        description: >-
+          Release to merchants. Only do this once the deployed app serves
+          the webhook URLs this configuration names. Unchecked creates an
+          unreleased version instead.
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -49,17 +52,19 @@ jobs:
         with:
           node-version: "22"
 
-      # A pull request must not change the live app, so it creates an
-      # unreleased version instead. That still surfaces the errors worth
-      # catching - an invalid topic, a missing scope, an unapproved
-      # protected-data subscription - none of which are visible until
-      # Shopify itself parses the file.
-      # Pull requests validate and stop there. --no-release is not a dry
-      # run: it still creates a version on the live app, so using it here
-      # would mean every pull request - from any branch, merged or not -
-      # left a version behind on the app merchants install.
+      # Automatic runs only ever check. --no-release is not a dry run: it
+      # still creates a version on the live app, so it is never used for
+      # validation.
+      #
+      # Releasing is left to a manual dispatch because the configuration
+      # names webhook URLs that the running app has to serve. This
+      # workflow and the application deploy are triggered by the same
+      # push and race each other, so an automatic release could point
+      # every merchant's webhooks at endpoints the deployed code does not
+      # have yet. Dispatching it deliberately, once the app is out, keeps
+      # that ordering in human hands.
       - name: Validate configuration
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         run: npx --yes @shopify/cli@4 app config validate --no-color
         env:
           SHOPIFY_APP_AUTOMATION_TOKEN:
@@ -73,18 +78,17 @@ jobs:
       # --allow-updates skips the confirmation prompt when releasing;
       # --no-release never reaches a prompt because nothing is released.
       - name: Decide whether to release
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         id: mode
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
-            && [ "${{ inputs.release }}" != "true" ]; then
+          if [ "${{ inputs.release }}" != "true" ]; then
             echo "flag=--no-release" >> "$GITHUB_OUTPUT"
           else
             echo "flag=--allow-updates" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Deploy configuration
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         run: |
           npx --yes @shopify/cli@4 app deploy \
             --no-color \
