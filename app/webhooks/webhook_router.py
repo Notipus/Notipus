@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from core.models import Integration, Workspace
 from django.conf import settings
-from django.http import HttpRequest, JsonResponse
+from django.http import Http404, HttpRequest, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -677,6 +677,23 @@ def customer_shopify_webhook(
             log_provider_name="shopify",
         )
 
+    except Http404:
+        # An address for a workspace or integration that no longer
+        # exists. Reporting 500 would have the provider retry for two
+        # days and then disable the endpoint; 404 says plainly that
+        # there is nothing here.
+        logger.warning(
+            "Shopify webhook for unknown workspace/integration %s", organization_uuid
+        )
+        return JsonResponse(
+            {
+                "status": "error",
+                "error": "NotFound",
+                "message": "No active Shopify integration for this workspace",
+                "code": 404,
+            },
+            status=404,
+        )
     except Exception as e:
         logger.error(f"Error in customer Shopify webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
