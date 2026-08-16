@@ -1,0 +1,83 @@
+name: Shopify App Config
+
+# Applies shopify.app.toml to the Shopify app: URLs, access scopes,
+# webhook subscriptions and the mandatory privacy compliance endpoints.
+#
+# Doing this by hand is how the configuration and the repository drift
+# apart - and the configuration is not cosmetic. It decides where every
+# merchant's webhooks are delivered, so a stale value silently stops the
+# integration for everyone.
+#
+# Runs only when the file changes. Each deploy creates a new app version
+# in Shopify, so deploying on unrelated pushes would bury real changes
+# in noise.
+
+on:
+  push:
+    branches: [master]
+    # The config file only. Editing the workflow itself must not mint an
+    # app version for a change the merchants never see.
+    paths:
+      - shopify.app.toml
+  pull_request:
+    # Workflow edits are validated here, where the run cannot release.
+    paths:
+      - shopify.app.toml
+      - .github/workflows/shopify-app.yml
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release to merchants (uncheck to only create the version)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy app configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # A pull request must not change the live app, so it creates an
+      # unreleased version instead. That still surfaces the errors worth
+      # catching - an invalid topic, a missing scope, an unapproved
+      # protected-data subscription - none of which are visible until
+      # Shopify itself parses the file.
+      - name: Decide whether to release
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "flag=--no-release" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+            && [ "${{ inputs.release }}" != "true" ]; then
+            echo "flag=--no-release" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy configuration
+        run: |
+          npx --yes @shopify/cli@4 app deploy \
+            --allow-updates \
+            --no-color \
+            ${{ steps.mode.outputs.flag }} \
+            --source-control-url "$SOURCE_URL" \
+            --message "$DEPLOY_MESSAGE"
+        env:
+          SHOPIFY_CLI_PARTNERS_TOKEN: ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+          # Through the environment, not the command line: a commit
+          # message containing a quote or a newline would otherwise break
+          # out of the shell command.
+          DEPLOY_MESSAGE: ${{ github.event.head_commit.message || 'manual deploy' }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          # Stops the CLI opening a browser or waiting on a prompt.
+          CI: "1"

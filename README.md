@@ -562,31 +562,36 @@ To enable Shopify OAuth integration, you need to create a Shopify app in the [Sh
 
 > **Note:** `BASE_URL` must be an HTTPS address. Shopify only delivers webhooks to HTTPS endpoints, so connecting a store from a plain-HTTP instance fails at webhook registration. For local end-to-end testing, put a tunnel (`cloudflared`, `ngrok`) in front of the dev server and point `BASE_URL`, `SHOPIFY_REDIRECT_URI`, and the app's allowed redirection URLs at the tunnel hostname.
 
-**Shopify CLI Configuration:**
+**App configuration:**
 
-The app uses `shopify.app.toml` for Shopify CLI configuration. Copy the example file and configure it:
+`shopify.app.toml` is the source of truth for the app's URLs, access scopes, webhook subscriptions and privacy compliance endpoints. It is committed, and CI applies it (`.github/workflows/shopify-app.yml`) whenever it changes. Edit it here rather than in the dashboard: a dashboard edit puts the two out of step and the next deploy silently reverts it.
 
-```bash
-cp shopify.app.toml.example shopify.app.toml
-# Edit shopify.app.toml with your client_id and URLs
-```
+It contains no secrets. The client ID is public — it appears in every OAuth authorize URL — and the client secret is supplied through the environment.
 
-Then deploy your app configuration to sync with Shopify:
+CI needs one repository secret, `SHOPIFY_CLI_PARTNERS_TOKEN`, created in the Partner Dashboard under **Settings → CLI token**. Pull requests that touch the file deploy with `--no-release`, which validates it against Shopify without changing what merchants have; pushes to `master` release it.
 
-```bash
-shopify app deploy
-```
+For local work against a throwaway app, copy it to `shopify.app.<name>.toml` (gitignored), point the URLs at your tunnel, and use `shopify app deploy --config <name>`.
 
-**OAuth Scopes:**
+**Access scopes:**
 
 | Scope | Purpose |
 |-------|---------|
-| `read_orders` | Subscribe to order webhooks (`orders/create`, `orders/paid`, etc.) |
-| `read_customers` | Subscribe to customer webhooks (`customers/create`, `customers/update`, etc.) |
+| `read_orders` | Order and refund events |
+| `read_customers` | Customer events |
+| `read_fulfillments` | `fulfillments/create` and `fulfillments/update`. Shopify refuses the deploy without it — `read_orders` alone is not enough |
 
-> **Note:** There is no `write_webhooks` scope in Shopify. Webhook creation permissions are controlled by having the appropriate read scope for the resource you want to subscribe to.
+Notipus requests nothing else, and no write scopes. Notably absent is `read_users` ("View staff and contributor data"): Notipus never touches staff data, and it is a high-sensitivity scope that would invite review scrutiny for no benefit.
 
-Webhook subscriptions are managed through the GraphQL Admin API (`webhookSubscriptionCreate` / `webhookSubscriptionDelete`). The REST Admin API is legacy, and apps created after April 1, 2025 cannot use it at all.
+> **Note:** There is no `write_webhooks` scope in Shopify. Permission to subscribe comes from holding the matching read scope for the resource.
+
+**No access token is stored.** Webhook subscriptions are declared in `shopify.app.toml`, so Shopify delivers events without Notipus ever calling the Admin API. The OAuth exchange still runs — completing it is what proves the merchant authorised the install — but the resulting token is discarded rather than persisted. A stored token would be a standing ability to read a merchant's entire order and customer history, which is far more access than delivering notifications needs.
+
+Because subscriptions are app-level, every installed store sends every declared topic. Which of them a workspace wants is decided on receipt, from the categories chosen on the integration page.
+
+**Before submitting to the App Store:**
+
+- **Protected customer data access** must be granted: Partner Dashboard → the app → **API access requests** → Protected customer data access. Request each field individually (name, email, address, phone). Without it Shopify refuses to accept a version that subscribes to order or customer topics at all. No review is required while the app is installed only on a development store.
+- The mandatory privacy webhooks (`customers/data_request`, `customers/redact`, `shop/redact`) are implemented and declared; they answer `401` on an invalid HMAC, which Shopify checks explicitly.
 
 ### Domain Enrichment (Brandfetch)
 
