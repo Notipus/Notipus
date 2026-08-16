@@ -186,19 +186,39 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         return data
 
     def _is_test_webhook(self, topic: str, request: HttpRequest) -> bool:
-        """Check if this is a test webhook.
+        """Check whether this is a bare test ping with no event behind it.
+
+        Only the ``test`` topic qualifies. The ``X-Shopify-Test`` header
+        does *not*: Shopify sets it on orders paid through a test payment
+        gateway, which are ordinary orders with real line items and a
+        real customer. Skipping those made the integration impossible to
+        demonstrate - on a development store every order carries the
+        header, so a merchant evaluating Notipus, or anyone verifying
+        their setup with a test order, saw nothing at all and would
+        reasonably conclude it was broken.
+
+        Test-mode events are parsed like any other and flagged through
+        ``_is_test_event`` so downstream can label them.
 
         Args:
             topic: The webhook topic.
             request: The incoming HTTP request.
 
         Returns:
-            True if this is a test webhook, False otherwise.
+            True only for Shopify's contentless test ping.
         """
-        return (
-            topic == "test"
-            or request.headers.get("X-Shopify-Test", "").lower() == "true"
-        )
+        return topic == "test"
+
+    def _is_test_event(self, request: HttpRequest) -> bool:
+        """Report whether Shopify flagged this event as test-mode.
+
+        Args:
+            request: The incoming HTTP request.
+
+        Returns:
+            True when the order was placed against a test gateway.
+        """
+        return request.headers.get("X-Shopify-Test", "").lower() == "true"
 
     def _extract_shopify_customer_id(
         self, data: dict[str, Any], topic: str
@@ -656,7 +676,7 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         # Store webhook data for later use
         self._current_webhook_data = data
 
-        # Check for test webhook
+        # Shopify's contentless test ping carries no event to report.
         if self._is_test_webhook(topic, request):
             return None
 
@@ -694,12 +714,22 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             customer_id = self._extract_shopify_customer_id(data, topic)
             event = self._build_shopify_event_data(event_type, customer_id, data, topic)
 
+        # Flag test-gateway orders so a notification can say so. They are
+        # real orders and are processed like any other; the merchant just
+        # needs to know no money moved.
+        if self._is_test_event(request):
+            event.setdefault("metadata", {})["is_test"] = True
+
         # Dedup keys on the signed body, never the unsigned
         # X-Shopify-Webhook-Id header: Shopify's HMAC covers only the
         # body, so a captured body replayed with a fresh webhook-id
         # header must map to the SAME dedup key. Redeliveries resend the
         # identical body (identical hash), while distinct events differ
         # in signed fields (resource id, updated_at, financial_status).
+        #
+        # Confirmed against a live store: orders/create and orders/paid
+        # for one order arrive byte-identical, which is why the router's
+        # key includes the event type.
         event["content_hash"] = signed_content_hash(request)
 
         return event
