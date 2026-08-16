@@ -54,17 +54,29 @@ jobs:
       # catching - an invalid topic, a missing scope, an unapproved
       # protected-data subscription - none of which are visible until
       # Shopify itself parses the file.
+      # Pull requests validate and stop there. --no-release is not a dry
+      # run: it still creates a version on the live app, so using it here
+      # would mean every pull request - from any branch, merged or not -
+      # left a version behind on the app merchants install.
+      - name: Validate configuration
+        if: github.event_name == 'pull_request'
+        run: npx --yes @shopify/cli@4 app config validate --no-color
+        env:
+          SHOPIFY_APP_AUTOMATION_TOKEN:
+            ${{ secrets.SHOPIFY_APP_AUTOMATION_TOKEN || secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+          SHOPIFY_CLI_PARTNERS_TOKEN:
+            ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN || secrets.SHOPIFY_APP_AUTOMATION_TOKEN }}
+          CI: "1"
+
       # --allow-updates and --no-release are mutually exclusive, so each
       # mode contributes its own flag rather than combining them.
-      # --allow-updates is what skips the confirmation prompt when
-      # releasing; --no-release never reaches a prompt because nothing
-      # is released.
+      # --allow-updates skips the confirmation prompt when releasing;
+      # --no-release never reaches a prompt because nothing is released.
       - name: Decide whether to release
+        if: github.event_name != 'pull_request'
         id: mode
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "flag=--no-release" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
             && [ "${{ inputs.release }}" != "true" ]; then
             echo "flag=--no-release" >> "$GITHUB_OUTPUT"
           else
@@ -72,6 +84,7 @@ jobs:
           fi
 
       - name: Deploy configuration
+        if: github.event_name != 'pull_request'
         run: |
           npx --yes @shopify/cli@4 app deploy \
             --no-color \
