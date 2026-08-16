@@ -79,13 +79,20 @@ jobs:
             --source-control-url "$SOURCE_URL" \
             --message "$DEPLOY_MESSAGE"
         env:
-          # The CLI resolves SHOPIFY_APP_AUTOMATION_TOKEN first and falls
-          # back to SHOPIFY_CLI_PARTNERS_TOKEN, so either secret works.
-          # Both are passed because which one exists depends on whether
-          # the app is administered from the Developer Dashboard or the
-          # legacy Partner Dashboard.
-          SHOPIFY_APP_AUTOMATION_TOKEN: ${{ secrets.SHOPIFY_APP_AUTOMATION_TOKEN }}
-          SHOPIFY_CLI_PARTNERS_TOKEN: ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+          # The CLI reads SHOPIFY_APP_AUTOMATION_TOKEN first and falls
+          # back to SHOPIFY_CLI_PARTNERS_TOKEN. Which of those a token is
+          # depends on where it was created - the Developer Dashboard
+          # issues app-scoped automation tokens, the legacy Partner
+          # Dashboard organisation-wide ones - and a token in the wrong
+          # variable is simply ignored, producing an "authorization is
+          # required" error that says nothing about the cause.
+          #
+          # So whichever secret is set is offered under both names. The
+          # CLI tries them in order and one of them is right.
+          SHOPIFY_APP_AUTOMATION_TOKEN:
+            ${{ secrets.SHOPIFY_APP_AUTOMATION_TOKEN || secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+          SHOPIFY_CLI_PARTNERS_TOKEN:
+            ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN || secrets.SHOPIFY_APP_AUTOMATION_TOKEN }}
           # Through the environment, not the command line: a commit
           # message containing a quote or a newline would otherwise break
           # out of the shell command.
