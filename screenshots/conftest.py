@@ -929,6 +929,12 @@ def play_slack_finale(page: Page, hold_ms: int = 4500) -> None:
     pace(page, hold_ms)
 
 
+def play_shopify_finale(page: Page, hold_ms: int = 4500) -> None:
+    """Show the store-events view and hold it on screen for recordings."""
+    show_shopify_finale(page)
+    pace(page, hold_ms)
+
+
 # Telegram-style finale for the telegram screencast: a chat where the
 # Notipus notification bubble slides in after a beat. Uses the app's own
 # logo (relative URL, served by the live server since the page keeps the
