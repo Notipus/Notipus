@@ -441,16 +441,26 @@ PLUGINS = {
             "config": {"api_key": "...", "timeout": 10},
         }
     },
-    "sources": {
+    # Note the singular keys: "source" and "destination", not their
+    # plurals. An unrecognised key is ignored rather than rejected, so a
+    # plural one fails silently.
+    "source": {
         "stripe": {"enabled": True},
         "shopify": {"enabled": True},
         "chargify": {"enabled": True},
     },
-    "destinations": {
+    "destination": {
         "slack": {"enabled": True},
+        "telegram": {"enabled": True},
+        "teams": {"enabled": True},
     },
 }
 ```
+
+Discovered plugins are enabled by default, so this block is where you
+*configure* one — passing an API key, or turning one off with
+`{"enabled": False}` — rather than a list you must add to before a
+plugin will run.
 
 ### Authentication
 

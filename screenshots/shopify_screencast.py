@@ -1,8 +1,8 @@
 """Record the Shopify setup screencast for the App Store listing.
 
-Shopify asks for a screencast demonstrating onboarding, with "clear
-step-by-step instructions showing how to set up your apps core
-features", so this follows the path a merchant takes: open the
+Shopify asks for a screencast demonstrating onboarding, with clear
+step-by-step instructions for setting up the app's core features, so
+this follows the path a merchant takes: open the
 integrations hub, connect a store, choose which events to receive, and
 watch those events arrive.
 
