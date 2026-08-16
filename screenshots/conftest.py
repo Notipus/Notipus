@@ -65,7 +65,74 @@ MOBILE_VIEWPORT = {"width": 360, "height": 640}
 # 1600x1000 pixels — captured at 1:1 scale, viewport only (no
 # full-page scrolling).
 SLACK_LISTING_VIEWPORT = {"width": 1600, "height": 1000}
+# Shopify App Store listing screenshots. Shopify publishes the content
+# rules but not a pixel size - that lives in the submission form - so
+# this is a plain 16:9 frame at 1:1, which scales cleanly to whatever
+# the form asks for. Viewport-only, because the requirements forbid
+# browser windows and desktop backgrounds.
+SHOPIFY_LISTING_VIEWPORT = {"width": 1600, "height": 900}
 OUTPUT_DIR = Path(__file__).parent / "output"
+
+# A Shopify store's own feed, for App Store listing captures. The mixed
+# set below is mostly Stripe and Maxio, which would show a prospective
+# Shopify merchant a screenshot of somebody else's product.
+SHOPIFY_EVENTS: list[dict[str, Any]] = [
+    {
+        "type": "order",
+        "event_type": "order_created",
+        "provider": "shopify",
+        "status": "success",
+        "amount": 1280.50,
+        "currency": "USD",
+        "headline": "New order from Flingers",
+        "company_name": "Flingers",
+        "company_domain": "flingers.com",
+    },
+    {
+        "type": "payment",
+        "event_type": "payment_success",
+        "provider": "shopify",
+        "status": "success",
+        "amount": 449.00,
+        "currency": "USD",
+        "headline": "Payment received from Chotchkie's",
+        "company_name": "Chotchkie's",
+        "company_domain": "chotchkies.com",
+    },
+    {
+        "type": "order",
+        "event_type": "fulfillment_created",
+        "provider": "shopify",
+        "status": "success",
+        "amount": 1280.50,
+        "currency": "USD",
+        "headline": "Order shipped to Flingers",
+        "company_name": "Flingers",
+        "company_domain": "flingers.com",
+    },
+    {
+        "type": "order",
+        "event_type": "shipment_delivered",
+        "provider": "shopify",
+        "status": "success",
+        "amount": 899.00,
+        "currency": "USD",
+        "headline": "Delivered to Initrode",
+        "company_name": "Initrode",
+        "company_domain": "initrode.com",
+    },
+    {
+        "type": "payment",
+        "event_type": "refund_issued",
+        "provider": "shopify",
+        "status": "success",
+        "amount": 129.00,
+        "currency": "USD",
+        "headline": "Refund issued to Penetrode",
+        "company_name": "Penetrode",
+        "company_domain": "penetrode.com",
+    },
+]
 
 # Initech's customers, straight from the movie
 OFFICE_SPACE_EVENTS: list[dict[str, Any]] = [
@@ -173,17 +240,32 @@ def screenshot_settings(settings) -> None:
         "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
     }
     settings.BASE_URL = "https://app.notipus.com"
+    # The Shopify connect page refuses to render its form without a
+    # client id, showing "integration not configured - contact support"
+    # instead. That is correct behaviour and a terrible screenshot, so
+    # give it a placeholder. Nothing here talks to Shopify.
+    settings.SHOPIFY_CLIENT_ID = "shopify-client-id-for-captures"
 
 
-def _seed_activity(workspace: Workspace) -> None:
-    """Store three days of themed webhook activity in the cache."""
+def _seed_activity(
+    workspace: Workspace, events: list[dict[str, Any]] | None = None
+) -> None:
+    """Store three days of themed webhook activity in the cache.
+
+    Args:
+        workspace: Workspace the activity belongs to.
+        events: Event templates to seed, defaulting to the mixed-provider
+            set. Pass SHOPIFY_EVENTS for captures aimed at merchants who
+            only care about their own store.
+    """
+    events = events if events is not None else OFFICE_SPACE_EVENTS
     now = time.time()
     ws_id = str(workspace.uuid)
     for day_offset in range(3):
         date = timezone.now() - timezone.timedelta(days=day_offset)
         activity_key = f"webhook_activity:{ws_id}:{date.strftime('%Y-%m-%d')}"
         keys = []
-        for i, event in enumerate(OFFICE_SPACE_EVENTS):
+        for i, event in enumerate(events):
             # Thin out older days so the feed looks organic
             if (i + day_offset) % 2 == 0 and day_offset > 0:
                 continue
@@ -325,6 +407,35 @@ def slack_listing_page(
         live_server,
         session_cookie,
         viewport=SLACK_LISTING_VIEWPORT,
+        device_scale_factor=1,
+    )
+    yield context.new_page()
+    context.close()
+
+
+@pytest.fixture
+def shopify_listing_page(
+    browser: Browser,
+    live_server,
+    session_cookie: dict[str, str],
+    office_space_data: dict[str, Any],
+) -> Generator[Page, Any, None]:
+    """Authenticated page sized for Shopify App Store listings.
+
+    Reseeds the activity feed with Shopify events only: a merchant
+    evaluating this app should see their own store's events, not a feed
+    dominated by other providers.
+
+    Captures must use ``full_page=False``. Shopify's requirements forbid
+    browser windows and desktop backgrounds, and a full-page shot would
+    also grow past the 16:9 frame.
+    """
+    _seed_activity(office_space_data["workspace"], SHOPIFY_EVENTS)
+    context = _new_context(
+        browser,
+        live_server,
+        session_cookie,
+        viewport=SHOPIFY_LISTING_VIEWPORT,
         device_scale_factor=1,
     )
     yield context.new_page()
@@ -608,7 +719,7 @@ def recording_page_authed(
 # channel where the Notipus notification slides in after a beat. Uses
 # the app's own logo (relative URL, served by the live server since the
 # page keeps the app origin after set_content).
-SLACK_FINALE_HTML = """\
+_FINALE_SHELL_TEMPLATE = """\
 <!doctype html><html><head><meta charset="utf-8"><style>
   * { margin: 0; box-sizing: border-box; font-family: -apple-system,
       BlinkMacSystemFont, "Segoe UI", Lato, sans-serif; }
@@ -665,6 +776,19 @@ SLACK_FINALE_HTML = """\
     <div class="header"># billing-alerts
       <small>Payment events from Notipus</small></div>
     <div class="messages">
+__MESSAGES__
+    </div>
+  </div>
+  <script>
+    setTimeout(() => {
+      document.getElementById('incoming').classList.add('shown');
+    }, 1600);
+  </script>
+</body></html>
+"""
+
+
+_SLACK_MESSAGES = """\
       <div class="msg">
         <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
         <div>
@@ -718,20 +842,84 @@ SLACK_FINALE_HTML = """\
           </div>
         </div>
       </div>
-    </div>
-  </div>
-  <script>
-    setTimeout(() => {
-      document.getElementById('incoming').classList.add('shown');
-    }, 1600);
-  </script>
-</body></html>
 """
+
+_SHOPIFY_MESSAGES = """\
+      <div class="msg">
+        <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
+        <div>
+          <span class="author">Notipus</span>
+          <span class="app-badge">APP</span><span class="ts">9:40 AM</span>
+          <div class="attachment">
+            <div class="headline">&#128230; New order from Flingers</div>
+            <div class="meta">Order #1042 &middot; 3 items &middot;
+              orders@flingers.com</div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
+        <div>
+          <span class="author">Notipus</span>
+          <span class="app-badge">APP</span><span class="ts">10:04 AM</span>
+          <div class="attachment blue">
+            <div class="headline">&#128666; Order shipped to Flingers</div>
+            <div class="meta">Order #1042 &middot; UPS &middot;
+              1Z999AA10123456784</div>
+            <div class="insight info">In transit &middot; tracking live</div>
+          </div>
+        </div>
+      </div>
+      <div class="msg">
+        <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
+        <div>
+          <span class="author">Notipus</span>
+          <span class="app-badge">APP</span><span class="ts">11:18 AM</span>
+          <div class="attachment red">
+            <div class="headline">&#8617;&#65039; Refund issued to
+              Penetrode</div>
+            <div class="meta">Order #1038 &middot; 1 item returned</div>
+          </div>
+        </div>
+      </div>
+      <div class="msg" id="incoming">
+        <div class="avatar"><img src="/static/img/notipus-logo.png"></div>
+        <div>
+          <span class="author">Notipus</span>
+          <span class="app-badge">APP</span><span class="ts">11:52 AM</span>
+          <div class="attachment">
+            <div class="headline">&#9989; Delivered to Initrode</div>
+            <div class="meta">Order #1041 &middot; signed for at reception</div>
+            <div class="insight">&#128666; Carrier confirmed delivery</div>
+          </div>
+        </div>
+      </div>
+"""
+
+SLACK_FINALE_HTML = _FINALE_SHELL_TEMPLATE.replace("__MESSAGES__", _SLACK_MESSAGES)
+
+# The same shell with a store's events rather than a SaaS billing
+# feed, for Shopify App Store captures.
+SHOPIFY_FINALE_HTML = (
+    _FINALE_SHELL_TEMPLATE.replace("__MESSAGES__", _SHOPIFY_MESSAGES)
+    .replace("# billing-alerts", "# store-alerts")
+    .replace("Payment events from Notipus", "Store events from Notipus")
+)
 
 
 def show_slack_finale(page: Page) -> None:
     """Swap the page for the Slack-style view and wait for the alert."""
     page.set_content(SLACK_FINALE_HTML, wait_until="load")
+    page.wait_for_selector("#incoming.shown", timeout=10_000)
+
+
+def show_shopify_finale(page: Page) -> None:
+    """Swap the page for a store-events view and wait for the alert.
+
+    Same window, commerce content: orders, shipping and a delivery
+    rather than plans and trials.
+    """
+    page.set_content(SHOPIFY_FINALE_HTML, wait_until="load")
     page.wait_for_selector("#incoming.shown", timeout=10_000)
 
 
