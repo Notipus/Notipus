@@ -1,0 +1,55 @@
+{% comment %}
+Text input, with its label, help and error.
+
+Props:
+  name         form field name; also the id unless `id` is given
+  id           overrides the generated id
+  type         any HTML input type          (default: text)
+  value        current value
+  placeholder  an example, never a second label
+  label        label text
+  help         guidance under the field
+  error        error message; colours the border and replaces the help text
+  required     required attribute and a marked label
+  autofocus    focus on load
+  secret       for API keys, tokens and signing secrets
+
+`secret` never writes the stored value into the DOM — it renders an empty
+password field with autocomplete off, because a value= attribute is readable by
+any extension or injected script on the page. Ask the user to re-enter instead.
+
+Anything else (pattern, minlength, inputmode, data-*) passes through.
+{% endcomment %}
+<c-vars name=""
+        id=""
+        type="text"
+        value=""
+        placeholder=""
+        label=""
+        help=""
+        error=""
+        required=""
+        autofocus=""
+        secret=""
+        class="" />
+
+{% comment %}`for` is written as a quoted template rather than :for — Cotton's
+dynamic bindings resolve plain variables only, and this one needs a filter.{% endcomment %}
+<c-field :label="label"
+         for="{{ id|default:name }}"
+         :help="help"
+         :error="error"
+         :required="required"
+         :class="class">
+    <input type="{% if secret %}password{% else %}{{ type }}{% endif %}"
+           name="{{ name }}"
+           id="{{ id|default:name }}"
+           class="{% include 'cotton/_input_classes.html' %}"
+           {% if not secret and value %}value="{{ value }}"{% endif %}
+           {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+           {% if required %}required{% endif %}
+           {% if autofocus %}autofocus{% endif %}
+           {% if secret %}autocomplete="off"{% endif %}
+           {% if error %}aria-invalid="true" aria-describedby="{{ id|default:name }}-error"{% elif help %}aria-describedby="{{ id|default:name }}-help"{% endif %}
+           {{ attrs }}>
+</c-field>

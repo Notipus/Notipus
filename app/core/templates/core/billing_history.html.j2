@@ -2,269 +2,123 @@
 {% load humanize %}
 
 {% block title %}
-    Billing History - Notipus
+    Invoices - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
-        <!-- Header -->
-        <div class="max-w-6xl mx-auto pt-8 px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center">
-                <a href="{% url 'core:billing_dashboard' %}"
-                   class="mr-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200">
-                    <i class="ti ti-arrow-left text-xl"></i>
-                </a>
-                <div>
-                    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center gap-3">
-                        <span class="p-2 bg-primary-100 rounded-xl">
-                            <i class="ti ti-file-invoice text-primary-600 text-xl"></i>
-                        </span>
-                        Billing History
-                    </h1>
-                    <p class="mt-1 text-gray-500">View your invoices, payments, and billing activity</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Main content -->
-        <div class="max-w-6xl mx-auto py-8 sm:px-6 lg:px-8">
-            {% if invoices %}
-                <!-- Invoices Table -->
-                <div class="bg-white shadow-lg rounded-xl border border-gray-100 overflow-hidden">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h3 class="text-lg font-semibold text-gray-900">Invoices & Payments</h3>
-                        <p class="text-sm text-gray-600">Your complete billing history and downloadable invoices</p>
-                    </div>
-
-                    <div class="overflow-x-auto">
-                        <table class="min-w-full divide-y divide-gray-200">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th scope="col"
-                                        class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Invoice
-                                    </th>
-                                    <th scope="col"
-                                        class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Date
-                                    </th>
-                                    <th scope="col"
-                                        class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Amount
-                                    </th>
-                                    <th scope="col"
-                                        class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Status
-                                    </th>
-                                    <th scope="col"
-                                        class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Actions
-                                    </th>
-                                </tr>
-                            </thead>
-                            <tbody class="bg-white divide-y divide-gray-200">
-                                {% for invoice in invoices %}
-                                    <tr class="hover:bg-gray-50">
-                                        <td class="px-6 py-4 whitespace-nowrap">
-                                            <div class="flex items-center">
-                                                <div class="h-8 w-8 bg-blue-100 rounded-lg flex items-center justify-center">
-                                                    <svg class="h-4 w-4 text-blue-600"
-                                                         fill="none"
-                                                         stroke="currentColor"
-                                                         viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
-                                                        </path>
-                                                    </svg>
-                                                </div>
-                                                <div class="ml-3">
-                                                    <div class="text-sm font-medium text-gray-900">{{ invoice.number }}</div>
-                                                    <div class="text-sm text-gray-500">{{ invoice.description }}</div>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ invoice.date|date:"M j, Y" }}</td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${{ invoice.amount|floatformat:2|intcomma }}</td>
-                                        <td class="px-6 py-4 whitespace-nowrap">
-                                            {% if invoice.status == "paid" %}
-                                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                    <i class="ti ti-circle-check"></i> Paid
-                                                </span>
-                                            {% elif invoice.status == "pending" %}
-                                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                                                    <i class="ti ti-clock"></i> Pending
-                                                </span>
-                                            {% elif invoice.status == "failed" %}
-                                                <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
-                                                    <i class="ti ti-circle-x"></i> Failed
-                                                </span>
-                                            {% else %}
-                                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
-                                                    {{ invoice.status|title }}
-                                                </span>
-                                            {% endif %}
-                                        </td>
-                                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                            <div class="flex items-center space-x-3">
-                                                <a href="#"
-                                                   onclick="downloadInvoice('{{ invoice.id }}')"
-                                                   class="text-primary-600 hover:text-primary-900">Download</a>
-                                                <a href="#"
-                                                   onclick="viewInvoice('{{ invoice.id }}')"
-                                                   class="text-primary-600 hover:text-primary-900">View</a>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            {% else %}
-                <!-- No Billing History -->
-                <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 text-center">
-                    <div class="mx-auto h-24 w-24 bg-gray-100 rounded-full flex items-center justify-center mb-6">
-                        <svg class="h-12 w-12 text-gray-400"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
-                            </path>
-                        </svg>
-                    </div>
-                    <h3 class="text-xl font-semibold text-gray-900 mb-2">No billing history yet</h3>
-                    <p class="text-gray-600 mb-6">
-                        {% if workspace.subscription_status == "trial" %}
-                            You're currently trialing the {{ workspace.subscription_plan|title }} plan. Your billing history will appear here once your trial ends.
-                        {% else %}
-                            Your invoices and payment history will appear here.
+    <c-page back="{% url 'core:billing_dashboard' %}"
+            back_label="Billing"
+            title="Invoices"
+            subtitle="Every charge on this workspace, with receipts to download.">
+        {% if invoices %}
+            <c-card title="Invoices and payments" icon="file-invoice" flush>
+                <c-table caption="Invoices for {{ workspace.name }}">
+                    <c-slot name="head">
+                        <c-table.column>
+                            Invoice
+                        </c-table.column>
+                        <c-table.column>
+                            Date
+                        </c-table.column>
+                        <c-table.column align="right">
+                            Amount
+                        </c-table.column>
+                        <c-table.column>
+                            Status
+                        </c-table.column>
+                        <c-table.column align="right">
+                            Receipt
+                        </c-table.column>
+                    </c-slot>
+                    {% for invoice in invoices %}
+                        <tr class="transition-colors hover:bg-surface-muted">
+                            <c-table.cell>
+                                <span class="block font-medium text-content">{{ invoice.number }}</span>
+                                <span class="block text-content-muted">{{ invoice.description }}</span>
+                            </c-table.cell>
+                            <c-table.cell muted>
+                                {{ invoice.date|date:"M j, Y" }}
+                            </c-table.cell>
+                            <c-table.cell align="right" class="font-mono">
+                                ${{ invoice.amount|floatformat:2|intcomma }}
+                            </c-table.cell>
+                            <c-table.cell>
+                                {% if invoice.status == "paid" %}
+                                    <c-badge tone="success" icon="circle-check">
+                                        Paid
+                                    </c-badge>
+                                {% elif invoice.status == "pending" %}
+                                    <c-badge tone="warning" icon="clock">
+                                        Pending
+                                    </c-badge>
+                                {% elif invoice.status == "failed" %}
+                                    <c-badge tone="danger" icon="circle-x">
+                                        Failed
+                                    </c-badge>
+                                {% else %}
+                                    <c-badge>
+                                        {{ invoice.status|title }}
+                                    </c-badge>
+                                {% endif %}
+                            </c-table.cell>
+                            <c-table.cell align="right">
+                                <c-button variant="link"
+                                          size="sm"
+                                          onclick="downloadInvoice('{{ invoice.id }}')">
+                                    Download
+                                </c-button>
+                            </c-table.cell>
+                        </tr>
+                    {% endfor %}
+                </c-table>
+            </c-card>
+        {% else %}
+            <c-card>
+                <c-empty-state icon="file-invoice"
+                               title="No invoices yet"
+                               description="{% if workspace.subscription_status == 'trial' %}You're trialing the {{ workspace.subscription_plan|title }} plan. Your first invoice appears here when the trial ends.{% else %}Charges and receipts appear here once your first payment goes through.{% endif %}">
+                    <c-slot name="actions">
+                        {% if workspace.subscription_plan == "free" %}
+                            <c-button href="{% url 'core:upgrade_plan' %}" icon="trending-up">Choose a paid plan</c-button>
+                        {% elif workspace.subscription_status == "trial" %}
+                            <c-button href="{% url 'core:billing_portal' %}"
+                                      variant="secondary"
+                                      icon="settings">
+                                Manage subscription
+                            </c-button>
                         {% endif %}
-                    </p>
+                    </c-slot>
+                </c-empty-state>
+            </c-card>
+        {% endif %}
 
-                    {% if workspace.subscription_plan == "free" %}
-                        <a href="{% url 'core:upgrade_plan' %}"
-                           class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 transition-all duration-200">
-                            <svg class="mr-2 h-5 w-5"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
-                            </svg>
-                            Upgrade to Paid Plan
-                        </a>
-                    {% elif workspace.subscription_status == "trial" %}
-                        <a href="{% url 'core:billing_portal' %}"
-                           class="inline-flex items-center px-6 py-3 border border-primary-600 text-base font-medium rounded-lg text-primary-600 bg-white hover:bg-primary-50 transition-all duration-200">
-                            <svg class="mr-2 h-5 w-5"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
-                                </path>
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                            </svg>
-                            Manage Subscription
-                        </a>
-                    {% endif %}
-                </div>
-            {% endif %}
-
-            <!-- Billing Summary Cards -->
-            <div class="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <!-- This Month -->
-                <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-6">
-                    <div class="flex items-center">
-                        <div class="h-12 w-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                            <svg class="h-6 w-6 text-blue-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z">
-                                </path>
-                            </svg>
-                        </div>
-                        <div class="ml-3">
-                            <h3 class="text-lg font-semibold text-gray-900">This Month</h3>
-                            <p class="text-2xl font-bold text-gray-900">${{ current_month_amount|floatformat:2|intcomma }}</p>
-                            <p class="text-sm text-gray-500">Current billing</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Next Payment -->
-                <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-6">
-                    <div class="flex items-center">
-                        <div class="h-12 w-12 bg-purple-100 rounded-lg flex items-center justify-center">
-                            <svg class="h-6 w-6 text-purple-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z">
-                                </path>
-                            </svg>
-                        </div>
-                        <div class="ml-3">
-                            <h3 class="text-lg font-semibold text-gray-900">
-                                {% if workspace.subscription_status == "trial" %}
-                                    Trial Ends
-                                {% else %}
-                                    Next Payment
-                                {% endif %}
-                            </h3>
-                            <p class="text-2xl font-bold text-gray-900">
-                                {% if workspace.subscription_status == "trial" %}
-                                    {{ trial_days_remaining }} day{{ trial_days_remaining|pluralize }}
-                                {% else %}
-                                    {{ rate_limit_info.reset_time|date:"j" }}
-                                {% endif %}
-                            </p>
-                            <p class="text-sm text-gray-500">
-                                {% if workspace.subscription_status == "trial" %}
-                                    until your first invoice
-                                {% else %}
-                                    days until billing
-                                {% endif %}
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Help Section -->
-            <div class="mt-8 bg-blue-50 rounded-xl p-6 border border-blue-200">
-                <div class="flex">
-                    <div class="flex-shrink-0">
-                        <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd">
-                            </path>
-                        </svg>
-                    </div>
-                    <div class="ml-3">
-                        <h3 class="text-sm font-medium text-blue-800">Need help with billing?</h3>
-                        <div class="mt-2 text-sm text-blue-700">
-                            <p class="mb-2">If you have questions about your bill or need assistance with payments, we're here to help.</p>
-                            <div class="flex flex-wrap gap-4">
-                                <a href="mailto:billing@notipus.com"
-                                   class="text-blue-800 hover:text-blue-900 font-medium inline-flex items-center gap-1"><i class="ti ti-mail"></i> Email Support</a>
-                                <a href="#"
-                                   class="text-blue-800 hover:text-blue-900 font-medium inline-flex items-center gap-1"><i class="ti ti-message-circle"></i> Live Chat</a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <div class="grid gap-stack sm:grid-cols-2">
+            <c-card>
+                <c-stat label="This month"
+                        value="${{ current_month_amount|floatformat:2|intcomma }}"
+                        icon="calendar-month" />
+            </c-card>
+            <c-card>
+                <c-stat label="{% if workspace.subscription_status == 'trial' %}Trial ends in{% else %}Next payment{% endif %}"
+                        value="{% if workspace.subscription_status == 'trial' %}{{ trial_days_remaining }}{% else %}{{ rate_limit_info.reset_time|date:'M j' }}{% endif %}"
+                        unit="{% if workspace.subscription_status == 'trial' %}day{{ trial_days_remaining|pluralize }}{% endif %}"
+                        icon="clock" />
+            </c-card>
         </div>
-    </div>
 
-    <!-- JavaScript for invoice actions -->
+        <c-alert tone="info" title="Questions about a charge?">
+            Email <a href="mailto:billing@notipus.com"
+    class="font-medium underline underline-offset-4">billing@notipus.com</a>
+            with the invoice number and we'll look into it.
+        </c-alert>
+    </c-page>
+{% endblock content %}
+
+{% block extra_scripts %}
     <script>
         function downloadInvoice(invoiceId) {
-            // In a real implementation, this would download the PDF invoice
-            alert('This would download the invoice PDF.\n\nInvoice ID: ' + invoiceId + '\n\nIn a real implementation, you would:\n1. Make an API call to generate/fetch the PDF\n2. Trigger a download');
-        }
-
-        function viewInvoice(invoiceId) {
-            // In a real implementation, this would open the invoice in a new tab or modal
-            alert('This would open the invoice for viewing.\n\nInvoice ID: ' + invoiceId + '\n\nIn a real implementation, you would:\n1. Open the invoice in a new tab\n2. Or show it in a modal overlay');
+            // Placeholder until invoice PDFs are wired up to the billing provider.
+            NotipusUI.toast('Invoice downloads are not available yet.', 'info');
         }
     </script>
-{% endblock content %}
+{% endblock extra_scripts %}

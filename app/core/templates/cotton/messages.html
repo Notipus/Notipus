@@ -1,0 +1,32 @@
+{% comment %}
+Flash messages — Django's messages framework, rendered as alerts.
+
+Included once from the base layout so no page renders its own message loop; two
+pages used to do that with slightly different markup, which is exactly the kind
+of drift this component exists to stop.
+
+Takes no props: it reads `messages` from the request context.
+{% endcomment %}
+{% if messages %}
+    <div class="mx-auto flex max-w-6xl flex-col gap-2 px-4 pt-6 sm:px-6 lg:px-8">
+        {% for message in messages %}
+            {% if message.tags == "error" %}
+                <c-alert tone="danger">
+                    {{ message }}
+                </c-alert>
+            {% elif message.tags == "success" %}
+                <c-alert tone="success">
+                    {{ message }}
+                </c-alert>
+            {% elif message.tags == "warning" %}
+                <c-alert tone="warning">
+                    {{ message }}
+                </c-alert>
+            {% else %}
+                <c-alert tone="info">
+                    {{ message }}
+                </c-alert>
+            {% endif %}
+        {% endfor %}
+    </div>
+{% endif %}

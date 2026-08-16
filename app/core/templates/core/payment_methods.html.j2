@@ -1,186 +1,98 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Payment Methods - Notipus
+    Payment methods - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
-        <!-- Header -->
-        <div class="max-w-4xl mx-auto pt-8 px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center">
-                <a href="{% url 'core:billing_dashboard' %}"
-                   class="mr-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200">
-                    <i class="ti ti-arrow-left text-xl"></i>
-                </a>
-                <div>
-                    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center gap-3">
-                        <span class="p-2 bg-primary-100 rounded-xl">
-                            <i class="ti ti-credit-card text-primary-600 text-xl"></i>
-                        </span>
-                        Payment Methods
-                    </h1>
-                    <p class="mt-1 text-gray-500">Manage your payment methods and billing information</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Main content -->
-        <div class="max-w-4xl mx-auto py-8 sm:px-6 lg:px-8">
-            {% if not has_payment_method %}
-                <!-- No Payment Methods -->
-                <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 text-center">
-                    <div class="mx-auto h-24 w-24 bg-gray-100 rounded-full flex items-center justify-center mb-6">
-                        <svg class="h-12 w-12 text-gray-400"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z">
-                            </path>
-                        </svg>
-                    </div>
-                    <h3 class="text-xl font-semibold text-gray-900 mb-2">No payment methods added</h3>
-                    <p class="text-gray-600 mb-6">Add a payment method to manage your subscription and avoid service interruptions.</p>
-
-                    <button onclick="addPaymentMethod()"
-                            class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 transition-all duration-200">
-                        <svg class="mr-2 h-5 w-5"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
-                        </svg>
-                        Add Payment Method
-                    </button>
-                </div>
-            {% else %}
-                <!-- Payment Methods List -->
-                <div class="space-y-6">
+    <c-page width="narrow"
+            back="{% url 'core:billing_dashboard' %}"
+            back_label="Billing"
+            title="Payment methods"
+            subtitle="The cards we charge for this workspace.">
+        {% if not has_payment_method %}
+            <c-card>
+                <c-empty-state icon="credit-card"
+                               title="No payment method yet"
+                               description="Add a card so your subscription keeps running when the trial ends.">
+                    <c-slot name="actions">
+                        <c-button icon="plus" onclick="addPaymentMethod()">
+                            Add a card
+                        </c-button>
+                    </c-slot>
+                </c-empty-state>
+            </c-card>
+        {% else %}
+            <c-card title="Saved cards" icon="credit-card" flush>
+                <c-list>
                     {% for payment_method in payment_methods %}
-                        <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-6">
-                            <div class="flex items-center justify-between">
-                                <div class="flex items-center">
-                                    <!-- Card Icon -->
-                                    <div class="h-12 w-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                                        {% if payment_method.brand == "visa" %}
-                                            <svg class="h-8 w-8 text-blue-600" viewBox="0 0 24 24" fill="currentColor">
-                                                <path d="M7.73 3h8.54A4.73 4.73 0 0121 7.73v8.54A4.73 4.73 0 0116.27 21H7.73A4.73 4.73 0 013 16.27V7.73A4.73 4.73 0 017.73 3z" />
-                                            </svg>
-                                        {% elif payment_method.brand == "mastercard" %}
-                                            <svg class="h-8 w-8 text-red-600" viewBox="0 0 24 24" fill="currentColor">
-                                                <path d="M7.73 3h8.54A4.73 4.73 0 0121 7.73v8.54A4.73 4.73 0 0116.27 21H7.73A4.73 4.73 0 013 16.27V7.73A4.73 4.73 0 017.73 3z" />
-                                            </svg>
-                                        {% else %}
-                                            <svg class="h-6 w-6 text-gray-600"
-                                                 fill="none"
-                                                 stroke="currentColor"
-                                                 viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z">
-                                                </path>
-                                            </svg>
-                                        {% endif %}
-                                    </div>
-
-                                    <!-- Card Details -->
-                                    <div class="ml-4">
-                                        <div class="flex items-center">
-                                            <h3 class="text-lg font-medium text-gray-900">{{ payment_method.brand|title }} ••••{{ payment_method.last4 }}</h3>
-                                            {% if payment_method.is_default %}
-                                                <span class="ml-3 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                                    Default
-                                                </span>
-                                            {% endif %}
-                                        </div>
-                                        <p class="text-sm text-gray-500">Expires {{ payment_method.exp_month }}/{{ payment_method.exp_year }}</p>
-                                    </div>
-                                </div>
-
-                                <!-- Actions -->
-                                <div class="flex items-center space-x-3">
-                                    {% if not payment_method.is_default %}
-                                        <button onclick="setDefaultPaymentMethod('{{ payment_method.id }}')"
-                                                class="text-sm text-primary-600 hover:text-primary-700 font-medium">
-                                            Set as default
-                                        </button>
-                                    {% endif %}
-                                    <button onclick="deletePaymentMethod('{{ payment_method.id }}')"
-                                            class="text-sm text-red-600 hover:text-red-700 font-medium">Delete</button>
-                                </div>
-                            </div>
-                        </div>
+                        <c-list.row title="{{ payment_method.brand|title }} ending {{ payment_method.last4 }}"
+                                    description="Expires {{ payment_method.exp_month }}/{{ payment_method.exp_year }}"
+                                    icon="credit-card">
+                            <c-slot name="actions">
+                                {% if payment_method.is_default %}
+                                    <c-badge tone="success">
+                                        Default
+                                    </c-badge>
+                                {% else %}
+                                    <c-button variant="link"
+                                              size="sm"
+                                              onclick="setDefaultPaymentMethod('{{ payment_method.id }}')">
+                                        Make default
+                                    </c-button>
+                                {% endif %}
+                                <c-button variant="link-danger"
+                                          size="sm"
+                                          onclick="deletePaymentMethod('{{ payment_method.id }}')">
+                                    Remove
+                                </c-button>
+                            </c-slot>
+                        </c-list.row>
                     {% endfor %}
+                </c-list>
+                <c-slot name="footer">
+                    <c-button variant="secondary"
+                              size="sm"
+                              icon="plus"
+                              onclick="addPaymentMethod()">
+                        Add another card
+                    </c-button>
+                </c-slot>
+            </c-card>
+        {% endif %}
 
-                    <!-- Add New Payment Method -->
-                    <div class="bg-white shadow-lg rounded-xl border border-gray-100 border-dashed p-6 text-center">
-                        <svg class="mx-auto h-12 w-12 text-gray-400 mb-4"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
-                        </svg>
-                        <h3 class="text-lg font-medium text-gray-900 mb-2">Add another payment method</h3>
-                        <p class="text-gray-500 mb-4">Add a backup payment method for extra security</p>
-                        <button onclick="addPaymentMethod()"
-                                class="inline-flex items-center px-4 py-2 border border-primary-300 rounded-lg text-sm font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 transition-all duration-200">
-                            Add Payment Method
-                        </button>
-                    </div>
-                </div>
-            {% endif %}
+        <c-alert tone="info" title="Card details never reach our servers">
+            Stripe collects and stores them directly. We only see the brand, the last four digits and the expiry date.
+        </c-alert>
+    </c-page>
+{% endblock content %}
 
-            <!-- Security Notice -->
-            <div class="mt-8 bg-blue-50 rounded-xl p-6 border border-blue-200">
-                <div class="flex">
-                    <div class="flex-shrink-0">
-                        <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd">
-                            </path>
-                        </svg>
-                    </div>
-                    <div class="ml-3">
-                        <h3 class="text-sm font-medium text-blue-800">Your payment information is secure</h3>
-                        <div class="mt-2 text-sm text-blue-700">
-                            <p>
-                                We use Stripe to securely process payments. Your payment information is encrypted and never stored on our servers.
-                                All transactions are PCI DSS compliant.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- JavaScript for payment method management -->
+{% block extra_scripts %}
     <script>
         function addPaymentMethod() {
-            // In a real implementation, this would open Stripe's payment method setup flow
-            NotipusUI.toast('This would open the Stripe payment method setup form.', 'info', 5000);
+            // Placeholder until the Stripe setup flow is wired up.
+            NotipusUI.toast('Adding a card is not available yet.', 'info');
         }
 
         async function setDefaultPaymentMethod(paymentMethodId) {
             const confirmed = await NotipusUI.confirmAction(
-                'Set as Default?',
-                'This payment method will be used for all future charges.',
-                'Set as Default'
+                'Make this the default card?',
+                'Future charges for this workspace use this card.',
+                'Make default'
             );
             if (confirmed) {
-                // In a real implementation, this would make an API call
-                NotipusUI.toast('Payment method set as default', 'success');
-                // location.reload();
+                NotipusUI.toast('Default card updated', 'success');
             }
         }
 
         async function deletePaymentMethod(paymentMethodId) {
             const confirmed = await NotipusUI.confirmDelete(
-                'This action cannot be undone. Any active subscriptions using this payment method will need a new payment method.',
-                'Payment Method'
+                'Any subscription paying with this card needs a new one before its next charge.',
+                'card'
             );
             if (confirmed) {
-                // In a real implementation, this would make an API call
-                NotipusUI.toast('Payment method deleted', 'success');
-                // location.reload();
+                NotipusUI.toast('Card removed', 'success');
             }
         }
     </script>
-{% endblock content %}
+{% endblock extra_scripts %}

@@ -1,0 +1,55 @@
+{% comment %}
+Dialog — a page-owned modal with content the page renders itself.
+
+Distinct from <c-modal-host>, which is the single dialog NotipusUI.confirm()
+fills in from JavaScript. Use this one when the modal has real content: a form,
+a picker, a preview.
+
+Open and close it by toggling `hidden` on the element with this id, and keep
+aria-hidden in step.
+
+Props:
+  id           element id; the page's script toggles this
+  title        the dialog's heading
+  description  one line under it
+  icon         Tabler icon shown as a tile
+
+Slots:
+  slot     the dialog body
+  actions  the footer controls, reversed so the primary sits on the right
+{% endcomment %}
+<c-vars id="" title="" description="" icon="" class="" />
+
+<div id="{{ id }}"
+     class="fixed inset-0 z-50 hidden {{ class }}"
+     aria-hidden="true"
+     {{ attrs }}>
+    <div class="fixed inset-0 bg-surface-inverse/60 backdrop-blur-sm transition-opacity duration-200"
+         data-dialog-overlay
+         onclick="document.getElementById('{{ id }}').classList.add('hidden'); document.getElementById('{{ id }}').setAttribute('aria-hidden', 'true')">
+    </div>
+    <div class="fixed inset-0 z-10 overflow-y-auto">
+        <div class="flex min-h-full items-end justify-center p-4 sm:items-center sm:p-0">
+            <div class="relative w-full transform overflow-hidden rounded-card bg-surface text-left shadow-overlay transition-all duration-200 sm:my-8 sm:max-w-lg"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="{{ id }}-title">
+                <div class="px-gutter py-5">
+                    <div class="flex items-start gap-4">
+                        {% if icon %}<c-icon-tile :name="icon" tone="brand" size="sm" />{% endif %}
+                        <div class="min-w-0 flex-1">
+                            <h3 id="{{ id }}-title" class="text-heading font-semibold text-content">{{ title }}</h3>
+                            {% if description %}<p class="mt-1 text-body text-content-muted">{{ description }}</p>{% endif %}
+                            <div class="mt-4">{{ slot }}</div>
+                        </div>
+                    </div>
+                </div>
+                {% if actions %}
+                    <div class="flex flex-col gap-2 border-t border-border bg-surface-muted px-gutter py-4 sm:flex-row-reverse">
+                        {{ actions }}
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>

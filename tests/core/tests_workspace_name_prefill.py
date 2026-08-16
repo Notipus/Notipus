@@ -187,9 +187,14 @@ class TestCreateWorkspacePrefill:
         self._login(client)
 
         response = client.get(reverse("core:create_workspace"))
+        html = response.content.decode()
 
         assert response.status_code == 200
-        assert 'value=""' in response.content.decode()
+        # <c-input> omits the attribute entirely rather than emitting value="",
+        # so assert the field is present and carries no value of any kind.
+        assert 'name="name"' in html
+        assert 'id="name"' in html
+        assert "value=" not in html.split('id="name"', 1)[1].split(">", 1)[0]
 
     def test_team_name_cleared_after_workspace_created(self, client: Client) -> None:
         """Creating a workspace consumes the captured team name."""

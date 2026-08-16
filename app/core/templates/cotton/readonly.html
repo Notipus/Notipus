@@ -1,0 +1,25 @@
+{% comment %}
+Read-only value — a labelled fact the user cannot change.
+
+Looks like a field so it sits in a form without breaking rhythm, but it is not
+an input: a current plan is information, and putting it in a disabled text box
+only invites people to try typing in it.
+
+Props:
+  label  what the value is
+  help   one line under it
+
+The value is the slot. For anything monospace and copyable — a workspace id, a
+webhook URL, a signing secret — use c-code-block instead. Both used to exist
+here, which meant the same kind of value got two different looks depending on
+which page you were on.
+{% endcomment %}
+<c-vars label="" help="" class="" />
+
+<div class="min-w-0 {{ class }}" {{ attrs }}>
+    {% if label %}<p class="mb-1.5 text-body font-medium text-content">{{ label }}</p>{% endif %}
+    <div class="flex items-center gap-3 rounded-control border border-border bg-surface-muted px-3 py-2">
+        <span class="min-w-0 break-all text-body text-content">{{ slot }}</span>
+    </div>
+    {% if help %}<p class="mt-1.5 text-body text-content-muted">{{ help }}</p>{% endif %}
+</div>

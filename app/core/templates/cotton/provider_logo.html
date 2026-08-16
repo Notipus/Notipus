@@ -1,0 +1,62 @@
+{% comment %}
+Provider logo — a third party's own mark, in its own colours.
+
+The one place brand SVGs live. Provider brand hexes are deliberately hardcoded
+here rather than tokenised: they belong to Stripe, Shopify and Slack, not to our
+design system, and they must not shift when our palette does.
+
+The mark sits on a 10% tint of its own colour, which is decorative, so the tint
+never carries text.
+
+Props:
+  provider  shopify | stripe | slack | telegram | teams | hunter | chargify
+  size      sm | md   (default: md)
+  label     accessible name; omit when the provider's name is already beside it
+{% endcomment %}
+<c-vars provider="" size="md" label="" class="" />
+
+<span class="inline-flex flex-shrink-0 items-center justify-center rounded-control {% if size == 'sm' %}h-8 w-8{% else %}h-12 w-12{% endif %} {% if provider == 'shopify' %}bg-[#95BF47]/10 {% elif provider == 'stripe' %}bg-[#635bff]/10 {% elif provider == 'slack' %}bg-[#4A154B]/10 {% elif provider == 'telegram' %}bg-[#0088cc]/10 {% elif provider == 'teams' %}bg-[#6264A7]/10 {% elif provider == 'hunter' %}bg-[#ff5722]/10 {% elif provider == 'chargify' %}bg-[#6b21a8]/10 {% else %}bg-surface-muted{% endif %} {{ class }}"
+      {% if label %}role="img" aria-label="{{ label }}"{% else %}aria-hidden="true"{% endif %}
+      {{ attrs }}>
+    {% if provider == "shopify" %}
+        <svg class="{% if size == 'sm' %}h-5 w-5{% else %}h-7 w-7{% endif %}"
+             viewBox="0 0 24 24"
+             fill="none">
+            <path d="M15.34 5.68c-.01-.07-.07-.11-.12-.12-.05 0-1.05-.08-1.05-.08s-.7-.7-.87-.87c-.17-.17-.51-.12-.64-.08-.02 0-.26.08-.66.21-.39-1.13-1.08-2.16-2.3-2.16h-.11c-.35-.45-.78-.65-1.14-.65-2.82 0-4.17 3.53-4.59 5.32-.67.21-1.14.35-1.2.37-.37.12-.38.13-.43.48-.04.27-1.02 7.86-1.02 7.86l7.63 1.43 4.15-1.03s-1.58-10.75-1.59-10.82v-.02l-.06.36zM11.17 3.8c-.32.1-.67.21-1.04.32v-.23c0-.68-.09-1.23-.24-1.67.6.08.99.76 1.28 1.58zm-2.08-1.4c.16.4.26.97.26 1.75v.11l-2.14.66c.41-1.58 1.18-2.35 1.88-2.52zm-.79-.54c.12 0 .25.04.37.12-.9.42-1.86 1.48-2.26 3.6l-1.69.52c.47-1.59 1.58-4.24 3.58-4.24z" fill="#95BF47" />
+            <path d="M15.22 5.56c-.05 0-1.05-.08-1.05-.08s-.7-.7-.87-.87c-.06-.07-.15-.1-.24-.11l-.57 11.66 4.15-1.03s-1.58-10.75-1.59-10.82c-.01-.07-.07-.11-.12-.12l.29 1.37z" fill="#5E8E3E" />
+            <path d="M10.04 8.27l-.5 1.85s-.55-.25-1.21-.21c-.97.06-1.1.67-1.08.82.06.94 2.53 1.15 2.67 3.36.11 1.74-.92 2.93-2.41 3.02-1.79.11-2.77-.94-2.77-.94l.38-1.61s.99.75 1.78.7c.52-.03.7-.46.69-.76-.08-1.23-2.09-1.16-2.22-3.18-.11-1.7 1.01-3.42 3.47-3.58.95-.06 1.43.18 1.43.18l-.23.35z" fill="#fff" />
+        </svg>
+    {% elif provider == "stripe" %}
+        <svg class="{% if size == 'sm' %}h-5 w-5{% else %}h-7 w-7{% endif %}"
+             viewBox="0 0 24 24"
+             fill="#635bff">
+            <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305z" />
+        </svg>
+    {% elif provider == "slack" %}
+        <svg class="{% if size == 'sm' %}h-5 w-5{% else %}h-7 w-7{% endif %}"
+             viewBox="0 0 24 24">
+            <path fill="#E01E5A" d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" />
+            <path fill="#36C5F0" d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" />
+            <path fill="#2EB67D" d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" />
+            <path fill="#ECB22E" d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
+        </svg>
+    {% elif provider == "telegram" %}
+        <svg class="{% if size == 'sm' %}h-5 w-5{% else %}h-7 w-7{% endif %}"
+             viewBox="0 0 24 24"
+             fill="#0088cc">
+            <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
+        </svg>
+    {% elif provider == "teams" %}
+        <i class="ti ti-brand-teams text-[#6264A7] {% if size == 'sm' %}text-heading{% else %}text-title{% endif %}"
+           aria-hidden="true"></i>
+    {% elif provider == "hunter" %}
+        <i class="ti ti-mail-search text-[#ff5722] {% if size == 'sm' %}text-heading{% else %}text-title{% endif %}"
+           aria-hidden="true"></i>
+    {% elif provider == "chargify" %}
+        <i class="ti ti-currency-dollar text-[#6b21a8] {% if size == 'sm' %}text-heading{% else %}text-title{% endif %}"
+           aria-hidden="true"></i>
+    {% else %}
+        <i class="ti ti-plug text-content-subtle {% if size == 'sm' %}text-heading{% else %}text-title{% endif %}"
+           aria-hidden="true"></i>
+    {% endif %}
+</span>

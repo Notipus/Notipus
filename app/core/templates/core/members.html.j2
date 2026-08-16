@@ -1,284 +1,145 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Team Members - {{ workspace.name }}
+    Members - {{ workspace.name }}
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-        <div class="max-w-4xl mx-auto">
-            <!-- Header -->
-            <div class="mb-8">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center">
-                        <a href="{% url 'core:dashboard' %}"
-                           class="mr-4 text-gray-400 hover:text-gray-600 transition-colors">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
-                            </svg>
-                        </a>
-                        <div>
-                            <h1 class="text-3xl font-bold text-gray-900">Team Members</h1>
-                            <p class="mt-2 text-sm text-gray-600">
-                                Manage your workspace team
-                                {% if remaining_seats > 0 %}
-                                    <span class="text-gray-400">|</span>
-                                    <span class="text-green-600">{{ remaining_seats }} seat{{ remaining_seats|pluralize }} available</span>
-                                {% else %}
-                                    <span class="text-gray-400">|</span>
-                                    <span class="text-amber-600">No seats available</span>
-                                {% endif %}
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Messages -->
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="mb-6 p-4 rounded-md {% if message.tags == 'error' %}bg-red-50 border border-red-200{% elif message.tags == 'warning' %}bg-amber-50 border border-amber-200{% else %}bg-green-50 border border-green-200{% endif %}">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                {% if message.tags == 'error' %}
-                                    <svg class="h-5 w-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                {% elif message.tags == 'warning' %}
-                                    <svg class="h-5 w-5 text-amber-400"
-                                         fill="currentColor"
-                                         viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                {% else %}
-                                    <svg class="h-5 w-5 text-green-400"
-                                         fill="currentColor"
-                                         viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                {% endif %}
-                            </div>
-                            <div class="ml-3">
-                                <p class="text-sm {% if message.tags == 'error' %}text-red-700{% elif message.tags == 'warning' %}text-amber-700{% else %}text-green-700{% endif %}">
-                                    {{ message }}
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                {% endfor %}
-            {% endif %}
-
-            <!-- Invite Form -->
-            {% if can_invite %}
-                <div class="bg-white shadow rounded-lg mb-8">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-medium text-gray-900">Invite Team Member</h2>
-                        <p class="mt-1 text-sm text-gray-500">Send an invitation to add someone to your workspace</p>
-                    </div>
-                    <form method="post"
-                          action="{% url 'core:invite_member' %}"
-                          class="px-6 py-4">
-                        {% csrf_token %}
-                        <div class="flex flex-col sm:flex-row gap-4">
-                            <div class="flex-grow">
-                                <label for="email" class="sr-only">Email address</label>
-                                <input type="email"
-                                       name="email"
-                                       id="email"
-                                       required
-                                       placeholder="colleague@company.com"
-                                       class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm">
-                            </div>
-                            <div class="sm:w-40">
-                                <label for="role" class="sr-only">Role</label>
-                                <select name="role"
-                                        id="role"
-                                        class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm">
-                                    <option value="user">User</option>
-                                    <option value="admin">Admin</option>
-                                    {% if current_member.role == 'owner' %}<option value="owner">Owner</option>{% endif %}
-                                </select>
-                            </div>
-                            <button type="submit"
-                                    class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition duration-150 ease-in-out">
-                                Send Invite
-                            </button>
-                        </div>
-                    </form>
-                </div>
+    <c-page width="default"
+            back="{% url 'core:dashboard' %}"
+            back_label="Dashboard"
+            title="Members"
+            subtitle="Everyone who can see this workspace and change its integrations.">
+        <c-slot name="actions">
+            {% if remaining_seats > 0 %}
+                <c-badge tone="success" dot>
+                    {{ remaining_seats }} seat{{ remaining_seats|pluralize }} left
+                </c-badge>
             {% else %}
-                <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <svg class="h-5 w-5 text-amber-400"
-                                 fill="currentColor"
-                                 viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd">
-                                </path>
-                            </svg>
-                        </div>
-                        <div class="ml-3">
-                            <p class="text-sm text-amber-700">{{ invite_message }}</p>
-                            <p class="mt-2">
-                                <a href="{% url 'core:upgrade_plan' %}"
-                                   class="text-sm font-medium text-amber-700 hover:text-amber-600">
-                                    Upgrade your plan →
-                                </a>
-                            </p>
-                        </div>
-                    </div>
-                </div>
+                <c-badge tone="warning" dot>
+                    No seats left
+                </c-badge>
             {% endif %}
+        </c-slot>
 
-            <!-- Members List -->
-            <div class="bg-white shadow rounded-lg mb-8">
-                <div class="px-6 py-4 border-b border-gray-200">
-                    <h2 class="text-lg font-medium text-gray-900">Current Members</h2>
-                    <p class="mt-1 text-sm text-gray-500">{{ members|length }} member{{ members|length|pluralize }}</p>
-                </div>
-                <ul class="divide-y divide-gray-200">
-                    {% for member in members %}
-                        <li class="px-6 py-4">
-                            <div class="flex items-center justify-between">
-                                <div class="flex items-center min-w-0">
-                                    <div class="flex-shrink-0">
-                                        <div class="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center">
-                                            <span class="text-gray-600 font-medium text-sm">{{ member.user.email|first|upper }}</span>
-                                        </div>
-                                    </div>
-                                    <div class="ml-4 min-w-0">
-                                        <p class="text-sm font-medium text-gray-900 truncate">
-                                            {{ member.user.get_full_name|default:member.user.email }}
-                                            {% if member.id == current_member.id %}<span class="text-gray-400">(you)</span>{% endif %}
-                                        </p>
-                                        <p class="text-sm text-gray-500 truncate">{{ member.user.email }}</p>
-                                    </div>
-                                </div>
-                                <div class="flex items-center gap-4">
-                                    <!-- Role Badge: only when no role dropdown is rendered for this row -->
-                                    {% if not member.can_manage %}
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if member.role == 'owner' %}bg-purple-100 text-purple-800 {% elif member.role == 'admin' %}bg-blue-100 text-blue-800 {% else %}bg-gray-100 text-gray-800{% endif %}">
-                                            {{ member.role|title }}
-                                        </span>
-                                    {% endif %}
+        {% if can_invite %}
+            <c-card title="Invite someone"
+                    description="They get an email with a link that expires in seven days."
+                    icon="user-plus">
+                <c-form action="{% url 'core:invite_member' %}">
+                    <div class="flex flex-col gap-4 sm:flex-row sm:items-end">
+                        <c-input name="email"
+                                 type="email"
+                                 label="Email address"
+                                 placeholder="colleague@company.com"
+                                 required
+                                 class="flex-1" />
+                        <c-select name="role" label="Role" class="sm:w-44">
+                            <option value="user">Member</option>
+                            <option value="admin">Admin</option>
+                            {% if current_member.role == "owner" %}<option value="owner">Owner</option>{% endif %}
+                        </c-select>
+                        <c-button type="submit" icon="send">
+                            Send invitation
+                        </c-button>
+                    </div>
+                </c-form>
+            </c-card>
+        {% else %}
+            <c-alert tone="warning" title="You've used every seat on this plan">
+                {{ invite_message }}
+                <c-slot name="actions">
+                    <c-button href="{% url 'core:upgrade_plan' %}" size="sm">Upgrade plan</c-button>
+                </c-slot>
+            </c-alert>
+        {% endif %}
 
-                                    {% if member.id != current_member.id %}
-                                        <!-- Role Change Form - Owner can change anyone, Admin can change non-owners -->
-                                        {% if current_member.role == 'owner' %}
-                                            <form method="post"
-                                                  action="{% url 'core:change_role' member.id %}"
-                                                  class="flex items-center">
-                                                {% csrf_token %}
-                                                <select name="role"
-                                                        onchange="this.form.submit()"
-                                                        class="text-xs border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500">
-                                                    <option value="user" {% if member.role == 'user' %}selected{% endif %}>User</option>
-                                                    <option value="admin" {% if member.role == 'admin' %}selected{% endif %}>Admin</option>
-                                                    <option value="owner" {% if member.role == 'owner' %}selected{% endif %}>Owner</option>
-                                                </select>
-                                            </form>
-                                        {% elif current_member.role == 'admin' and member.role != 'owner' %}
-                                            <form method="post"
-                                                  action="{% url 'core:change_role' member.id %}"
-                                                  class="flex items-center">
-                                                {% csrf_token %}
-                                                <select name="role"
-                                                        onchange="this.form.submit()"
-                                                        class="text-xs border-gray-300 rounded-md shadow-sm focus:ring-primary-500 focus:border-primary-500">
-                                                    <option value="user" {% if member.role == 'user' %}selected{% endif %}>User</option>
-                                                    <option value="admin" {% if member.role == 'admin' %}selected{% endif %}>Admin</option>
-                                                </select>
-                                            </form>
-                                        {% endif %}
+        <c-card title="Members"
+                description="{{ members|length }} member{{ members|length|pluralize }}"
+                icon="users"
+                flush>
+            <c-list>
+                {% for member in members %}
+                    <c-list.row title="{{ member.user.get_full_name|default:member.user.email }}{% if member.id == current_member.id %} (you){% endif %}"
+                                :description="member.user.email">
+                        <c-slot name="leading">
+                            <c-avatar :name="member.user.email" />
+                        </c-slot>
+                        <c-slot name="actions">
+                            {% if member.id == current_member.id or not member.can_manage %}
+                                <c-badge tone="{% if member.role == 'owner' %}brand{% elif member.role == 'admin' %}info{% else %}neutral{% endif %}">
+                                    {{ member.role|title }}
+                                </c-badge>
+                            {% endif %}
 
-                                        <!-- Remove Button - Owner can remove anyone, Admin can remove non-owners -->
-                                        {% if current_member.role == 'owner' %}
-                                            <form method="post"
-                                                  action="{% url 'core:remove_member' member.id %}"
-                                                  onsubmit="return confirm('Are you sure you want to remove {{ member.user.email }} from the workspace?');">
-                                                {% csrf_token %}
-                                                <button type="submit"
-                                                        class="text-red-600 hover:text-red-900 text-sm font-medium">
-                                                    Remove
-                                                </button>
-                                            </form>
-                                        {% elif current_member.role == 'admin' and member.role != 'owner' %}
-                                            <form method="post"
-                                                  action="{% url 'core:remove_member' member.id %}"
-                                                  onsubmit="return confirm('Are you sure you want to remove {{ member.user.email }} from the workspace?');">
-                                                {% csrf_token %}
-                                                <button type="submit"
-                                                        class="text-red-600 hover:text-red-900 text-sm font-medium">
-                                                    Remove
-                                                </button>
-                                            </form>
-                                        {% endif %}
-                                    {% endif %}
-                                </div>
-                            </div>
-                        </li>
-                    {% empty %}
-                        <li class="px-6 py-8 text-center text-gray-500">No members found.</li>
+                            {% if member.id != current_member.id %}
+                                {% if current_member.role == "owner" or current_member.role == "admin" and member.role != "owner" %}
+                                    <form method="post"
+                                          action="{% url 'core:change_role' member.id %}"
+                                          class="flex items-center">
+                                        {% csrf_token %}
+                                        <label for="role-{{ member.id }}" class="sr-only">Role for {{ member.user.email }}</label>
+                                        <select name="role"
+                                                id="role-{{ member.id }}"
+                                                onchange="this.form.submit()"
+                                                class="rounded-control border border-border-control bg-surface px-2 py-1 text-caption text-content focus:outline-none focus:ring-2 focus:ring-focus focus:ring-offset-1">
+                                            <option value="user" {% if member.role == "user" %}selected{% endif %}>Member</option>
+                                            <option value="admin" {% if member.role == "admin" %}selected{% endif %}>Admin</option>
+                                            {% if current_member.role == "owner" %}
+                                                <option value="owner" {% if member.role == "owner" %}selected{% endif %}>Owner</option>
+                                            {% endif %}
+                                        </select>
+                                    </form>
+
+                                    <form method="post"
+                                          action="{% url 'core:remove_member' member.id %}"
+                                          onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Remove {{ member.user.email|escapejs }}?', message: 'They lose access to this workspace immediately. You can invite them again later.', variant: 'danger', confirmText: 'Remove'})">
+                                        {% csrf_token %}
+                                        <c-button type="submit" variant="link-danger">
+                                            Remove
+                                        </c-button>
+                                    </form>
+                                {% endif %}
+                            {% endif %}
+                        </c-slot>
+                    </c-list.row>
+                {% empty %}
+                    <li>
+                        <c-empty-state icon="users"
+                                       title="No members yet"
+                                       description="Invite the people who need to see these notifications." />
+                    </li>
+                {% endfor %}
+            </c-list>
+        </c-card>
+
+        {% if pending_invitations %}
+            <c-card title="Pending invitations"
+                    description="{{ pending_invitations|length }} waiting to be accepted"
+                    icon="mail-forward"
+                    flush>
+                <c-list>
+                    {% for invitation in pending_invitations %}
+                        <c-list.row :title="invitation.email"
+                                    description="Invited {{ invitation.created_at|timesince }} ago by {{ invitation.invited_by.email }}"
+                                    icon="mail">
+                            <c-slot name="actions">
+                                <c-badge tone="warning">
+                                    {{ invitation.role|title }}
+                                </c-badge>
+                                <form method="post"
+                                      action="{% url 'core:cancel_invitation' invitation.id %}"
+                                      onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Cancel this invitation?', message: 'The link in {{ invitation.email|escapejs }}\'s email stops working.', variant: 'danger', confirmText: 'Cancel invitation', cancelText: 'Keep it'})">
+                                    {% csrf_token %}
+                                    <c-button type="submit" variant="link-muted">
+                                        Cancel
+                                    </c-button>
+                                </form>
+                            </c-slot>
+                        </c-list.row>
                     {% endfor %}
-                </ul>
-            </div>
-
-            <!-- Pending Invitations -->
-            {% if pending_invitations %}
-                <div class="bg-white shadow rounded-lg">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-medium text-gray-900">Pending Invitations</h2>
-                        <p class="mt-1 text-sm text-gray-500">
-                            {{ pending_invitations|length }} pending invitation{{ pending_invitations|length|pluralize }}
-                        </p>
-                    </div>
-                    <ul class="divide-y divide-gray-200">
-                        {% for invitation in pending_invitations %}
-                            <li class="px-6 py-4">
-                                <div class="flex items-center justify-between">
-                                    <div class="flex items-center min-w-0">
-                                        <div class="flex-shrink-0">
-                                            <div class="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">
-                                                <svg class="w-5 h-5 text-gray-400"
-                                                     fill="none"
-                                                     stroke="currentColor"
-                                                     viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z">
-                                                    </path>
-                                                </svg>
-                                            </div>
-                                        </div>
-                                        <div class="ml-4 min-w-0">
-                                            <p class="text-sm font-medium text-gray-900 truncate">{{ invitation.email }}</p>
-                                            <p class="text-sm text-gray-500">
-                                                Invited {{ invitation.created_at|timesince }} ago
-                                                by {{ invitation.invited_by.email }}
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div class="flex items-center gap-4">
-                                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                                            {{ invitation.role|title }}
-                                        </span>
-                                        <form method="post"
-                                              action="{% url 'core:cancel_invitation' invitation.id %}"
-                                              onsubmit="return confirm('Are you sure you want to cancel this invitation?');">
-                                            {% csrf_token %}
-                                            <button type="submit"
-                                                    class="text-gray-600 hover:text-gray-900 text-sm font-medium">
-                                                Cancel
-                                            </button>
-                                        </form>
-                                    </div>
-                                </div>
-                            </li>
-                        {% endfor %}
-                    </ul>
-                </div>
-            {% endif %}
-        </div>
-    </div>
+                </c-list>
+            </c-card>
+        {% endif %}
+    </c-page>
 {% endblock content %}

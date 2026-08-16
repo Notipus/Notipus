@@ -1,0 +1,25 @@
+{% comment %}
+Progress meter — how far through something the workspace is.
+
+Used for monthly event usage and for setup completion. The tone is passed in
+rather than derived here, because "80% of your quota" and "80% of setup done"
+mean opposite things.
+
+Props:
+  value   0-100
+  tone    brand | success | warning | danger  (default: brand)
+  label   accessible name, e.g. "Monthly event usage"
+  size    sm | md                             (default: md)
+{% endcomment %}
+<c-vars value="0" tone="brand" label="" size="md" class="" />
+
+<div class="w-full overflow-hidden rounded-pill bg-surface-muted {% if size == 'sm' %}h-1.5{% else %}h-2.5{% endif %} {{ class }}"
+     role="progressbar"
+     aria-valuenow="{{ value|floatformat:0 }}"
+     aria-valuemin="0"
+     aria-valuemax="100"
+     {% if label %}aria-label="{{ label }}"{% endif %}
+     {{ attrs }}>
+    <div class="h-full rounded-pill transition-all duration-500 {% if tone == 'success' %}bg-success-solid {% elif tone == 'warning' %}bg-warning-solid {% elif tone == 'danger' %}bg-danger-solid {% else %}bg-brand{% endif %}"
+         style="width: {{ value|floatformat:0 }}%"></div>
+</div>

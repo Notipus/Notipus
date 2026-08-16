@@ -216,6 +216,12 @@ SECRET_KEY = os.environ.get("SECRET_DJANGO_KEY", _default_secret_key)
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
+# The component library at /ui/ exists for developers, not customers: it renders
+# every Cotton component and design token on one page. Gated on DEBUG so no
+# environment variable can expose it in production; UI_LIBRARY=false additionally
+# turns it off during development.
+UI_LIBRARY_ENABLED = DEBUG and os.environ.get("UI_LIBRARY", "true").lower() == "true"
+
 # Security validation: Ensure secret key is secure in production
 # Allow build-time commands that don't need a secure key
 _build_commands = {
@@ -228,6 +234,7 @@ _build_commands = {
     "sqlmigrate",
     "squashmigrations",
     "check",
+    "build_design_tokens",
 }
 _is_build_command = len(sys.argv) > 1 and sys.argv[1] in _build_commands
 
@@ -298,6 +305,10 @@ INSTALLED_APPS = [
     "django.contrib.sites",
     "django.contrib.humanize",
     # Third-party apps
+    # SimpleAppConfig opts out of Cotton's automatic TEMPLATES patching so the
+    # loader order below stays explicit — in particular so the cached loader is
+    # only added outside DEBUG.
+    "django_cotton.apps.SimpleAppConfig",
     "allauth",
     "allauth.account",
     "allauth.socialaccount",
@@ -331,12 +342,25 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "django_notipus.urls"
 
+# Cotton's loader compiles <c-*> tags into template tags, so it has to run
+# before the loaders that read files off disk. APP_DIRS cannot be combined with
+# an explicit loader list; app_directories.Loader is its equivalent.
+TEMPLATE_LOADERS: list[Any] = [
+    "django_cotton.cotton_loader.Loader",
+    "django.template.loaders.filesystem.Loader",
+    "django.template.loaders.app_directories.Loader",
+]
+if not DEBUG:
+    TEMPLATE_LOADERS = [("django.template.loaders.cached.Loader", TEMPLATE_LOADERS)]
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
         "DIRS": [BASE_DIR / "core" / "templates"],
-        "APP_DIRS": True,
         "OPTIONS": {
+            "loaders": TEMPLATE_LOADERS,
+            # Makes <c-*> component tags available without a {% load %} per file.
+            "builtins": ["django_cotton.templatetags.cotton"],
             "context_processors": [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",

@@ -1936,7 +1936,7 @@ class TestUpgradePlanUsageContext:
         assert response.context["events_used"] == 16
         assert response.context["events_limit"] == 20
         assert response.context["pause_at"] == 40
-        assert b"used 16 of the 20 events" in response.content
+        assert b"used 16 of 20 events" in response.content
 
     @patch("core.services.dashboard.rate_limiter")
     def test_zero_usage_keeps_generic_banner(
@@ -1963,7 +1963,7 @@ class TestUpgradePlanUsageContext:
         response = client.get(reverse("core:upgrade_plan"))
 
         assert response.status_code == 200
-        assert b"Ready to unlock more features" in response.content
+        assert b"Changing plan takes effect immediately" in response.content
 
 
 @pytest.mark.django_db

@@ -73,6 +73,9 @@ from .settings import (
     get_notification_settings,
     update_notification_settings,
 )
+from .ui_library import (
+    ui_library,
+)
 from .webauthn import (
     webauthn_authenticate_begin,
     webauthn_authenticate_complete,
@@ -157,4 +160,6 @@ __all__ = [
     # Error handlers
     "custom_404",
     "custom_500",
+    # Developer tools (DEBUG only)
+    "ui_library",
 ]

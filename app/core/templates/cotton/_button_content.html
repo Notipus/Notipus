@@ -1,0 +1,13 @@
+{% comment %}
+Inner markup of <c-button>, shared by its <a> and <button> branches. Expects
+`icon`, `trailing`, `loading` and `slot` in context. Not a component.
+{% endcomment %}
+{% if loading %}
+    <i class="ti ti-loader-2 animate-spin" aria-hidden="true"></i>
+{% elif icon and not trailing %}
+    <i class="ti ti-{{ icon }}" aria-hidden="true"></i>
+{% endif %}
+{{ slot }}
+{% if icon and trailing and not loading %}
+    <i class="ti ti-{{ icon }}" aria-hidden="true"></i>
+{% endif %}

@@ -1,0 +1,19 @@
+{% comment %}
+One choice in a <c-segmented>.
+
+Props:
+  value     what this option selects; readable from dataset.segment in script
+  selected  the option that is on when the page loads
+
+The selected look is applied by toggling `bg-action` and `text-content-inverse`,
+so any script driving this control should toggle exactly those two classes.
+{% endcomment %}
+<c-vars value="" selected="" class="" />
+
+<button type="button"
+        class="rounded-pill px-4 py-1.5 text-body font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-1 {% if selected %}bg-action text-content-inverse{% else %}text-content-muted{% endif %} {{ class }}"
+        data-segment="{{ value }}"
+        role="radio"
+        aria-checked="{% if selected %}true{% else %}false{% endif %}"
+        tabindex="{% if selected %}0{% else %}-1{% endif %}"
+        {{ attrs }}>{{ slot }}</button>

@@ -1,0 +1,37 @@
+{% comment %}
+One step in a <c-checklist>.
+
+The marker states the step's condition without relying on colour: a tick when
+done, otherwise the step number.
+
+Props:
+  title        what the step is
+  description  why it matters or what it involves
+  index        step number, shown when the step is not done
+  done         mark the step complete
+  href         make the title a link to where the step is carried out
+{% endcomment %}
+<c-vars title="" description="" index="" done="" href="" class="" />
+
+<li class="flex items-start gap-3 {{ class }}" {{ attrs }}>
+    <span class="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-pill text-caption font-semibold {% if done %}bg-success-surface text-success-text{% else %}bg-surface-muted text-content-muted{% endif %}">
+        {% if done %}
+            <i class="ti ti-check" aria-hidden="true"></i>
+            <span class="sr-only">Done:</span>
+        {% else %}
+            {{ index }}
+        {% endif %}
+    </span>
+    <div class="min-w-0">
+        {% if href and not done %}
+            <a href="{{ href }}"
+               class="rounded-control text-body font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                {{ title }}
+            </a>
+        {% else %}
+            <p class="text-body font-medium text-content">{{ title }}</p>
+        {% endif %}
+        {% if description %}<p class="text-body text-content-muted">{{ description }}</p>{% endif %}
+        {{ slot }}
+    </div>
+</li>

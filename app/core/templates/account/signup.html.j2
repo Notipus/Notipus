@@ -2,148 +2,116 @@
 {% load socialaccount %}
 
 {% block title %}
-    Sign Up - Notipus
+    Create an account - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
+    <c-page width="narrow">
+        <c-card>
             <div class="text-center">
-                <h1 class="text-2xl sm:text-3xl font-extrabold text-gray-900 text-balance">Create your account</h1>
-                <p class="mt-2 text-sm text-gray-600">Get started with Notipus - free or with a 14-day trial</p>
+                <h1 class="text-title font-bold text-content text-balance">Create your account</h1>
+                <p class="mt-2 text-lead text-content-muted">Free for 20 events a month, or 14 days on any paid plan.</p>
             </div>
-        </div>
 
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="card">
-                <div class="card-body py-8 px-4 sm:px-10">
-                    <!-- Passkey Signup Option -->
-                    <div class="mb-6">
-                        <button id="passkey-signup" class="btn-primary w-full touch-target">
-                            <svg class="w-5 h-5 mr-2"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24"
-                                 aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 12H9v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-3c0-1.042.018-2.042.057-3H4zm7-4a2 2 0 11-4 0 2 2 0 014 0z">
-                                </path>
-                            </svg>
-                            Create Account with Passkey
-                        </button>
-                        <p class="input-help text-center">Supported on modern browsers including Chrome, Firefox, Safari, and Edge</p>
-                    </div>
-
-                    <!-- Divider -->
-                    <div class="divider-with-text mb-6">
-                        <div class="divider-text">
-                            <span>Or continue with</span>
-                        </div>
-                    </div>
-
-                    <!-- OAuth Buttons -->
-                    <form method="post" action="{% provider_login_url 'slack' %}">
-                        {% csrf_token %}
-                        <button type="submit" class="btn-secondary w-full touch-target">
-                            <i class="ti ti-brand-slack mr-2" aria-hidden="true"></i>
-                            Continue with Slack
-                        </button>
-                    </form>
-
-                    <!-- Login Link -->
-                    <div class="mt-6 text-center">
-                        <span class="text-sm text-gray-600">
-                            Already have an account?
-                            <a href="{% url 'account_login' %}" class="link">Sign in</a>
-                        </span>
-                    </div>
+            <div class="mt-8 flex flex-col gap-4">
+                <div>
+                    <c-button id="passkey-signup" icon="fingerprint" size="lg" block>
+                        Sign up with a passkey
+                    </c-button>
+                    <p class="mt-1.5 text-center text-body text-content-muted">
+                        No password to remember. Works in Chrome, Firefox, Safari and Edge.
+                    </p>
                 </div>
+
+                <c-divider label="or" />
+
+                <c-form action="{% provider_login_url 'slack' %}">
+                    <c-button type="submit" variant="secondary" size="lg" icon="brand-slack" block>
+                        Continue with Slack
+                    </c-button>
+                </c-form>
             </div>
-        </div>
-    </div>
 
-    <!-- Passkey Signup Modal -->
-    <div id="passkey-modal"
-         class="fixed inset-0 bg-gray-600/50 overflow-y-auto h-full w-full hidden z-50">
-        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
-            <div class="mt-3">
-                <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-lg font-medium text-gray-900">Create Account with Passkey</h3>
-                    <button id="close-modal" class="text-gray-400 hover:text-gray-600">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-                <p class="text-sm text-gray-500 mb-4">Enter your username and email to create your account with a passkey.</p>
-                <div class="space-y-4">
-                    <div>
-                        <label for="modal-username" class="block text-sm font-medium text-gray-700">Username</label>
-                        <input type="text"
-                               id="modal-username"
-                               class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                               placeholder="Enter username">
-                    </div>
-                    <div>
-                        <label for="modal-email" class="block text-sm font-medium text-gray-700">Email</label>
-                        <input type="email"
-                               id="modal-email"
-                               class="mt-1 appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                               placeholder="Enter email address">
-                    </div>
-                </div>
-                <div class="flex justify-end space-x-3 mt-6">
-                    <button id="cancel-passkey"
-                            class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500">
-                        Cancel
-                    </button>
-                    <button id="create-with-passkey"
-                            class="px-4 py-2 text-sm font-medium text-white bg-primary-600 border border-transparent rounded-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500">
-                        Create Account
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
+            <c-slot name="footer">
+                <span class="block text-center">
+                    Already have an account?
+                    <a href="{% url 'account_login' %}"
+                       class="rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                        Sign in
+                    </a>
+                </span>
+            </c-slot>
+        </c-card>
+    </c-page>
 
+    <c-dialog id="passkey-modal"
+              title="Sign up with a passkey"
+              description="Your device creates the key; we only store its public half."
+              icon="fingerprint">
+        <div class="flex flex-col gap-4">
+            <c-input id="modal-username"
+                     name="username"
+                     label="Username"
+                     placeholder="How you'll be shown to your team" />
+            <c-input id="modal-email"
+                     name="email"
+                     type="email"
+                     label="Email address"
+                     placeholder="you@company.com"
+                     autocomplete="email" />
+        </div>
+        <c-slot name="actions">
+            <c-button id="create-with-passkey">
+                Create account
+            </c-button>
+            <c-button id="cancel-passkey" variant="secondary">
+                Cancel
+            </c-button>
+        </c-slot>
+    </c-dialog>
+{% endblock content %}
+
+{% block extra_scripts %}
     <script>
-        // WebAuthn passkey signup
-        document.getElementById('passkey-signup').addEventListener('click', function() {
-            document.getElementById('passkey-modal').classList.remove('hidden');
-            document.getElementById('modal-username').focus();
-        });
+        const passkeyModal = document.getElementById('passkey-modal');
 
-        // Close modal
+        function openPasskeyModal() {
+            passkeyModal.classList.remove('hidden');
+            passkeyModal.setAttribute('aria-hidden', 'false');
+            document.getElementById('modal-username').focus();
+        }
+
         function closeModal() {
-            document.getElementById('passkey-modal').classList.add('hidden');
+            passkeyModal.classList.add('hidden');
+            passkeyModal.setAttribute('aria-hidden', 'true');
             document.getElementById('modal-username').value = '';
             document.getElementById('modal-email').value = '';
         }
 
-        document.getElementById('close-modal').addEventListener('click', closeModal);
+        document.getElementById('passkey-signup').addEventListener('click', openPasskeyModal);
         document.getElementById('cancel-passkey').addEventListener('click', closeModal);
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape' && !passkeyModal.classList.contains('hidden')) {
+                closeModal();
+            }
+        });
 
         // Handle passkey signup
         document.getElementById('create-with-passkey').addEventListener('click', async function() {
             const button = this;
-            const originalText = button.innerHTML;
+            const originalHtml = button.innerHTML;
             const username = document.getElementById('modal-username').value.trim();
             const email = document.getElementById('modal-email').value.trim();
 
             if (!username || !email) {
-                alert('Please enter both username and email.');
+                NotipusUI.toast('Enter a username and an email address to continue.', 'error');
                 return;
             }
 
             try {
-                // Disable button and show loading state
                 button.disabled = true;
-                button.innerHTML = `
-            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            Creating...
-        `;
+                button.innerHTML = '<i class="ti ti-loader-2 animate-spin" aria-hidden="true"></i> Creating your account…';
 
                 // Step 1: Start registration
                 const beginResponse = await fetch('/webauthn/signup/begin/', {
@@ -216,7 +184,6 @@
 
                 const completeData = await completeResponse.json();
                 if (completeData.success) {
-                    // Close modal and redirect
                     closeModal();
                     window.location.href = completeData.redirect_url || '/dashboard/';
                 } else {
@@ -226,28 +193,26 @@
             } catch (error) {
                 console.error('WebAuthn signup error:', error);
 
-                // Show user-friendly error message
-                let errorMessage = 'Account creation failed. ';
+                let errorMessage;
 
                 if (error.name === 'NotSupportedError') {
-                    errorMessage += 'Passkeys are not supported on this device.';
+                    errorMessage = 'This device does not support passkeys. Use Slack to sign up instead.';
                 } else if (error.name === 'NotAllowedError') {
-                    errorMessage += 'Registration was cancelled or timed out.';
+                    errorMessage = 'Passkey setup was cancelled or timed out.';
                 } else if (error.name === 'SecurityError') {
-                    errorMessage += 'Security error occurred.';
+                    errorMessage = 'Your browser blocked the passkey request on this page.';
                 } else if (error.message.includes('Username already exists')) {
-                    errorMessage = 'Username already exists. Please choose a different username.';
+                    errorMessage = 'That username is taken. Pick another one.';
                 } else if (error.message.includes('Email already exists')) {
-                    errorMessage = 'Email already exists. Please use a different email or sign in.';
+                    errorMessage = 'That email already has an account. Sign in instead.';
                 } else {
-                    errorMessage += 'Please try again or use Slack sign-in.';
+                    errorMessage = 'We could not create the account. Try again, or use Slack.';
                 }
 
-                alert(errorMessage);
+                NotipusUI.toast(errorMessage, 'error', 6000);
             } finally {
-                // Restore button state
                 button.disabled = false;
-                button.innerHTML = originalText;
+                button.innerHTML = originalHtml;
             }
         });
 
@@ -273,14 +238,11 @@
             return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
         }
 
-        // Check if WebAuthn is supported
+        // Hide the passkey button on browsers that cannot do WebAuthn at all
         function checkWebAuthnSupport() {
-            // Only hide if we're absolutely certain it's not supported
-            // Keep button visible by default for better user experience
             const button = document.getElementById('passkey-signup');
 
             if (!window.PublicKeyCredential) {
-                // Check if it's a very old browser
                 const isOldBrowser = /MSIE|Trident/.test(navigator.userAgent) ||
                     (navigator.userAgent.includes('Chrome/') &&
                         parseInt(navigator.userAgent.match(/Chrome\/(\d+)/)[1]) < 67);
@@ -298,11 +260,10 @@
             return true;
         }
 
-        // Run the check when DOM is loaded
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', checkWebAuthnSupport);
         } else {
             checkWebAuthnSupport();
         }
     </script>
-{% endblock content %}
+{% endblock extra_scripts %}

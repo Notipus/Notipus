@@ -1,0 +1,853 @@
+{% extends "core/base.html.j2" %}
+
+{% comment %}
+The component library, served only when settings.UI_LIBRARY_ENABLED is on.
+
+Everything here reads from app/core/design_tokens.py, so a token added there
+appears on this page without anyone editing it. Component examples are hand
+written — that is the point: they are how the library says a component should be
+used, and they break loudly if a component's props change.
+{% endcomment %}
+
+{% block title %}
+    Component library - Notipus
+{% endblock title %}
+
+{% block content %}
+    <c-page width="wide"
+            title="Component library"
+            subtitle="Every design token and every component in one place. Development only — this page does not exist in production.">
+        <c-slot name="actions">
+            {% if contrast_failures %}
+                <c-badge tone="danger" icon="alert-triangle">
+                    {{ contrast_failures|length }} contrast failures
+                </c-badge>
+            {% else %}
+                <c-badge tone="success" icon="circle-check">
+                    {{ contrast_rules|length }} pairings pass WCAG AA
+                </c-badge>
+            {% endif %}
+        </c-slot>
+
+        {% if contrast_failures %}
+            <c-alert tone="danger" title="Some token pairings miss their WCAG threshold">
+                <ul class="ml-4 list-disc space-y-1">
+                    {% for rule in contrast_failures %}
+                        <li>
+                            <code class="font-mono">{{ rule.foreground }}</code> on
+                            <code class="font-mono">{{ rule.background }}</code> is
+                            {{ rule.ratio|floatformat:2 }}:1, needs {{ rule.minimum }}:1 — {{ rule.where }}
+                        </li>
+                    {% endfor %}
+                </ul>
+            </c-alert>
+        {% endif %}
+
+        {# ---------------------------------------------------------------- #}
+        {# Tokens                                                           #}
+        {# ---------------------------------------------------------------- #}
+        <c-card title="Design tokens"
+                description="Generated from app/core/design_tokens.py into src/css/tokens.css."
+                icon="palette">
+            <div class="flex flex-col gap-8">
+                {% for group in token_groups %}
+                    <section>
+                        <h3 class="text-heading font-semibold text-content">{{ group.title }}</h3>
+                        <p class="mt-1 max-w-3xl text-body text-content-muted">{{ group.description }}</p>
+                        <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                            {% for token in group.tokens %}
+                                <div class="flex items-start gap-3 rounded-control border border-border p-3">
+                                    {% comment %}block, not just h-9 w-9: an inline span ignores width.{% endcomment %}
+                                    {% if group.is_color %}
+                                        <span class="mt-0.5 block h-9 w-9 flex-shrink-0 rounded-control border border-border"
+                                              style="background: {{ token.value }}"
+                                              aria-hidden="true"></span>
+                                    {% else %}
+                                        <span class="mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-control border border-border bg-surface-muted"
+                                              aria-hidden="true">
+                                            <i class="ti ti-ruler-measure text-content-subtle"></i>
+                                        </span>
+                                    {% endif %}
+                                    <div class="min-w-0">
+                                        <p class="truncate font-mono text-caption font-semibold text-content">{{ group.namespace }}-{{ token.name }}</p>
+                                        <p class="truncate font-mono text-caption text-content-subtle">{{ token.value }}</p>
+                                        <p class="mt-1 text-body text-content-muted">{{ token.usage }}</p>
+                                        {% if token.graphic_only %}
+                                            <p class="mt-1">
+                                                <c-badge tone="warning" icon="alert-triangle">
+                                                    Graphic only — never behind text
+                                                </c-badge>
+                                            </p>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </section>
+                {% endfor %}
+            </div>
+        </c-card>
+
+        {# ---------------------------------------------------------------- #}
+        {# Contrast                                                         #}
+        {# ---------------------------------------------------------------- #}
+        <c-card title="Measured contrast"
+                description="Every foreground/background pairing the components actually render, checked against the thresholds Lighthouse audits."
+                icon="contrast"
+                flush>
+            <c-table caption="Measured contrast ratios for every declared token pairing">
+                <c-slot name="head">
+                    <c-table.column>
+                        Foreground
+                    </c-table.column>
+                    <c-table.column>
+                        Background
+                    </c-table.column>
+                    <c-table.column>
+                        Where
+                    </c-table.column>
+                    <c-table.column align="right">
+                        Ratio
+                    </c-table.column>
+                    <c-table.column align="right">
+                        Needs
+                    </c-table.column>
+                    <c-table.column>
+                        Result
+                    </c-table.column>
+                </c-slot>
+                {% for rule in contrast_rules %}
+                    <tr>
+                        <c-table.cell class="font-mono">
+                            {{ rule.foreground }}
+                        </c-table.cell>
+                        <c-table.cell class="font-mono">
+                            {{ rule.background }}
+                        </c-table.cell>
+                        <c-table.cell muted>
+                            {{ rule.where }}
+                        </c-table.cell>
+                        <c-table.cell align="right" class="font-mono">
+                            {{ rule.ratio|floatformat:2 }}
+                        </c-table.cell>
+                        <c-table.cell align="right" class="font-mono">
+                            {{ rule.minimum }}
+                        </c-table.cell>
+                        <c-table.cell>
+                            {% if rule.passes %}
+                                <c-badge tone="success" icon="circle-check">
+                                    {{ rule.kind }}
+                                </c-badge>
+                            {% else %}
+                                <c-badge tone="danger" icon="circle-x">
+                                    fails
+                                </c-badge>
+                            {% endif %}
+                        </c-table.cell>
+                    </tr>
+                {% endfor %}
+            </c-table>
+        </c-card>
+
+        {# ---------------------------------------------------------------- #}
+        {# Type                                                             #}
+        {# ---------------------------------------------------------------- #}
+        <c-card title="Type scale"
+                description="Reach for the role, not the size."
+                icon="typography">
+            <div class="flex flex-col gap-4">
+                <p class="text-display font-bold text-content">Display — headlines and empty states</p>
+                <p class="text-title font-bold text-content">Title — the single h1 on a page</p>
+                <p class="text-heading font-semibold text-content">Heading — card and section titles</p>
+                <p class="text-lead text-content-muted">Lead — page subtitles and intro copy</p>
+                <p class="text-body text-content">Body — the default for copy and controls</p>
+                <p class="text-caption text-content-subtle">Caption — badges, table headers, metadata</p>
+                <p class="font-mono text-body text-content">Mono — webhook URLs, secrets, ids</p>
+            </div>
+        </c-card>
+
+        {# ---------------------------------------------------------------- #}
+        {# Components                                                       #}
+        {# ---------------------------------------------------------------- #}
+        <c-card title="Components"
+                description="Each example is live markup, with its source underneath."
+                icon="components">
+            <div class="flex flex-col gap-10">
+
+                <c-spec name="c-button" note="The only clickable affordance.">
+                    <c-button>
+                        Primary
+                    </c-button>
+                    <c-button variant="secondary">
+                        Secondary
+                    </c-button>
+                    <c-button variant="ghost">
+                        Ghost
+                    </c-button>
+                    <c-button variant="danger">
+                        Danger
+                    </c-button>
+                    <c-button variant="link">
+                        Link
+                    </c-button>
+                    <c-button variant="link-danger">
+                        Link danger
+                    </c-button>
+                    <c-button variant="link-muted">
+                        Link muted
+                    </c-button>
+                    <c-button icon="plug-connected">
+                        With icon
+                    </c-button>
+                    <c-button icon="chevron-right" trailing>
+                        Trailing icon
+                    </c-button>
+                    <c-button size="sm">
+                        Small
+                    </c-button>
+                    <c-button size="lg">
+                        Large
+                    </c-button>
+                    <c-button loading>
+                        Loading
+                    </c-button>
+                    <c-button disabled>
+                        Disabled
+                    </c-button>
+                    <c-button href="#c-button" variant="secondary">
+                        As a link
+                    </c-button>
+                    <c-slot name="source">{% verbatim %}<c-button variant="danger" icon="trash">Remove member</c-button>
+                        <c-button href="/billing/" variant="secondary" size="sm">Billing</c-button>{% endverbatim %}</c-slot>
+            </c-spec>
+
+            <c-spec name="c-badge" note="States a fact. Never clickable.">
+                <c-badge>
+                    Neutral
+                </c-badge>
+                <c-badge tone="brand">
+                    Brand
+                </c-badge>
+                <c-badge tone="success" icon="circle-check">
+                    Connected
+                </c-badge>
+                <c-badge tone="warning" icon="clock">
+                    No events yet
+                </c-badge>
+                <c-badge tone="danger" icon="circle-x">
+                    Failed
+                </c-badge>
+                <c-badge tone="info" icon="antenna-bars-5">
+                    Receiving
+                </c-badge>
+                <c-badge tone="success" dot>
+                    With a dot
+                </c-badge>
+                <c-slot name="source">{% verbatim %}<c-badge tone="success" icon="circle-check">Connected</c-badge>{% endverbatim %}</c-slot>
+            </c-spec>
+
+            <c-spec name="c-alert" note="What happened, and what to do next.">
+                <div class="flex w-full flex-col gap-3">
+                    <c-alert tone="info" title="Neutral guidance">
+                        Explains what a page does.
+                    </c-alert>
+                    <c-alert tone="success" title="Stripe is connected">
+                        Events are arriving.
+                    </c-alert>
+                    <c-alert tone="warning" title="Trial ends Friday">
+                        Add a payment method to keep notifications flowing.
+                        <c-slot name="actions">
+                            <c-button size="sm">
+                                Add payment method
+                            </c-button>
+                        </c-slot>
+                    </c-alert>
+                    <c-alert tone="danger" title="Delivery has stopped">
+                        You've used every event in this month's plan.
+                    </c-alert>
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-alert tone="warning" title="Trial ends Friday">
+                            Add a payment method to keep notifications flowing.
+                            <c-slot name="actions">
+                                <c-button size="sm">
+                                    Add payment method
+                                </c-button>
+                            </c-slot>
+                        </c-alert>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-card" note="The container everything lives in.">
+                <div class="grid w-full gap-4 md:grid-cols-2">
+                    <c-card title="With a header"
+                            description="And a description"
+                            icon="chart-bar">
+                        <c-slot name="actions">
+                            <c-button size="sm" variant="secondary">
+                                Action
+                            </c-button>
+                        </c-slot>
+                        Body content sits here.
+                        <c-slot name="footer">
+                            A muted strip along the bottom.
+                        </c-slot>
+                    </c-card>
+                    <c-card>
+                        Just a body, no header.
+                    </c-card>
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-card title="Monthly usage"
+                                description="Events this month"
+                                icon="chart-bar">
+                            <c-slot name="actions">
+                                <c-button size="sm" variant="secondary">
+                                    Details
+                                </c-button>
+                            </c-slot>
+                            …
+                            <c-slot name="footer">
+                                Resets on the 1st.
+                            </c-slot>
+                        </c-card>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-icon-tile" note="What a section is about.">
+                <c-icon-tile name="rocket" />
+                <c-icon-tile name="circle-check" tone="success" />
+                <c-icon-tile name="clock" tone="warning" />
+                <c-icon-tile name="alert-triangle" tone="danger" />
+                <c-icon-tile name="info-circle" tone="info" />
+                <c-icon-tile name="settings" tone="neutral" />
+                <c-icon-tile name="rocket" size="sm" />
+                <c-icon-tile name="rocket" size="lg" />
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-icon-tile name="rocket" tone="brand" size="lg" />
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-provider-logo"
+                    note="A third party's own mark, in its own colours.">
+                <c-provider-logo provider="shopify" label="Shopify" />
+                <c-provider-logo provider="stripe" label="Stripe" />
+                <c-provider-logo provider="slack" label="Slack" />
+                <c-provider-logo provider="telegram" label="Telegram" />
+                <c-provider-logo provider="teams" label="Microsoft Teams" />
+                <c-provider-logo provider="hunter" label="Hunter.io" />
+                <c-provider-logo provider="chargify" label="Chargify" />
+                <c-provider-logo provider="unknown" label="Unknown provider" />
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-provider-logo provider="stripe" label="Stripe" />
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="Form controls"
+                    note="Label, control, help and error, wired together.">
+                <div class="grid w-full gap-4 md:grid-cols-2">
+                    <c-input name="demo_name"
+                             label="Workspace name"
+                             value="Acme Inc"
+                             help="Shown throughout Notipus." />
+                    <c-input name="demo_email"
+                             type="email"
+                             label="Email address"
+                             placeholder="you@company.com"
+                             error="Enter an address we can actually reach." />
+                    <c-input name="demo_secret"
+                             label="Signing secret"
+                             placeholder="whsec_…"
+                             help="Never rendered back into the page."
+                             secret />
+                    <c-select name="demo_role" label="Role" help="What they can change.">
+                        <option>Member</option>
+                        <option>Admin</option>
+                    </c-select>
+                    <c-textarea name="demo_notes"
+                                label="Notes"
+                                placeholder="Anything worth remembering"
+                                rows="3" />
+                    <div class="flex flex-col gap-3">
+                        <c-checkbox name="demo_events"
+                                    label="Order paid"
+                                    help="Fires when a customer completes checkout."
+                                    checked />
+                        <c-checkbox name="demo_events_2" label="Order refunded" />
+                    </div>
+                    <c-readonly label="Current plan" help="Changed from Billing.">
+                        Pro
+                    </c-readonly>
+                    <c-code-block label="Webhook URL"
+                                  value="https://notipus.com/webhook/stripe/0f8a3c1e/" />
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-input name="webhook_secret"
+                                 label="Signing secret"
+                                 placeholder="whsec_…"
+                                 secret
+                                 required />
+                        <c-select name="role" label="Role">
+                            <option>Member</option>
+                        </c-select>
+                        <c-code-block label="Workspace ID" value="{{ workspace.uuid }}" />
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-progress" note="How far through something the workspace is.">
+                <div class="flex w-full flex-col gap-3">
+                    <c-progress value="35" label="Brand tone" />
+                    <c-progress value="62" tone="success" label="Success tone" />
+                    <c-progress value="81" tone="warning" label="Warning tone" />
+                    <c-progress value="96" tone="danger" label="Danger tone" />
+                    <c-progress value="50" size="sm" label="Small" />
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-progress value="81" tone="warning" label="Monthly event usage" />
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-stat" note="One number and what it counts.">
+                <div class="grid w-full gap-4 sm:grid-cols-3">
+                    <c-stat label="Events this month" value="8,412" unit="of 10,000" icon="bolt" />
+                    <c-stat label="Failed deliveries"
+                            value="3"
+                            tone="danger"
+                            icon="alert-triangle" />
+                    <c-stat label="Next renewal" value="Mar 1" icon="calendar-event" />
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-stat label="Events this month" value="8,412" unit="of 10,000" icon="bolt" />
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-checklist" note="Steps in sequence, done or not.">
+                <c-checklist class="w-full">
+                    <c-checklist.item index="1"
+                                      title="Connect Slack"
+                                      description="Where notifications land"
+                                      done />
+                    <c-checklist.item index="2"
+                                      title="Connect a payment provider"
+                                      description="Stripe, Shopify or Chargify"
+                                      href="#c-checklist" />
+                    <c-checklist.item index="3"
+                                      title="Choose your events"
+                                      description="Completes when your first event arrives" />
+                </c-checklist>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-checklist>
+                            <c-checklist.item index="1"
+                                              title="Connect Slack"
+                                              description="Where notifications land"
+                                              done />
+                            <c-checklist.item index="2" title="Connect a provider" href="/integrations/" />
+                        </c-checklist>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-action-row / c-feature"
+                    note="A row you can go to, and one you can't.">
+                <div class="grid w-full gap-4 md:grid-cols-2">
+                    <c-action-row href="#c-action-row"
+                                  icon="users"
+                                  title="Members"
+                                  description="Invite people and set what they can change." />
+                    <c-action-row href="#c-action-row" icon="credit-card" tone="brand" title="Billing">
+                        <c-slot name="trailing">
+                            <c-badge tone="warning">
+                                Trial
+                            </c-badge>
+                        </c-slot>
+                    </c-action-row>
+                    <c-feature icon="lock"
+                               title="Read access only"
+                               description="Orders and customers, nothing else." />
+                    <c-feature layout="stack"
+                               icon="bolt"
+                               title="Stacked layout"
+                               description="For a three-up grid." />
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-action-row href="/workspace/members/"
+                                      icon="users"
+                                      title="Members"
+                                      description="Invite people and set what they can change." />
+                        <c-feature icon="lock"
+                                   title="Read access only"
+                                   description="Orders and customers, nothing else." />
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-list"
+                    note="Rows of the same kind of thing, inside a flush card.">
+                <c-card class="w-full" flush>
+                    <c-list>
+                        <c-list.row title="ada@example.com" description="Owner · joined last March">
+                            <c-slot name="leading">
+                                <c-avatar name="ada@example.com" />
+                            </c-slot>
+                            <c-slot name="actions">
+                                <c-badge tone="brand">
+                                    Owner
+                                </c-badge>
+                                <c-button variant="link-danger" size="sm">
+                                    Remove
+                                </c-button>
+                            </c-slot>
+                        </c-list.row>
+                        <c-list.row title="grace@example.com"
+                                    description="Invited two days ago"
+                                    icon="mail">
+                            <c-slot name="actions">
+                                <c-badge tone="warning">
+                                    Pending
+                                </c-badge>
+                                <c-button variant="link-muted" size="sm">
+                                    Cancel
+                                </c-button>
+                            </c-slot>
+                        </c-list.row>
+                    </c-list>
+                </c-card>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-card title="Members" flush>
+                            <c-list>
+                                <c-list.row title="ada@example.com" description="Owner">
+                                    <c-slot name="leading">
+                                        <c-avatar name="ada@example.com" />
+                                    </c-slot>
+                                    <c-slot name="actions">
+                                        <c-badge tone="brand">
+                                            Owner
+                                        </c-badge>
+                                    </c-slot>
+                                </c-list.row>
+                            </c-list>
+                        </c-card>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-table" note="Rows with columns. Scrolls inside its own box.">
+                <c-table class="w-full" caption="Example invoices">
+                    <c-slot name="head">
+                        <c-table.column>
+                            Invoice
+                        </c-table.column>
+                        <c-table.column>
+                            Date
+                        </c-table.column>
+                        <c-table.column align="right">
+                            Amount
+                        </c-table.column>
+                        <c-table.column>
+                            Status
+                        </c-table.column>
+                    </c-slot>
+                    <tr>
+                        <c-table.cell>
+                            INV-0042
+                        </c-table.cell>
+                        <c-table.cell muted>
+                            Feb 1, 2026
+                        </c-table.cell>
+                        <c-table.cell align="right" class="font-mono">
+                            $99.00
+                        </c-table.cell>
+                        <c-table.cell>
+                            <c-badge tone="success" icon="circle-check">
+                                Paid
+                            </c-badge>
+                        </c-table.cell>
+                    </tr>
+                    <tr>
+                        <c-table.cell>
+                            INV-0041
+                        </c-table.cell>
+                        <c-table.cell muted>
+                            Jan 1, 2026
+                        </c-table.cell>
+                        <c-table.cell align="right" class="font-mono">
+                            $99.00
+                        </c-table.cell>
+                        <c-table.cell>
+                            <c-badge tone="danger" icon="circle-x">
+                                Failed
+                            </c-badge>
+                        </c-table.cell>
+                    </tr>
+                </c-table>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-table caption="Invoices">
+                            <c-slot name="head">
+                                <c-table.column>
+                                    Invoice
+                                </c-table.column>
+                            </c-slot>
+                            <tr>
+                                <c-table.cell>
+                                    INV-0042
+                                </c-table.cell>
+                            </tr>
+                        </c-table>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-definition" note="Labelled facts, one per line.">
+                <c-definition class="w-full">
+                    <c-definition.row label="Invitation sent to" value="grace@example.com" />
+                    <c-definition.row label="Role">
+                        <c-badge tone="brand">
+                            Admin
+                        </c-badge>
+                    </c-definition.row>
+                    <c-definition.row label="Expires" value="Mar 8, 2026" />
+                </c-definition>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-definition>
+                            <c-definition.row label="Expires" value="Mar 8, 2026" />
+                            <c-definition.row label="Role">
+                                <c-badge tone="brand">
+                                    Admin
+                                </c-badge>
+                            </c-definition.row>
+                        </c-definition>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-plan-card" note="One subscription tier.">
+                <div class="grid w-full gap-6 pt-3 md:grid-cols-3">
+                    <c-plan-card name="Free"
+                                 price="$0"
+                                 period="/month"
+                                 description="Enough to see it working">
+                        <c-slot name="actions">
+                            <c-button variant="secondary" block>
+                                Start free
+                            </c-button>
+                        </c-slot>
+                        <c-slot name="features">
+                            <c-plan-card.feature>
+                                20 events a month
+                            </c-plan-card.feature>
+                            <c-plan-card.feature>
+                                Every integration
+                            </c-plan-card.feature>
+                        </c-slot>
+                    </c-plan-card>
+                    <c-plan-card name="Pro"
+                                 price="$99"
+                                 period="/month"
+                                 description="Built for growing teams"
+                                 featured>
+                        <c-slot name="actions">
+                            <c-button block>
+                                Choose Pro
+                            </c-button>
+                        </c-slot>
+                        <c-slot name="features">
+                            <c-plan-card.feature>
+                                100,000 events a month
+                            </c-plan-card.feature>
+                            <c-plan-card.feature>
+                                Priority support
+                            </c-plan-card.feature>
+                        </c-slot>
+                    </c-plan-card>
+                    <c-plan-card name="Basic"
+                                 price="$29"
+                                 period="/month"
+                                 description="Enough to get going"
+                                 current>
+                        <c-slot name="features">
+                            <c-plan-card.feature>
+                                10,000 events a month
+                            </c-plan-card.feature>
+                        </c-slot>
+                    </c-plan-card>
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-plan-card name="Pro" price="$99" period="/month" featured>
+                            <c-slot name="actions">
+                                <c-button block>
+                                    Choose Pro
+                                </c-button>
+                            </c-slot>
+                            <c-slot name="features">
+                                <c-plan-card.feature>
+                                    100,000 events a month
+                                </c-plan-card.feature>
+                            </c-slot>
+                        </c-plan-card>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-segmented" note="Two or three views of the same content.">
+                <c-segmented label="Example interval">
+                    <c-segmented.option value="yearly" selected>
+                        Yearly
+                    </c-segmented.option>
+                    <c-segmented.option value="monthly">
+                        Monthly
+                    </c-segmented.option>
+                </c-segmented>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-segmented label="Billing interval">
+                            <c-segmented.option value="yearly" selected>
+                                Yearly
+                            </c-segmented.option>
+                            <c-segmented.option value="monthly">
+                                Monthly
+                            </c-segmented.option>
+                        </c-segmented>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-empty-state" note="An invitation to act, not an apology.">
+                <div class="w-full rounded-control border border-border">
+                    <c-empty-state icon="bolt"
+                                   title="No events yet"
+                                   description="Connect a payment provider and the first order shows up here within seconds.">
+                        <c-slot name="actions">
+                            <c-button icon="plug">
+                                Set up an integration
+                            </c-button>
+                        </c-slot>
+                    </c-empty-state>
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-empty-state icon="bolt"
+                                       title="No events yet"
+                                       description="Connect a provider and events land here within seconds.">
+                            <c-slot name="actions">
+                                <c-button icon="plug">
+                                    Set up an integration
+                                </c-button>
+                            </c-slot>
+                        </c-empty-state>
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="c-avatar / c-divider"
+                    note="A person or company, and a rule between groups.">
+                <c-avatar name="Ada Lovelace" size="sm" />
+                <c-avatar name="Ada Lovelace" />
+                <c-avatar name="Ada Lovelace" size="lg" />
+                <div class="w-full">
+                    <c-divider />
+                </div>
+                <div class="w-full">
+                    <c-divider label="or" />
+                </div>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <c-avatar name="{{ member.user.email }}" />
+                        <c-divider label="or" />
+                    {% endverbatim %}
+                </c-slot>
+            </c-spec>
+
+            <c-spec name="Dialogs and toasts"
+                    note="Driven by NotipusUI in app/static/js/ui.js.">
+                <c-button variant="danger"
+                          onclick="NotipusUI.confirmDelete('They lose access to this workspace immediately.', 'member')">
+                    confirmDelete()
+                </c-button>
+                <c-button variant="secondary"
+                          onclick="NotipusUI.confirmDisconnect('Slack', 'Notifications stop arriving. You can reconnect at any time.')">
+                    confirmDisconnect()
+                </c-button>
+                <c-button variant="secondary"
+                          onclick="NotipusUI.confirmAction('Make this the default card?', 'Future charges use this card.', 'Make default')">
+                    confirmAction()
+                </c-button>
+                <c-button variant="secondary"
+                          onclick="NotipusUI.toast('Notifications now go to #alerts', 'success')">
+                    toast(success)
+                </c-button>
+                <c-button variant="secondary"
+                          onclick="NotipusUI.toast('We could not save that channel.', 'error')">
+                    toast(error)
+                </c-button>
+                <c-button variant="secondary"
+                          onclick="NotipusUI.toast('Your trial ends on Friday.', 'warning')">
+                    toast(warning)
+                </c-button>
+                <c-button variant="secondary"
+                          onclick="NotipusUI.toast('Invoice downloads are not available yet.', 'info')">
+                    toast(info)
+                </c-button>
+                <c-button variant="secondary"
+                          onclick="document.getElementById('demo-dialog').classList.remove('hidden')">
+                    c-dialog
+                </c-button>
+                <c-slot name="source">
+                    {% verbatim %}
+                        <form onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Remove Ada?', variant: 'danger'})">
+                        NotipusUI.toast('Notifications now go to #alerts', 'success');{% endverbatim %}</c-slot>
+                </c-spec>
+
+                <c-spec name="Icons" note="Tabler, via <c-icon> or the ti ti-* classes.">
+                    {% for name in sample_icons %}
+                        <span class="flex w-24 flex-col items-center gap-1 rounded-control border border-border p-2">
+                            <c-icon :name="name" size="lg" />
+                            <span class="w-full truncate text-center font-mono text-caption text-content-subtle">{{ name }}</span>
+                        </span>
+                    {% endfor %}
+                    <c-slot name="source">
+                        {% verbatim %}
+                            <c-icon name="circle-check" tone="success" />
+                            <c-icon name="alert-triangle" label="Warning" />
+                        {% endverbatim %}
+                    </c-slot>
+                </c-spec>
+            </div>
+        </c-card>
+    </c-page>
+
+    <c-dialog id="demo-dialog"
+              title="A page-owned dialog"
+              description="Use this when the modal has real content: a form, a picker, a preview."
+              icon="layout-board">
+        <c-input name="demo_dialog_field" label="Channel" placeholder="#alerts" />
+        <c-slot name="actions">
+            <c-button onclick="document.getElementById('demo-dialog').classList.add('hidden')">
+                Save
+            </c-button>
+            <c-button variant="secondary"
+                      onclick="document.getElementById('demo-dialog').classList.add('hidden')">
+                Cancel
+            </c-button>
+        </c-slot>
+    </c-dialog>
+{% endblock content %}

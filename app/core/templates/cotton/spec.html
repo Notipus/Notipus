@@ -1,0 +1,35 @@
+{% comment %}
+Spec — one entry in the component library: a live example above its source.
+
+Only used by the dev-only library page, but it lives here rather than being
+inlined so every entry on that page is laid out identically.
+
+Props:
+  name   the component's tag, e.g. "c-button"
+  note   one line on when to reach for it
+
+Slots:
+  slot    the rendered example
+  source  the markup that produced it, wrapped in {% templatetag openblock %} verbatim {% templatetag closeblock %}
+{% endcomment %}
+{% load code_format %}
+<c-vars name="" note="" class="" />
+
+<section id="{{ name }}" class="scroll-mt-24 {{ class }}" {{ attrs }}>
+    <div class="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h3 class="font-mono text-heading font-semibold text-content">&lt;{{ name }}&gt;</h3>
+        {% if note %}<p class="text-body text-content-muted">{{ note }}</p>{% endif %}
+    </div>
+    <div class="overflow-hidden rounded-card border border-border">
+        <div class="flex flex-wrap items-center gap-3 bg-surface p-gutter">{{ slot }}</div>
+        {% comment %}
+        code_sample escapes the slot and strips its indentation. Escaping matters
+        because slot content is a SafeString, so the browser would otherwise parse
+        the example as elements and only its text would survive; dedenting matters
+        because djlint re-indents the sample on every reformat.
+        {% endcomment %}
+        {% if source %}
+            <pre class="overflow-x-auto border-t border-border bg-surface-inverse p-4"><code class="font-mono text-caption text-content-inverse">{{ source|code_sample }}</code></pre>
+        {% endif %}
+    </div>
+</section>

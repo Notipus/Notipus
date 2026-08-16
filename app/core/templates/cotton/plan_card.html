@@ -1,0 +1,63 @@
+{% comment %}
+Plan card — one subscription tier with its price, features and call to action.
+
+Props:
+  name        the plan's display name
+  price       formatted price, e.g. "$29"
+  period      what the price is per, e.g. "/month"
+  description one line on who the plan is for
+  featured    mark as the recommended plan
+  badge       label for the featured ribbon  (default: "Most popular")
+  current     mark as the plan the workspace is already on
+
+Slots:
+  features  a <c-plan-card.feature> per included item
+  actions   the call to action
+{% endcomment %}
+<c-vars name=""
+        price=""
+        period=""
+        description=""
+        featured=""
+        badge="Most popular"
+        current=""
+        class="" />
+
+<div class="relative flex flex-col rounded-card border bg-surface p-gutter {% if featured %}border-brand shadow-raised{% else %}border-border shadow-card{% endif %} {{ class }}"
+     {{ attrs }}>
+    {% if featured %}
+        {% comment %}brand-bright with ink text: the one place the true logo orange
+        is a fill, and the loudest thing on the pricing page by design.{% endcomment %}
+        <span class="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-pill bg-brand-bright px-3 py-1 text-caption font-semibold uppercase tracking-wide text-content">
+            {{ badge }}
+        </span>
+    {% endif %}
+
+    <h3 class="text-heading font-semibold text-content">{{ name }}</h3>
+    {% if description %}<p class="mt-1 text-body text-content-muted">{{ description }}</p>{% endif %}
+
+    <p class="mt-5 flex items-baseline gap-1">
+        <span class="text-display font-bold text-content">{{ price }}</span>
+        {% if period %}<span class="text-body text-content-muted">{{ period }}</span>{% endif %}
+    </p>
+
+    <div class="mt-5">
+        {% if current %}
+            <c-badge tone="success" icon="circle-check">
+                Your current plan
+            </c-badge>
+        {% else %}
+            {{ actions }}
+        {% endif %}
+    </div>
+
+    {% if features %}
+        <div class="mt-6 border-t border-border pt-5">
+            <p class="text-caption font-semibold uppercase tracking-wide text-content-muted">What's included</p>
+            <ul class="mt-3 flex flex-col gap-2">
+                {{ features }}
+            </ul>
+        </div>
+    {% endif %}
+    {{ slot }}
+</div>

@@ -1,0 +1,15 @@
+{% comment %}
+Inner markup of <c-action-row>, shared by its <a> and <button> branches. Expects
+`icon`, `tone`, `title`, `description` and `trailing` in context. Not a component.
+{% endcomment %}
+{% if icon %}<c-icon-tile :name="icon" :tone="tone" size="sm" />{% endif %}
+<span class="min-w-0 flex-1">
+    <span class="block text-body font-medium text-content">{{ title }}</span>
+    {% if description %}<span class="block text-body text-content-muted">{{ description }}</span>{% endif %}
+</span>
+{% if trailing %}
+    <span class="flex flex-shrink-0 items-center gap-2">{{ trailing }}</span>
+{% else %}
+    <i class="ti ti-chevron-right flex-shrink-0 text-content-subtle transition-transform group-hover:translate-x-0.5"
+       aria-hidden="true"></i>
+{% endif %}
