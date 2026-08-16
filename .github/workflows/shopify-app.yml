@@ -15,12 +15,14 @@ name: Shopify App Config
 on:
   push:
     branches: [master]
-    # The config file only. Editing the workflow itself must not mint an
-    # app version for a change the merchants never see.
+    # The workflow itself counts: a change to how the config is deployed
+    # is worth exercising immediately rather than leaving it untested
+    # until the next config edit. Re-applying an unchanged config is
+    # harmless - it creates a version identical to the live one.
     paths:
       - shopify.app.toml
+      - .github/workflows/shopify-app.yml
   pull_request:
-    # Workflow edits are validated here, where the run cannot release.
     paths:
       - shopify.app.toml
       - .github/workflows/shopify-app.yml
