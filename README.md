@@ -1,21 +1,22 @@
-# Notipus — Enriched Slack Notifications for Payment Events
+# Notipus — Enriched Notifications for Payment Events
 
-Notipus turns payment and subscription webhooks from **Stripe**, **Shopify**, and **Maxio (formerly Chargify)** into enriched Slack notifications. It's more than a webhook relay: every alert tells you who the customer is, what they're worth, and whether they need attention — company background, contact name and role, lifetime value, tenure, and churn-risk flags, delivered where your team actually looks.
+Notipus turns payment and subscription webhooks from **Stripe**, **Shopify**, and **Maxio (formerly Chargify)** into enriched notifications in **Slack**, **Microsoft Teams**, or **Telegram**. It's more than a webhook relay: every alert tells you who the customer is, what they're worth, and whether they need attention — company background, contact name and role, lifetime value, tenure, and churn-risk flags, delivered where your team actually looks.
 
 Managed service: [notipus.com](https://notipus.com) · Self-hosting: [see below](#self-hosting)
 
 ## Features
 
 - **Three payment sources**: Stripe, Shopify, and Maxio (Chargify) webhooks, with signature validation on every request
+- **Three destinations**: Slack, Microsoft Teams, and Telegram — a workspace can use one or several, and each is formatted for its own platform
 - **One-click setup**: OAuth-based connections for Slack, Stripe (Stripe Connect creates the webhook endpoint for you), and Shopify — no manual token copying
 - **Automatic enrichment**: company data (logo, industry, size) via Brandfetch and person data (name, job title, seniority, LinkedIn) via Hunter.io
 - **Email domain badges**: customer emails are tagged as education, government, military, healthcare, free-provider, or disposable — so you see at a glance who's paying
 - **Insight detection**: VIP and at-risk flags, lifetime-value milestones ($1k–$100k), trial start/conversion, upgrade and downgrade detection, payment-retry tracking, customer anniversaries. Insights are emitted only when the webhook data supports them — lifetime-spend insights come from Maxio payloads. Stripe events carry no lifetime spend, and as of API version 2026-07 neither do Shopify's: `orders_count` and `total_spent` were dropped from the customer object in both order and customer webhooks. Notipus never guesses, so lifetime-value milestones, VIP and at-risk flags stay silent for those providers rather than treating every order as a first purchase. Recovering them for Shopify would require an Admin API token, which Notipus deliberately does not hold
 - **Noise reduction**: related events are consolidated and deduplicated into a single message instead of five pings
-- **Reliable delivery**: queued notifications are retried automatically for up to 6 hours with bounded attempts and duplicate suppression — a Slack hiccup doesn't mean a missed or doubled alert
+- **Reliable delivery**: queued notifications are retried automatically for up to 6 hours with bounded attempts and duplicate suppression — an outage at the destination doesn't mean a missed or doubled alert
 - **Full event coverage**: new subscriptions, payment success/failure, refunds, cancellations and reactivations, Shopify orders, fulfillment with real carrier status, and carrier-confirmed delivery
 - **Correct in every currency**: amounts respect each currency's real minor unit, including zero-decimal (JPY, KRW) and three-decimal (BHD, KWD) currencies
-- **Engaging messages**: Slack Block Kit formatting with action buttons that deep-link back to the originating dashboard
+- **Engaging messages**: each platform gets its native format — Slack Block Kit, Teams Adaptive Cards, Telegram HTML with inline buttons — all carrying action buttons that deep-link back to the originating dashboard
 
 ## Self-Hosting
 
@@ -418,7 +419,7 @@ Notipus uses a unified plugin system (documented in [ADR-001](docs/adr/001-unifi
 | Type | Purpose | Examples |
 |------|---------|----------|
 | **Sources** | Receive and validate webhooks from payment providers | Stripe, Shopify, Chargify |
-| **Destinations** | Format and deliver notifications | Slack (with Block Kit) |
+| **Destinations** | Format and deliver notifications | Slack (Block Kit), Microsoft Teams, Telegram |
 | **Enrichment** | Enhance data with external information | Brandfetch (company logos/branding) |
 
 **Key Features:**
@@ -440,16 +441,26 @@ PLUGINS = {
             "config": {"api_key": "...", "timeout": 10},
         }
     },
-    "sources": {
+    # Note the singular keys: "source" and "destination", not their
+    # plurals. An unrecognised key is ignored rather than rejected, so a
+    # plural one fails silently.
+    "source": {
         "stripe": {"enabled": True},
         "shopify": {"enabled": True},
         "chargify": {"enabled": True},
     },
-    "destinations": {
+    "destination": {
         "slack": {"enabled": True},
+        "telegram": {"enabled": True},
+        "teams": {"enabled": True},
     },
 }
 ```
+
+Discovered plugins are enabled by default, so this block is where you
+*configure* one — passing an API key, or turning one off with
+`{"enabled": False}` — rather than a list you must add to before a
+plugin will run.
 
 ### Authentication
 
@@ -603,7 +614,7 @@ The Brandfetch integration enriches company domains with brand information:
 
 - Automatically fetches company logos, colors, and descriptions
 - Caches results in the `Company` model to reduce API calls
-- Used to enhance Slack notifications with company branding
+- Used to enhance notifications with company branding
 
 ### Rate Limiting & Circuit Breaker
 
@@ -695,6 +706,8 @@ Customer webhook integrations are configured per-tenant through the web interfac
 
 - **Stripe**: One-click OAuth connection (automatic webhook setup)
 - **Slack**: One-click OAuth connection for notifications
+- **Microsoft Teams**: Incoming webhook URL
+- **Telegram**: Bot token and chat ID
 - **Shopify**: OAuth connection with automatic webhook subscription setup
 - **Chargify**: Webhook secret configuration
 

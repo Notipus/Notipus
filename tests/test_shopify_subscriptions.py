@@ -207,3 +207,47 @@ class TestTopicCoverage:
             "customers/create",
         }
         assert mapped <= set(SHOPIFY_WEBHOOK_TOPICS)
+
+
+class TestSubscriptionsAreNotOffered:
+    """The Subscriptions category must not reach a merchant.
+
+    Its topics need read_own_subscription_contracts, which covers only
+    contracts the requesting app created - and Notipus creates none. The
+    topics are not declared in the app configuration either, so enabling
+    the category would subscribe a merchant to silence.
+    """
+
+    def test_subscriptions_is_hidden(self) -> None:
+        """It exists as a topic mapping, but is not selectable."""
+        from core.views.integrations.shopify import (
+            SHOPIFY_EVENT_CATEGORIES,
+            _selectable_categories,
+        )
+
+        assert "subscriptions" in SHOPIFY_EVENT_CATEGORIES
+        assert "subscriptions" not in _selectable_categories()
+
+    def test_every_offered_category_can_deliver(self) -> None:
+        """Anything offered must be declared in the app configuration.
+
+        A category Shopify never sends is worse than a missing feature:
+        the merchant ticks a box and concludes the app is broken.
+        """
+        import tomllib
+        from pathlib import Path
+
+        from core.views.integrations.shopify import _selectable_categories
+
+        config = tomllib.loads(
+            (Path(__file__).resolve().parents[1] / "shopify.app.toml").read_text()
+        )
+        declared = {
+            topic
+            for block in config["webhooks"]["subscriptions"]
+            for topic in block["topics"]
+        }
+
+        for key, category in _selectable_categories().items():
+            for topic in category["topics"]:
+                assert topic in declared, f"{key} offers undeliverable {topic}"
