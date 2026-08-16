@@ -54,6 +54,11 @@ jobs:
       # catching - an invalid topic, a missing scope, an unapproved
       # protected-data subscription - none of which are visible until
       # Shopify itself parses the file.
+      # --allow-updates and --no-release are mutually exclusive, so each
+      # mode contributes its own flag rather than combining them.
+      # --allow-updates is what skips the confirmation prompt when
+      # releasing; --no-release never reaches a prompt because nothing
+      # is released.
       - name: Decide whether to release
         id: mode
         run: |
@@ -63,13 +68,12 @@ jobs:
             && [ "${{ inputs.release }}" != "true" ]; then
             echo "flag=--no-release" >> "$GITHUB_OUTPUT"
           else
-            echo "flag=" >> "$GITHUB_OUTPUT"
+            echo "flag=--allow-updates" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Deploy configuration
         run: |
           npx --yes @shopify/cli@4 app deploy \
-            --allow-updates \
             --no-color \
             ${{ steps.mode.outputs.flag }} \
             --source-control-url "$SOURCE_URL" \

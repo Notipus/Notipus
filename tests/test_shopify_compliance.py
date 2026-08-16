@@ -464,3 +464,30 @@ class TestDataRequestFulfilment:
 
         assert response.status_code == 200
         assert response.json()["delivered"] is False
+
+
+@pytest.mark.django_db
+class TestShopDomainCasing:
+    """An erasure request must not be lost to a capitalisation."""
+
+    def test_mixed_case_shop_domain_still_resolves(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """Answering "no_data" while holding the data is the bad outcome.
+
+        It looks like a clean response to Shopify and leaves the records
+        in place, with nothing to indicate the request was missed.
+        """
+        webhook_key = f"webhook:{workspace.uuid}:order:1"
+        store_record(str(workspace.uuid), webhook_key, {"customer_id": "42"})
+
+        response = post(
+            client,
+            "shopify_customer_redact",
+            "customers/redact",
+            {"shop_domain": SHOP.upper(), "customer": {"id": 42}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+        assert cache.get(webhook_key) is None

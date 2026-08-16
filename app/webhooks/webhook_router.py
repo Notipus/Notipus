@@ -876,10 +876,13 @@ def shopify_events_webhook(request: HttpRequest) -> JsonResponse:
                 status=403,
             )
 
+        # Lowercased to match: connect stores the normalised domain, so a
+        # mixed-case header would find nothing and the event would be
+        # dropped as belonging to no workspace.
         integration = (
             Integration.objects.filter(
                 integration_type="shopify",
-                integration_settings__shop_domain=shop_domain,
+                integration_settings__shop_domain=shop_domain.lower(),
                 is_active=True,
             )
             .select_related("workspace")

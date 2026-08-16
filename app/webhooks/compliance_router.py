@@ -91,9 +91,12 @@ def _find_workspace(shop_domain: str | None) -> Workspace | None:
     """
     if not shop_domain:
         return None
+    # Lowercased to match: connect stores the normalised domain, so a
+    # mixed-case value would find nothing and an erasure request would be
+    # acknowledged as having no data while the data still exists.
     integration = Integration.objects.filter(
         integration_type="shopify",
-        integration_settings__shop_domain=shop_domain,
+        integration_settings__shop_domain=shop_domain.lower(),
     ).first()
     return integration.workspace if integration else None
 

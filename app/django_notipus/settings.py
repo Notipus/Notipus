@@ -784,10 +784,17 @@ SHOPIFY_REDIRECT_URI = os.environ.get(
 # ``or`` rather than a get() default: docker-compose passes the variable
 # through as an empty string when it is unset on the host.
 SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION") or "2026-07"
-# There is no write_webhooks scope in Shopify: permission to subscribe to a
-# webhook topic comes from holding the matching read scope for the resource.
-# Requesting a non-existent scope makes the OAuth authorize step fail.
-SHOPIFY_SCOPES = "read_orders,read_customers"
+# Sent as the `scope` parameter on the OAuth authorize URL. Under
+# Shopify-managed installation - what the app uses - Shopify ignores it
+# and grants whatever shopify.app.toml declares; it only takes effect
+# under the legacy install flow. Kept in step with the toml regardless,
+# because two lists of scopes that disagree is a trap for whoever reads
+# them next, and the legacy flow is one config flag away.
+#
+# There is no write_webhooks scope in Shopify: permission to subscribe to
+# a topic comes from holding the matching read scope for the resource.
+# Requesting a non-existent scope makes the authorize step fail outright.
+SHOPIFY_SCOPES = "read_orders,read_customers,read_fulfillments"
 
 # Base URL for webhook endpoints (used in OAuth callbacks). Trailing
 # slash stripped so f"{BASE_URL}/webhook/..." concatenations cannot

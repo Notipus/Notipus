@@ -266,3 +266,31 @@ class TestSignedShopBinding:
         """
         response = deliver(client, "orders/create")
         assert response.status_code == 200
+
+
+@pytest.mark.django_db
+class TestShopDomainCasing:
+    """The shop header selects the tenant, so casing cannot matter."""
+
+    def test_mixed_case_header_still_finds_the_workspace(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """Connect stores the domain lowercased.
+
+        A case-sensitive lookup would find nothing and silently drop the
+        event as belonging to no workspace - indistinguishable, in the
+        logs, from a store that never connected.
+        """
+        response = deliver(client, "orders/create", shop=SHOP.upper())
+
+        assert response.status_code == 200
+        assert "no workspace" not in response.json()["message"]
+
+    def test_mixed_case_header_matches_the_signed_body(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """The signed-body check compares the same two values."""
+        body = dict(ORDER_BODY, order_status_url=f"https://{SHOP}/1/orders/x")
+        response = deliver(client, "orders/create", body=body, shop=SHOP.upper())
+
+        assert response.status_code == 200
