@@ -1,0 +1,119 @@
+name: Shopify App Config
+
+# Applies shopify.app.toml to the Shopify app: URLs, access scopes,
+# webhook subscriptions and the mandatory privacy compliance endpoints.
+#
+# Doing this by hand is how the configuration and the repository drift
+# apart - and the configuration is not cosmetic. It decides where every
+# merchant's webhooks are delivered, so a stale value silently stops the
+# integration for everyone.
+#
+# Runs when the file changes. Pushes and pull requests validate it
+# against Shopify without touching the app; releasing is a manual
+# dispatch, because the configuration names webhook URLs the running app
+# has to serve and this workflow races the application deploy.
+
+on:
+  push:
+    branches: [master]
+    # The workflow itself counts: a change to how the config is checked
+    # is worth exercising immediately rather than leaving it untested
+    # until the next config edit.
+    paths:
+      - shopify.app.toml
+      - .github/workflows/shopify-app.yml
+  pull_request:
+    paths:
+      - shopify.app.toml
+      - .github/workflows/shopify-app.yml
+  workflow_dispatch:
+    inputs:
+      release:
+        description: >-
+          Release to merchants. Only do this once the deployed app serves
+          the webhook URLs this configuration names. Unchecked creates an
+          unreleased version instead.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy app configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Automatic runs only ever check. --no-release is not a dry run: it
+      # still creates a version on the live app, so it is never used for
+      # validation.
+      #
+      # Releasing is left to a manual dispatch because the configuration
+      # names webhook URLs that the running app has to serve. This
+      # workflow and the application deploy are triggered by the same
+      # push and race each other, so an automatic release could point
+      # every merchant's webhooks at endpoints the deployed code does not
+      # have yet. Dispatching it deliberately, once the app is out, keeps
+      # that ordering in human hands.
+      - name: Validate configuration
+        if: github.event_name != 'workflow_dispatch'
+        run: npx --yes @shopify/cli@4 app config validate --no-color
+        env:
+          SHOPIFY_APP_AUTOMATION_TOKEN:
+            ${{ secrets.SHOPIFY_APP_AUTOMATION_TOKEN || secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+          SHOPIFY_CLI_PARTNERS_TOKEN:
+            ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN || secrets.SHOPIFY_APP_AUTOMATION_TOKEN }}
+          CI: "1"
+
+      # --allow-updates and --no-release are mutually exclusive, so each
+      # mode contributes its own flag rather than combining them.
+      # --allow-updates skips the confirmation prompt when releasing;
+      # --no-release never reaches a prompt because nothing is released.
+      - name: Decide whether to release
+        if: github.event_name == 'workflow_dispatch'
+        id: mode
+        run: |
+          if [ "${{ inputs.release }}" != "true" ]; then
+            echo "flag=--no-release" >> "$GITHUB_OUTPUT"
+          else
+            echo "flag=--allow-updates" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy configuration
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          npx --yes @shopify/cli@4 app deploy \
+            --no-color \
+            ${{ steps.mode.outputs.flag }} \
+            --source-control-url "$SOURCE_URL" \
+            --message "$DEPLOY_MESSAGE"
+        env:
+          # The CLI reads SHOPIFY_APP_AUTOMATION_TOKEN first and falls
+          # back to SHOPIFY_CLI_PARTNERS_TOKEN. Which of those a token is
+          # depends on where it was created - the Developer Dashboard
+          # issues app-scoped automation tokens, the legacy Partner
+          # Dashboard organisation-wide ones - and a token in the wrong
+          # variable is simply ignored, producing an "authorization is
+          # required" error that says nothing about the cause.
+          #
+          # So whichever secret is set is offered under both names. The
+          # CLI tries them in order and one of them is right.
+          SHOPIFY_APP_AUTOMATION_TOKEN:
+            ${{ secrets.SHOPIFY_APP_AUTOMATION_TOKEN || secrets.SHOPIFY_CLI_PARTNERS_TOKEN }}
+          SHOPIFY_CLI_PARTNERS_TOKEN:
+            ${{ secrets.SHOPIFY_CLI_PARTNERS_TOKEN || secrets.SHOPIFY_APP_AUTOMATION_TOKEN }}
+          # Through the environment, not the command line: a commit
+          # message containing a quote or a newline would otherwise break
+          # out of the shell command.
+          DEPLOY_MESSAGE: ${{ github.event.head_commit.message || 'manual deploy' }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          # Stops the CLI opening a browser or waiting on a prompt.
+          CI: "1"

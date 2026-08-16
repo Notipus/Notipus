@@ -1,10 +1,11 @@
 import json
 import logging
 from typing import Any, Dict, Optional, cast
+from urllib.parse import urlparse
 
 from core.models import Integration, Workspace
 from django.conf import settings
-from django.http import HttpRequest, JsonResponse
+from django.http import Http404, HttpRequest, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -248,6 +249,18 @@ def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     scopes keys per workspace); events missing a ``provider`` field fall
     back to the "unknown" namespace so the key is never un-namespaced.
 
+    The parsed event type is part of the key. Shopify sends byte-identical
+    bodies for genuinely different topics - orders/create, orders/paid,
+    orders/cancelled and orders/fulfilled all serialise the same order
+    resource - so hashing the body alone collapses four events into one
+    and silently drops three payment notifications.
+
+    That does mean the key depends on the topic header, which Shopify
+    does not cover with its HMAC: someone holding a captured body could
+    replay it under another topic and mint one extra notification per
+    topic. That is a bounded forgery requiring an already-intercepted
+    webhook, weighed against certain, routine loss of real events.
+
     Falls back to ``event_id`` for providers whose unique event id is
     inside the signed payload (Stripe's ``evt_...``), then to a
     composite of event type and object id so distinct events for the
@@ -257,7 +270,8 @@ def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     content_hash = event_data.get("content_hash")
     if content_hash:
         provider = event_data.get("provider") or "unknown"
-        return f"{provider}:sha256:{content_hash}"
+        event_type = event_data.get("type") or "unknown"
+        return f"{provider}:{event_type}:sha256:{content_hash}"
     event_id = event_data.get("event_id")
     if event_id:
         return str(event_id)
@@ -600,7 +614,27 @@ def health_check(request: HttpRequest) -> JsonResponse:
 def customer_shopify_webhook(
     request: HttpRequest, organization_uuid: str
 ) -> JsonResponse:
-    """Handle customer-specific Shopify webhook requests with rate limiting"""
+    """Handle Shopify webhooks addressed to one workspace.
+
+    The per-tenant address is the stronger of the two bindings Notipus
+    has. Shopify's HMAC covers the request body only, never the headers,
+    so the app-level endpoint's ``X-Shopify-Shop-Domain`` routing can in
+    principle be redirected by replaying a captured body under a
+    different shop header. Delivering to a workspace-specific URL means
+    an event has to satisfy the address as well, and the shop check
+    below means it has to satisfy both at once.
+
+    Used by merchants who register webhooks themselves in the Shopify
+    admin - who supply their own signing secret, so Notipus needs no app
+    install and no credential of any kind.
+
+    Args:
+        request: The incoming request.
+        organization_uuid: Workspace UUID from the URL.
+
+    Returns:
+        The processing result, or an error response.
+    """
     logger.info(
         f"Processing customer Shopify webhook for workspace {organization_uuid}",
         extra={
@@ -621,9 +655,18 @@ def customer_shopify_webhook(
             is_active=True,
         )
 
+        shop_mismatch = _reject_shop_mismatch(request, integration, organization_uuid)
+        if shop_mismatch is not None:
+            return shop_mismatch
+
         from plugins.sources.shopify import ShopifySourcePlugin
 
-        provider = ShopifySourcePlugin(webhook_secret=integration.webhook_secret)
+        # A merchant-registered webhook carries its own secret. An
+        # app-installed one has none, and is signed with the app's
+        # client secret like every other app-level delivery.
+        provider = ShopifySourcePlugin(
+            webhook_secret=integration.webhook_secret or settings.SHOPIFY_CLIENT_SECRET
+        )
 
         return _process_webhook(
             request,
@@ -634,10 +677,251 @@ def customer_shopify_webhook(
             log_provider_name="shopify",
         )
 
+    except Http404:
+        # An address for a workspace or integration that no longer
+        # exists. Reporting 500 would have the provider retry for two
+        # days and then disable the endpoint; 404 says plainly that
+        # there is nothing here.
+        logger.warning(
+            "Shopify webhook for unknown workspace/integration %s", organization_uuid
+        )
+        return JsonResponse(
+            {
+                "status": "error",
+                "error": "NotFound",
+                "message": "No active Shopify integration for this workspace",
+                "code": 404,
+            },
+            status=404,
+        )
     except Exception as e:
         logger.error(f"Error in customer Shopify webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
         return JsonResponse(error_response, status=500)
+
+
+def _reject_shop_mismatch(
+    request: HttpRequest, integration: Integration, workspace_uuid: str
+) -> JsonResponse | None:
+    """Reject an event whose shop is not the one this workspace connected.
+
+    The signature proves Shopify sent the body; it proves nothing about
+    which shop it came from, because the HMAC does not cover headers. So
+    a body captured from one store could otherwise be posted to another
+    workspace's address and be attributed to it - one tenant seeing
+    another's orders.
+
+    Args:
+        request: The incoming request.
+        integration: The addressed workspace's Shopify integration.
+        workspace_uuid: The workspace UUID, for logging.
+
+    Returns:
+        A 403 response on mismatch, None when the shop agrees or when
+        either side is unknown.
+    """
+    header_shop = request.headers.get("X-Shopify-Shop-Domain")
+    configured_shop = integration.integration_settings.get("shop_domain")
+
+    if not header_shop or not configured_shop:
+        # Nothing to compare: a merchant-registered webhook need not have
+        # a shop recorded, and Shopify omits the header on some tooling.
+        return None
+
+    if header_shop.lower() != str(configured_shop).lower():
+        logger.warning(
+            "Rejecting Shopify webhook for workspace %s: shop %s does not "
+            "match connected shop %s",
+            workspace_uuid,
+            header_shop,
+            configured_shop,
+        )
+        return JsonResponse(
+            {
+                "status": "error",
+                "error": "ShopMismatch",
+                "message": "Webhook shop does not match the connected store",
+                "code": 403,
+            },
+            status=403,
+        )
+    return None
+
+
+def _signed_shop_domain(request: HttpRequest) -> str | None:
+    """Return the shop domain carried inside the signed request body.
+
+    ``X-Shopify-Shop-Domain`` is not covered by the HMAC, so on its own
+    it cannot be trusted to select a tenant. Order payloads do name the
+    store inside the signed body, in ``order_status_url``, which can be
+    checked against the header.
+
+    Only a ``*.myshopify.com`` host is returned. A store with a custom
+    primary domain may use it here, and that cannot be compared against
+    the myshopify domain the header carries - so those simply go
+    unchecked rather than being wrongly rejected.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The shop's myshopify domain, or None when the body does not
+        carry one that can be compared.
+    """
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+
+    status_url = body.get("order_status_url")
+    if not isinstance(status_url, str):
+        return None
+
+    host = urlparse(status_url).hostname
+    if host and host.lower().endswith(".myshopify.com"):
+        return host.lower()
+    return None
+
+
+def _topic_is_enabled(integration: Integration, topic: str) -> bool:
+    """Check whether a workspace wants events of this topic.
+
+    App-level subscriptions are declared once for the whole app, so every
+    installing store sends every declared topic. The merchant's category
+    choice is therefore honoured here rather than by subscribing
+    selectively - which is what kept an Admin API token necessary.
+
+    Args:
+        integration: The workspace's Shopify integration.
+        topic: The Shopify topic header.
+
+    Returns:
+        True when the topic belongs to an enabled category. Unknown
+        topics pass through so the parser decides their fate.
+    """
+    from core.views.integrations.shopify import (
+        SHOPIFY_EVENT_CATEGORIES,
+        _get_default_categories,
+    )
+
+    enabled = integration.integration_settings.get(
+        "enabled_categories", _get_default_categories()
+    )
+
+    owning_categories = [
+        key
+        for key, config in SHOPIFY_EVENT_CATEGORIES.items()
+        if isinstance(config.get("topics"), list) and topic in config["topics"]
+    ]
+    if not owning_categories:
+        return True
+    return any(category in enabled for category in owning_categories)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def shopify_events_webhook(request: HttpRequest) -> JsonResponse:
+    """Receive Shopify events for every installed shop on one endpoint.
+
+    Subscriptions are declared in the app configuration rather than
+    created per shop, so Shopify delivers here without Notipus ever
+    holding an Admin API token. The sending store is identified by the
+    ``X-Shopify-Shop-Domain`` header, which Shopify sets on every
+    delivery, and the signature is the app's own client secret.
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        401 for an unverifiable signature, 200 otherwise. Anything a
+        merchant did not ask for is acknowledged and dropped: retrying
+        it would achieve nothing.
+    """
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain")
+    logger.info("Processing app-level Shopify webhook for shop %s", shop_domain)
+
+    try:
+        from plugins.sources.shopify import ShopifySourcePlugin
+
+        # Signed with the app's client secret: there is no per-shop
+        # secret because there is no per-shop subscription.
+        provider = ShopifySourcePlugin(webhook_secret=settings.SHOPIFY_CLIENT_SECRET)
+        if not provider.validate_webhook(request):
+            logger.warning("Rejected Shopify webhook for %s: invalid HMAC", shop_domain)
+            return JsonResponse(
+                create_error_response(WebhookSignatureError(), 401), status=401
+            )
+
+        # This endpoint picks the tenant from an unsigned header, so a
+        # captured body could otherwise be re-pointed at another
+        # workspace. Where the signed body names the store too, the two
+        # must agree.
+        signed_shop = _signed_shop_domain(request)
+        if signed_shop and shop_domain and signed_shop != shop_domain.lower():
+            logger.warning(
+                "Rejecting Shopify webhook: header claims %s but the signed "
+                "body is from %s",
+                shop_domain,
+                signed_shop,
+            )
+            return JsonResponse(
+                {
+                    "status": "error",
+                    "error": "ShopMismatch",
+                    "message": "Webhook shop does not match the signed payload",
+                    "code": 403,
+                },
+                status=403,
+            )
+
+        # Lowercased to match: connect stores the normalised domain, so a
+        # mixed-case header would find nothing and the event would be
+        # dropped as belonging to no workspace.
+        integration = (
+            Integration.objects.filter(
+                integration_type="shopify",
+                integration_settings__shop_domain=shop_domain.lower(),
+                is_active=True,
+            )
+            .select_related("workspace")
+            .first()
+            if shop_domain
+            else None
+        )
+
+        if integration is None:
+            # A store that installed the app but never finished connecting
+            # a workspace, or one that has disconnected.
+            logger.info("No active workspace for shop %s; acknowledging", shop_domain)
+            return JsonResponse(
+                create_success_response("no workspace for shop"), status=200
+            )
+
+        topic = request.headers.get("X-Shopify-Topic", "")
+        if not _topic_is_enabled(integration, topic):
+            logger.info(
+                "Topic %s not enabled for workspace %s; acknowledging",
+                topic,
+                integration.workspace.uuid,
+            )
+            return JsonResponse(
+                create_success_response("topic not enabled"), status=200
+            )
+
+        return _process_webhook(
+            request,
+            provider,
+            "customer_shopify",
+            integration.workspace,
+            integration,
+            log_provider_name="shopify",
+        )
+
+    except Exception as e:
+        logger.error(f"Error in Shopify webhook: {e!s}", exc_info=True)
+        return JsonResponse(create_error_response(e, 500), status=500)
 
 
 @csrf_exempt

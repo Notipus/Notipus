@@ -1,7 +1,7 @@
 """Tests for the Shopify integration end-to-end fixes.
 
 Covers webhook secret storage/backfill, event type mappings
-(orders/cancelled, orders/refunded, customers/create, checkouts/create),
+(orders/cancelled, refunds/create, customers/create, checkouts/create),
 guest checkout handling, null line-item prices, consolidation bucket
 integrity, and Decimal monetary precision.
 """
@@ -141,7 +141,7 @@ class TestShopifyWebhookEndToEnd:
         workspace: Workspace,
         shopify_integration: Integration,
     ) -> None:
-        """orders/refunded must be accepted and map to refund_issued."""
+        """refunds/create must be accepted and map to refund_issued."""
         payload = {
             "id": 820982911946154509,
             "order_number": 1002,
@@ -153,7 +153,7 @@ class TestShopifyWebhookEndToEnd:
         with patch("django.conf.settings.EVENT_PROCESSOR") as mock_processor:
             mock_processor.build_rich_notification.return_value = {"blocks": []}
             response = _post_shopify_webhook(
-                client, workspace, "orders/refunded", payload
+                client, workspace, "refunds/create", payload
             )
 
         assert response.status_code == 200
@@ -276,7 +276,7 @@ class TestShopifyEventTypeMapping:
     ) -> None:
         """New topic mappings must all be valid EventProcessor types."""
         expected = {
-            "orders/refunded": "refund_issued",
+            "refunds/create": "refund_issued",
             "customers/create": "customer_created",
             "checkouts/create": "checkout_started",
         }
@@ -622,13 +622,19 @@ class TestShopifyOAuthCallbackSecret:
         SHOPIFY_API_VERSION="2025-01",
         BASE_URL="http://localhost:8000",
     )
-    def test_successful_callback_stores_webhook_secret(
+    def test_successful_callback_stores_no_credentials(
         self,
         client: Client,
         workspace: Workspace,
         oauth_user: Any,
     ) -> None:
-        """A successful OAuth callback stores the client secret."""
+        """A successful callback keeps the shop, not the credentials.
+
+        Events arrive on the app-level endpoint and are verified against
+        the app's own client secret, so there is no per-shop secret to
+        keep - and no access token, which would otherwise be a standing
+        read capability over the merchant's whole store.
+        """
         from django.urls import reverse
 
         token_response = Mock()
@@ -638,15 +644,12 @@ class TestShopifyOAuthCallbackSecret:
             "access_token": "test_access_token",
             "scope": "read_orders,read_customers",
         }
-        webhook_response = Mock()
-        webhook_response.status_code = 201
-        webhook_response.json.return_value = {"webhook": {"id": 12345}}
 
         client.force_login(oauth_user)
         self._start_callback(client)
 
         with patch("core.views.integrations.shopify.requests.post") as mock_post:
-            mock_post.side_effect = [token_response] + [webhook_response] * 10
+            mock_post.side_effect = [token_response]
             response = client.get(
                 reverse("core:shopify_connect_callback"),
                 self._callback_params(),
@@ -657,8 +660,10 @@ class TestShopifyOAuthCallbackSecret:
             workspace=workspace, integration_type="shopify"
         )
         assert integration.is_active is True
-        # Webhook secret must be stored so HMAC validation can succeed
-        assert integration.webhook_secret == "oauth-app-secret"
+        assert integration.webhook_secret == ""
+        assert integration.oauth_credentials == {}
+        # Only the token exchange: no Admin API traffic.
+        assert mock_post.call_count == 1
 
 
 def _get_backfill() -> Any:

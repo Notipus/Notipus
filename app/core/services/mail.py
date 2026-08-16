@@ -24,6 +24,7 @@ def send_email(
     text_body: str,
     recipients: list[str],
     html_body: str | None = None,
+    attachments: list[tuple[str, str, str]] | None = None,
 ) -> bool:
     """Send one message to ``recipients``.
 
@@ -32,6 +33,7 @@ def send_email(
         text_body: Plain-text body, always sent as the primary part.
         recipients: Recipient addresses; a no-op when empty.
         html_body: Optional HTML alternative.
+        attachments: Optional ``(filename, content, mimetype)`` tuples.
 
     Returns:
         True when the message was handed to the mail backend, False when
@@ -50,6 +52,8 @@ def send_email(
     )
     if html_body:
         message.attach_alternative(html_body, "text/html")
+    for filename, content, mimetype in attachments or []:
+        message.attach(filename, content, mimetype)
 
     try:
         message.send(fail_silently=False)

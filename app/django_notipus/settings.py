@@ -553,20 +553,20 @@ if not DEBUG:
 
 # CSRF Protection
 CSRF_TRUSTED_ORIGINS = []
-if not DEBUG:
-    csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
-    if csrf_origins_env:
-        CSRF_TRUSTED_ORIGINS = [
-            origin.strip() for origin in csrf_origins_env.split(",")
-        ]
-    else:
-        # Default trusted origins for production
-        CSRF_TRUSTED_ORIGINS = [
-            "https://notipus.com",
-            "https://www.notipus.com",
-        ]
-        if APP_NAME:
-            CSRF_TRUSTED_ORIGINS.append(f"https://{APP_NAME}.fly.dev")
+# Honoured in DEBUG too: local end-to-end testing against Shopify runs the
+# dev server behind an HTTPS tunnel, and Django rejects POSTs whose Origin
+# header doesn't match a trusted origin.
+csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
+if csrf_origins_env:
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in csrf_origins_env.split(",")]
+elif not DEBUG:
+    # Default trusted origins for production
+    CSRF_TRUSTED_ORIGINS = [
+        "https://notipus.com",
+        "https://www.notipus.com",
+    ]
+    if APP_NAME:
+        CSRF_TRUSTED_ORIGINS.append(f"https://{APP_NAME}.fly.dev")
 
 
 # Password validation
@@ -778,8 +778,23 @@ SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "")
 SHOPIFY_REDIRECT_URI = os.environ.get(
     "SHOPIFY_REDIRECT_URI", "http://localhost:8000/api/connect/shopify/callback/"
 )
-SHOPIFY_API_VERSION = "2025-01"  # Stable API version for webhook management
-SHOPIFY_SCOPES = "read_orders,read_customers,write_webhooks"
+# Stable API version for webhook management. Shopify supports each stable
+# version for 12 months and falls forward to the oldest accessible version
+# when an app targets a retired one, so keep this current.
+# ``or`` rather than a get() default: docker-compose passes the variable
+# through as an empty string when it is unset on the host.
+SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION") or "2026-07"
+# Sent as the `scope` parameter on the OAuth authorize URL. Under
+# Shopify-managed installation - what the app uses - Shopify ignores it
+# and grants whatever shopify.app.toml declares; it only takes effect
+# under the legacy install flow. Kept in step with the toml regardless,
+# because two lists of scopes that disagree is a trap for whoever reads
+# them next, and the legacy flow is one config flag away.
+#
+# There is no write_webhooks scope in Shopify: permission to subscribe to
+# a topic comes from holding the matching read scope for the resource.
+# Requesting a non-existent scope makes the authorize step fail outright.
+SHOPIFY_SCOPES = "read_orders,read_customers,read_fulfillments"
 
 # Base URL for webhook endpoints (used in OAuth callbacks). Trailing
 # slash stripped so f"{BASE_URL}/webhook/..." concatenations cannot

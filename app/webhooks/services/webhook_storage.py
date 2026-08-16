@@ -81,6 +81,14 @@ class WebhookStorageService:
             "X-Forwarded-For": request.headers.get("X-Forwarded-For"),
             # Shopify webhook topic for debugging
             "X-Shopify-Topic": request.headers.get("X-Shopify-Topic"),
+            # The sending shop, which app-level endpoints route on, and
+            # the payload version, which explains schema differences.
+            "X-Shopify-Shop-Domain": request.headers.get("X-Shopify-Shop-Domain"),
+            "X-Shopify-API-Version": request.headers.get("X-Shopify-API-Version"),
+            # Decides whether the event is processed at all, so its
+            # absence from a capture makes a skipped webhook impossible
+            # to explain.
+            "X-Shopify-Test": request.headers.get("X-Shopify-Test"),
         }
 
         # Add provider-specific signature headers (masked for security)

@@ -122,7 +122,10 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-# app/.env - Not used (app reads environment variables directly)
+# docker compose auto-loads a root .env; it holds real API secrets.
+.env
+.env.*
+!.env.example
 .venv
 env/
 venv/
@@ -175,5 +178,10 @@ app/staticfiles/
 
 # Marketing screenshot captures
 screenshots/output/
-shopify.app.toml
+# shopify.app.toml IS committed: CI deploys the app configuration from
+# it, and it holds no secrets (the client id is public - it appears in
+# every OAuth URL; the client secret lives in the environment).
+# Named variants are per-developer scratch configs pointed at throwaway
+# apps and tunnels, so those stay out.
+shopify.app.*.toml
 .DS_Store

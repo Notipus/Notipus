@@ -98,13 +98,19 @@ class TestShopifySourcePlugin:
         result = provider._is_test_webhook("test", mock_request)
         assert result is True
 
-    def test_is_test_webhook_test_header(self, provider):
-        """Test test webhook detection with test header"""
+    def test_test_gateway_order_is_not_a_test_ping(self, provider):
+        """A test-gateway order is a real order and must be processed.
+
+        Shopify sets X-Shopify-Test on every order paid through a test
+        gateway, which is every order on a development store. Treating
+        those as contentless pings meant anyone evaluating Notipus, or
+        verifying their own setup with a test order, saw nothing.
+        """
         mock_request = Mock()
         mock_request.headers = {"X-Shopify-Test": "true"}
 
-        result = provider._is_test_webhook("orders/paid", mock_request)
-        assert result is True
+        assert provider._is_test_webhook("orders/paid", mock_request) is False
+        assert provider._is_test_event(mock_request) is True
 
     def test_is_test_webhook_false(self, provider):
         """Test normal webhook detection"""
@@ -280,18 +286,46 @@ class TestShopifySourcePlugin:
         # does not disable the webhook subscription
         assert provider.parse_webhook(mock_request) is None
 
-    def test_parse_webhook_test_webhook_with_x_shopify_test_true(self, provider):
-        """Test parsing test webhook with X-Shopify-Test header set to true"""
+    def test_test_gateway_order_is_parsed_and_flagged(self, provider):
+        """A test-gateway order parses normally, marked as test.
+
+        Verified against a live development store: every order paid
+        through Shopify's test gateway arrives with X-Shopify-Test set,
+        so discarding them left the integration undemonstrable.
+        """
+        body = json.dumps(
+            {
+                "id": 123,
+                "order_number": 1,
+                "total_price": "10.00",
+                "currency": "USD",
+                "customer": {"id": 42, "email": "buyer@example.com"},
+                "line_items": [],
+            }
+        ).encode()
         mock_request = Mock()
         mock_request.content_type = "application/json"
         mock_request.headers = {
             "X-Shopify-Topic": "orders/paid",
             "X-Shopify-Test": "true",
         }
-        mock_request.data = json.dumps({"test": True}).encode()
+        mock_request.data = body
+        mock_request.body = body
 
         result = provider.parse_webhook(mock_request)
-        assert result is None
+
+        assert result is not None
+        assert result["type"] == "payment_success"
+        assert result["metadata"]["is_test"] is True
+
+    def test_bare_test_ping_is_still_skipped(self, provider):
+        """Shopify's contentless "test" topic has no event to report."""
+        mock_request = Mock()
+        mock_request.content_type = "application/json"
+        mock_request.headers = {"X-Shopify-Topic": "test"}
+        mock_request.data = json.dumps({"test": True}).encode()
+
+        assert provider.parse_webhook(mock_request) is None
 
     def test_get_customer_data_no_webhook_data(self, provider):
         """Test get_customer_data when no webhook data is available"""

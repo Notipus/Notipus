@@ -1,0 +1,89 @@
+# Shopify app configuration for Notipus.
+#
+# This file is the source of truth for the app's URLs, scopes and webhook
+# subscriptions, and CI deploys it (.github/workflows/shopify-app.yml).
+# Change it here and let the pipeline apply it - editing an app in the
+# dashboard puts the two out of step, and a later deploy silently
+# reverts the dashboard.
+#
+# It holds no secrets. The client id is public: it appears in every
+# OAuth authorize URL. The client secret is supplied through the
+# environment as SHOPIFY_CLIENT_SECRET.
+#
+# For local work against a throwaway app, copy this to
+# shopify.app.<name>.toml (gitignored), point the URLs at your tunnel,
+# and use `shopify app deploy --config <name>`.
+
+client_id = "08d151af5a97b9ffb78d0cf78915c6ff"
+name = "notipus"
+application_url = "https://app.notipus.com"
+embedded = false
+
+[webhooks]
+# Keep in step with SHOPIFY_API_VERSION in the Django settings. Shopify
+# supports a stable version for 12 months and falls forward to the
+# oldest accessible one when an app targets a retired version, so an
+# out-of-date value here means running on a version nobody chose.
+api_version = "2026-07"
+
+# Declared here rather than created per shop through the Admin API. That
+# is the point: Shopify delivers to these addresses without Notipus ever
+# holding an access token, so a breach exposes no ability to read any
+# merchant's orders or customers.
+#
+# The trade-off is that every installed store sends every topic listed.
+# Which of them a workspace wants is decided on receipt from the
+# categories chosen on the integration page - see _topic_is_enabled in
+# app/webhooks/webhook_router.py.
+[[webhooks.subscriptions]]
+topics = [
+  "orders/create",
+  "orders/paid",
+  "orders/cancelled",
+  "orders/fulfilled",
+  "refunds/create",
+  "fulfillments/create",
+  "fulfillments/update",
+  "customers/update",
+]
+uri = "https://app.notipus.com/webhook/shopify/events/"
+
+# Without this an uninstall leaves the integration marked active for a
+# store that will never send anything again.
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled"]
+uri = "https://app.notipus.com/webhook/shopify/app/uninstalled/"
+
+# Mandatory for every public app: Shopify rejects a submission that does
+# not provide these, or that does not answer them as specified - note it
+# requires 401, not 400, when the HMAC is invalid.
+[webhooks.privacy_compliance]
+customer_data_request_url = "https://app.notipus.com/webhook/shopify/compliance/customers/data-request/"
+customer_deletion_url = "https://app.notipus.com/webhook/shopify/compliance/customers/redact/"
+shop_deletion_url = "https://app.notipus.com/webhook/shopify/compliance/shop/redact/"
+
+[access_scopes]
+# The minimum that delivers the topics above, and nothing more:
+# - read_orders: order and refund events
+# - read_customers: customer events
+# - read_fulfillments: fulfillments/create and fulfillments/update.
+#   Shopify refuses the deploy without it ("read_fulfillments or
+#   read_marketplace_orders"); read_orders alone is not enough.
+#
+# These grant the right to *receive* those webhooks. Notipus keeps no
+# access token, so it cannot read anything from a store beyond what
+# Shopify pushes to it.
+#
+# Note: there is no write_webhooks scope in Shopify. Permission to
+# subscribe comes from holding the matching read scope for the resource.
+#
+# Not requested: read_users ("View staff and contributor data"). Notipus
+# never touches staff data, and it is a high-sensitivity scope that
+# would invite review scrutiny for no benefit.
+scopes = "read_orders,read_customers,read_fulfillments"
+optional_scopes = []
+use_legacy_install_flow = false
+
+[auth]
+# Must match SHOPIFY_REDIRECT_URI in the deployment environment.
+redirect_urls = ["https://app.notipus.com/api/connect/shopify/callback/"]
