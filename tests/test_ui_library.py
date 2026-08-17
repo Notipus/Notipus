@@ -4,6 +4,8 @@ The page renders every component, so it doubles as a smoke test: a component
 with a broken tag, a missing prop or a bad template path fails here first.
 """
 
+from html.parser import HTMLParser
+
 import pytest
 from core.views.ui_library import ui_library
 from django.http import Http404
@@ -126,6 +128,69 @@ class TestButtonWidthRegression:
         )
 
 
+VOID_TAGS = frozenset(
+    {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "source",
+        "track",
+        "wbr",
+    }
+)
+
+
+class CrushedColumnFinder(HTMLParser):
+    """Walks the tree tracking whether the open ancestor wraps.
+
+    The stack holds (tag, wraps) rather than a bare flag so an end tag pops to
+    its own start tag. Popping blindly desynced it: HTMLParser reports a
+    self-closing `<path />` — every inline SVG on /ui/ has them — as a start
+    *and* an end tag, so the end popped the real parent's entry and everything
+    after the first SVG was measured against the wrong ancestor.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stack: list[tuple[str, bool]] = []
+        self.offenders: list[str] = []
+
+    def measure(self, attrs: list[tuple[str, str | None]]) -> bool:
+        """Record an offender, and report whether this element itself wraps."""
+        classes = dict(attrs).get("class") or ""
+        names = classes.split()
+        if self.stack and self.stack[-1][1]:
+            grows = "flex-1" in names or "grow" in names
+            sized = any(name.startswith("basis-") for name in names)
+            if grows and not sized:
+                self.offenders.append(classes)
+        return "flex" in names and "flex-wrap" in names
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Measure the element, then make it the open ancestor."""
+        wraps = self.measure(attrs)
+        if tag not in VOID_TAGS:
+            self.stack.append((tag, wraps))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """`<tag />` is measured but never becomes anyone's ancestor."""
+        self.measure(attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        """Unwind to this tag's own start, ignoring anything left unclosed."""
+        for index in range(len(self.stack) - 1, -1, -1):
+            if self.stack[index][0] == tag:
+                del self.stack[index:]
+                return
+
+
 def crushed_columns(html: str) -> list[str]:
     """Find growing columns that stop their wrapping parent from ever wrapping.
 
@@ -141,34 +206,7 @@ def crushed_columns(html: str) -> list[str]:
     Returns:
         The class attribute of each offending element.
     """
-    from html.parser import HTMLParser
-
-    class Finder(HTMLParser):
-        """Walks the tree tracking whether the open ancestor wraps."""
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.stack: list[bool] = []
-            self.offenders: list[str] = []
-
-        def handle_starttag(
-            self, tag: str, attrs: list[tuple[str, str | None]]
-        ) -> None:
-            classes = dict(attrs).get("class") or ""
-            names = classes.split()
-            if self.stack and self.stack[-1]:
-                grows = "flex-1" in names or "grow" in names
-                sized = any(name.startswith("basis-") for name in names)
-                if grows and not sized:
-                    self.offenders.append(classes)
-            if tag not in ("br", "hr", "img", "input", "meta", "link", "path"):
-                self.stack.append("flex" in names and "flex-wrap" in names)
-
-        def handle_endtag(self, tag: str) -> None:
-            if self.stack:
-                self.stack.pop()
-
-    finder = Finder()
+    finder = CrushedColumnFinder()
     finder.feed(html)
     return finder.offenders
 
@@ -200,6 +238,63 @@ class TestWrappingRowRegression:
         )
 
         assert crushed_columns(html) == []
+
+    def test_self_closing_tag_does_not_desync_the_walk(self) -> None:
+        """`<path />` must not pop the flex-wrap parent off the stack.
+
+        HTMLParser reports a self-closing tag as both a start and an end tag.
+        Popping on every end tag lost the real parent, so everything after the
+        first inline SVG was measured against the wrong ancestor and offenders
+        went unreported.
+        """
+        html = (
+            '<div class="flex flex-wrap">'
+            '<svg><path d="M0 0" /></svg>'
+            '<div class="flex-1">crushed</div>'
+            "</div>"
+        )
+
+        assert crushed_columns(html) == ["flex-1"]
+
+
+@pytest.mark.django_db
+class TestRowsAgreeOnActionPlacement:
+    """Rows in one list put their actions in the same place as each other.
+
+    Placement used to follow from `flex-wrap`, which each row decided from its
+    own content: on /integrations/ the Shopify row kept its single Disconnect
+    button inline while the Slack row below dropped three buttons onto their own
+    line. The flip is now a container query, so every row in a list agrees.
+
+    It is a container query and not `sm:` because the container, not the
+    viewport, is the constraint — that page's cards sit in a two-column grid, so
+    at a 1280px viewport these rows live in a 530px card.
+    """
+
+    def test_both_row_components_share_one_rule(self) -> None:
+        """Both rows flip at the same container width, not at a viewport one."""
+        rows = {
+            "integration": render_component(
+                '<c-integration-row :integration="integration" provider="slack">'
+                '<c-slot name="actions"><c-button size="sm">Configure</c-button>'
+                "</c-slot></c-integration-row>",
+                {"integration": {"name": "Slack", "connected": True}},
+            ),
+            "list": render_component(
+                '<c-list.row title="ada@example.com">'
+                '<c-slot name="actions"><c-button size="sm">Remove</c-button>'
+                "</c-slot></c-list.row>",
+                {},
+            ),
+        }
+
+        for name, html in rows.items():
+            assert "@container" in html, f"{name} row declares no query container"
+            assert "flex flex-col" in html, f"{name} row does not stack by default"
+            assert "@2xl:flex-row" in html, (
+                f"{name} row does not flip at @2xl; if this moved, move it in "
+                "both rows or lists of each will disagree with each other"
+            )
 
 
 def render_component(markup: str, context: dict[str, object]) -> str:

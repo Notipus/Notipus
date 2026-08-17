@@ -14,31 +14,33 @@ Slots:
 {% endcomment %}
 <c-vars title="" description="" icon="" tone="neutral" class="" />
 
-<li class="flex flex-wrap items-center justify-between gap-3 px-gutter py-4 {{ class }}"
-    {{ attrs }}>
-    {% comment %}
-    basis-72, not a bare flex-1: `flex: 1 1 0%` is a zero-width item as far as
-    the wrap algorithm is concerned, so the row would never wrap and the title
-    would truncate to nothing while the actions kept their full width.
-    {% endcomment %}
-    <div class="flex min-w-0 flex-1 basis-72 items-center gap-3">
-        {% comment %}
-        The icon tile matches <c-avatar>'s default size, because rows in one list
-        mix the two — a member has an avatar, a pending invitation has an icon —
-        and a smaller tile shifted those rows' text 7px out of line with each other.
-        {% endcomment %}
-        {% if leading %}
-            {{ leading }}
-        {% elif icon %}
-            <c-icon-tile :name="icon" :tone="tone" />
-        {% endif %}
-        <div class="min-w-0">
-            <p class="truncate text-body font-medium text-content">{{ title }}</p>
-            {% if description %}<p class="truncate text-body text-content-muted">{{ description }}</p>{% endif %}
-            {{ slot }}
+{% comment %}
+Stacks in a narrow container, side by side in a wide one — the same rule as
+<c-integration-row>, so a members list cannot put one row's badge inline and the
+next row's select on its own line. See that component for why this is a container
+query rather than `flex-wrap` or a `sm:` viewport breakpoint.
+{% endcomment %}
+<li class="@container px-gutter py-4 {{ class }}" {{ attrs }}>
+    <div class="flex flex-col gap-3 @2xl:flex-row @2xl:items-center @2xl:justify-between">
+        <div class="flex min-w-0 items-center gap-3 @2xl:flex-1">
+            {% comment %}
+            The icon tile matches <c-avatar>'s default size, because rows in one
+            list mix the two — a member has an avatar, a pending invitation has an
+            icon — and a smaller tile shifted those rows' text 7px out of line.
+            {% endcomment %}
+            {% if leading %}
+                {{ leading }}
+            {% elif icon %}
+                <c-icon-tile :name="icon" :tone="tone" />
+            {% endif %}
+            <div class="min-w-0">
+                <p class="truncate text-body font-medium text-content">{{ title }}</p>
+                {% if description %}<p class="truncate text-body text-content-muted">{{ description }}</p>{% endif %}
+                {{ slot }}
+            </div>
         </div>
+        {% if actions %}
+            <div class="flex flex-wrap items-center gap-3">{{ actions }}</div>
+        {% endif %}
     </div>
-    {% if actions %}
-        <div class="flex flex-wrap items-center gap-3">{{ actions }}</div>
-    {% endif %}
 </li>
