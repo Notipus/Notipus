@@ -591,8 +591,9 @@ def _process_webhook(
         return _handle_webhook_exceptions(e, provider_name)
 
 
-# Unauthenticated liveness probe: no session, no state change.
-@csrf_exempt  # nosemgrep
+# Unauthenticated liveness probe: no session, no state change. No csrf_exempt
+# because there is nothing to exempt - Django only enforces CSRF on unsafe
+# methods, and this one is GET.
 @require_http_methods(["GET"])
 def health_check(request: HttpRequest) -> JsonResponse:
     """Health check endpoint"""

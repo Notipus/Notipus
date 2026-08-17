@@ -145,8 +145,12 @@ jobs:
       # the whole annotated set as unresolved while the gate above is green.
       # Dropping them here is what makes the two agree: an alert exists if and
       # only if the gate would fail on it.
+      # continue-on-error for the same reason as the upload below: this half of
+      # the job reports, it does not judge. A jq failure must not turn a green
+      # gate red.
       - name: Drop suppressed findings from the SARIF
         if: always()
+        continue-on-error: true
         run: |
           jq '.runs[].results |= map(select((.suppressions // []) | length == 0))' \
             opengrep.sarif > opengrep.filtered.sarif
