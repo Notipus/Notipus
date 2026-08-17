@@ -16,6 +16,7 @@ from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_http_methods
+from webhooks.services.destination_credentials import record_delivery
 
 from ...models import Integration, Workspace
 from .base import (
@@ -278,6 +279,7 @@ def test_telegram(request: HttpRequest) -> HttpResponseRedirect:
         data = response.json()
 
         if data.get("ok"):
+            record_delivery(workspace, "telegram")
             messages.success(request, "Test message sent successfully!")
         else:
             error = data.get("description", "Unknown error")

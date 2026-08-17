@@ -340,18 +340,46 @@ class TestIntegrationRowEventBadge:
         assert "No events yet" in html
         assert "Send a test event from Shopify" in html
 
-    def test_a_destination_claims_nothing_about_events(self) -> None:
+    def test_a_delivering_destination_says_so(self) -> None:
+        """A channel that has received a notification says it is delivering."""
+        html = self.row(
+            {"name": "Slack", "connected": True, "event_state": "delivering"}
+        )
+
+        assert "Delivering" in html
+        assert "Nothing delivered yet" not in html
+
+    def test_an_undelivered_destination_says_so(self) -> None:
+        """A channel nothing has reached yet asks for a test, in its own words."""
+        html = self.row(
+            {"name": "Slack", "connected": True, "event_state": "undelivered"}
+        )
+
+        assert "Nothing delivered yet" in html
+        assert "arrives in Slack" in html
+
+    def test_a_destination_never_borrows_the_source_wording(self) -> None:
         """The reported bug: Slack announced "No events yet" for ever.
 
-        A destination's entry carries no event state at all, and a missing key
-        must read as "no claim" rather than as "no events".
+        A channel does not see events, it receives deliveries, so neither the
+        source badge nor the source nudge may appear on one.
         """
-        html = self.row({"name": "Slack", "connected": True})
+        for state in ("delivering", "undelivered", None):
+            html = self.row({"name": "Slack", "connected": True, "event_state": state})
+
+            assert "No events yet" not in html
+            assert "Receiving events" not in html
+            assert "Send a test event from" not in html
+            assert "Connected" in html
+
+    def test_an_untracked_integration_claims_nothing(self) -> None:
+        """A missing key reads as "no claim", never as "nothing has happened"."""
+        html = self.row({"name": "Hunter.io", "connected": True})
 
         assert "No events yet" not in html
+        assert "Nothing delivered yet" not in html
         assert "Receiving events" not in html
-        assert "Send a test event" not in html
-        assert "Connected" in html
+        assert "Delivering" not in html
 
 
 def render_component(markup: str, context: dict[str, object]) -> str:

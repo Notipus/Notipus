@@ -443,7 +443,15 @@ class Integration(models.Model):
 
     # Status
     is_active: models.BooleanField = models.BooleanField(default=True)
+    # When a source first sent us an event. Sources only — nothing writes it
+    # for a destination, which is what first_delivery_at is for.
     webhook_verified_at: models.DateTimeField = models.DateTimeField(
+        null=True, blank=True
+    )
+    # When we first delivered a notification to a destination. Destinations
+    # only; the mirror image of webhook_verified_at, and the answer to "is this
+    # channel actually working, or have I just connected it?"
+    first_delivery_at: models.DateTimeField = models.DateTimeField(
         null=True, blank=True
     )
     created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
@@ -505,6 +513,37 @@ class Integration(models.Model):
             True if at least one webhook has been successfully validated.
         """
         return self.webhook_verified_at is not None
+
+    @property
+    def has_delivered(self) -> bool:
+        """Check whether we have ever delivered a notification here.
+
+        Returns:
+            True if at least one notification reached this destination.
+        """
+        return self.first_delivery_at is not None
+
+    @classmethod
+    def record_first_delivery(
+        cls, workspace: "Workspace", integration_type: str
+    ) -> None:
+        """Stamp when a destination first received a notification.
+
+        A filtered UPDATE rather than load-check-save: it writes only while the
+        column is still NULL, so every delivery after the first is one cheap
+        query that matches no rows, two concurrent deliveries cannot race to
+        overwrite each other, and the timestamp keeps meaning *first* rather
+        than *latest*.
+
+        Args:
+            workspace: The workspace that owns the destination.
+            integration_type: Which destination was delivered to.
+        """
+        cls.objects.filter(
+            workspace=workspace,
+            integration_type=integration_type,
+            first_delivery_at__isnull=True,
+        ).update(first_delivery_at=timezone.now())
 
 
 class GlobalBillingIntegration(models.Model):

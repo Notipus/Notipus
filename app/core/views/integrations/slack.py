@@ -15,6 +15,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect
+from webhooks.services.destination_credentials import record_delivery
 
 from ...models import Integration, UserProfile, Workspace, WorkspaceMember
 from .base import (
@@ -350,6 +351,7 @@ def _send_test_via_api(
         )
         data = response.json()
         if data.get("ok"):
+            record_delivery(workspace, "slack")
             messages.success(request, f"Test message sent to {channel} successfully!")
         else:
             error = data.get("error", "Unknown error")
@@ -376,6 +378,7 @@ def _send_test_via_webhook(
             timeout=DEFAULT_API_TIMEOUT,
         )
         response.raise_for_status()
+        record_delivery(workspace, "slack")
         messages.success(request, "Test message sent successfully!")
     except requests.exceptions.RequestException as e:
         logger.error(f"Slack webhook test failed: {e!s}")

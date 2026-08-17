@@ -628,11 +628,7 @@ class IntegrationService:
 
     @staticmethod
     def _event_state(integration: Integration | None) -> str | None:
-        """Say whether a source has ever delivered an event, if we know.
-
-        None means "we do not track this", which is the honest answer for
-        destinations and enrichment: nothing ever sets `webhook_verified_at` on
-        them, so they must not claim either state.
+        """Say whether a source has ever sent us an event.
 
         The row template used to decide this itself with `{% if x is defined %}`,
         which is Jinja. These are Django templates, where `is` is an identity
@@ -645,11 +641,34 @@ class IntegrationService:
             integration: The connected integration, or None if not connected.
 
         Returns:
-            "receiving", "waiting", or None when the state is not tracked.
+            "receiving", "waiting", or None when not connected.
         """
         if integration is None:
             return None
         return "receiving" if integration.webhook_verified_at else "waiting"
+
+    @staticmethod
+    def _delivery_state(integration: Integration | None) -> str | None:
+        """Say whether we have ever delivered a notification to a destination.
+
+        The mirror of _event_state. Deliberately a separate state vocabulary:
+        a source receives and a destination is delivered to, and conflating the
+        two is how a channel ended up reporting on events it never sees.
+
+        Note this can only ever answer for deliveries made since the column
+        existed — there was no record of earlier ones to backfill from — so a
+        long-connected destination reads as "undelivered" until its next
+        notification or test message.
+
+        Args:
+            integration: The connected integration, or None if not connected.
+
+        Returns:
+            "delivering", "undelivered", or None when not connected.
+        """
+        if integration is None:
+            return None
+        return "delivering" if integration.first_delivery_at else "undelivered"
 
     def get_integration_overview(self, workspace: Workspace) -> dict[str, Any]:
         """Get integration overview data for the integrations page.
@@ -730,6 +749,9 @@ class IntegrationService:
                     "Real-time notifications sent to your team's Slack workspace"
                 ),
                 "connected": "slack_notifications" in integration_lookup,
+                "event_state": self._delivery_state(
+                    integration_lookup.get("slack_notifications")
+                ),
                 "category": "Team Communication",
             },
             {
@@ -739,6 +761,9 @@ class IntegrationService:
                     "Real-time notifications sent to your Telegram chat or channel"
                 ),
                 "connected": "telegram_notifications" in integration_lookup,
+                "event_state": self._delivery_state(
+                    integration_lookup.get("telegram_notifications")
+                ),
                 "category": "Messaging",
             },
             {
@@ -748,6 +773,9 @@ class IntegrationService:
                     "Real-time notifications sent to a Microsoft Teams channel"
                 ),
                 "connected": "teams_notifications" in integration_lookup,
+                "event_state": self._delivery_state(
+                    integration_lookup.get("teams_notifications")
+                ),
                 "category": "Team Communication",
             },
         ]

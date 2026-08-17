@@ -18,6 +18,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
+from webhooks.services.destination_credentials import record_delivery
 
 from ...models import Integration, Workspace
 from .base import (
@@ -184,6 +185,7 @@ def test_teams(request: HttpRequest) -> HttpResponseRedirect:
             timeout=DEFAULT_API_TIMEOUT,
         )
         response.raise_for_status()
+        record_delivery(workspace, "teams")
         messages.success(request, "Test message sent successfully!")
     except requests.exceptions.Timeout:
         logger.error("Teams test message timed out")
