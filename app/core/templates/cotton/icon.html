@@ -1,0 +1,19 @@
+{% comment %}
+Icon — the only way an icon enters the interface.
+
+Wraps Tabler's icon webfont so no page hand-rolls an inline SVG again. Icons are
+decorative by default and hidden from screen readers; pass `label` when the icon
+is the sole carrier of meaning and it becomes an img role with that name.
+
+Props:
+  name   Tabler icon name without the "ti ti-" prefix, e.g. "circle-check"
+  size   sm | md | lg | xl                  (default: md)
+  tone   inherit | subtle | brand | success | warning | danger | info
+         (default: inherit — takes the surrounding text colour)
+  label  accessible name; omit for decorative icons
+{% endcomment %}
+<c-vars name="" size="md" tone="inherit" label="" class="" />
+
+<i class="ti ti-{{ name }} {% if size == 'sm' %}text-caption{% elif size == 'lg' %}text-title{% elif size == 'xl' %}text-display{% else %}text-heading{% endif %} {% if tone == 'subtle' %}text-content-subtle{% elif tone == 'brand' %}text-brand-text{% elif tone == 'success' %}text-success-text{% elif tone == 'warning' %}text-warning-text{% elif tone == 'danger' %}text-danger-text{% elif tone == 'info' %}text-info-text{% endif %} {{ class }}"
+   {% if label %}role="img" aria-label="{{ label }}"{% else %}aria-hidden="true"{% endif %}
+   {{ attrs }}></i>

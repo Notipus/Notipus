@@ -1,0 +1,47 @@
+{% comment %}
+Button — the only clickable affordance in the interface.
+
+Renders an <a> when given href, otherwise a <button>. Anything not listed below
+(id, onclick, form, data-*, aria-*) passes through via {{ attrs }}.
+
+Props:
+  variant   primary | secondary | ghost | danger | link | link-danger | link-muted
+            (default: primary)
+  size      sm | md | lg                                 (default: md)
+  href      renders a link instead of a button
+  type      submit | button | reset                      (default: button)
+  icon      Tabler icon name without the "ti ti-" prefix, e.g. "plug"
+  trailing  place the icon after the label
+  block     stretch to the full width of the container
+  disabled  greys the control out and blocks pointer events
+  loading   swap the icon for a spinner and disable the control
+
+The label is the slot: <c-button variant="danger">Remove member</c-button>
+
+Disabled controls sit below 4.5:1 by design; WCAG 1.4.3 exempts inactive
+controls, and axe-core (what PageSpeed runs) skips disabled elements.
+{% endcomment %}
+<c-vars variant="primary"
+        size="md"
+        type="button"
+        href=""
+        icon=""
+        trailing=""
+        block=""
+        disabled=""
+        loading=""
+        class="" />
+
+{% if href %}
+    <a href="{{ href }}"
+       class="{% include 'cotton/_control_classes.html' %} {% if disabled or loading %}pointer-events-none opacity-60{% endif %}"
+       {% if disabled or loading %}aria-disabled="true"{% endif %}
+       {% if loading %}aria-busy="true"{% endif %}
+       {{ attrs }}>{% include "cotton/_button_content.html" %}</a>
+{% else %}
+    <button type="{{ type }}"
+            class="{% include 'cotton/_control_classes.html' %} disabled:pointer-events-none disabled:opacity-60"
+            {% if disabled or loading %}disabled{% endif %}
+            {% if loading %}aria-busy="true"{% endif %}
+            {{ attrs }}>{% include "cotton/_button_content.html" %}</button>
+{% endif %}

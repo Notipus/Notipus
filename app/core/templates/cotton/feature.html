@@ -1,0 +1,25 @@
+{% comment %}
+Feature — an icon, a name and a line explaining it. Not clickable.
+
+The non-interactive twin of <c-action-row>: use this when the thing being
+described isn't somewhere you can go. Reaching for action_row here would put a
+chevron on it and promise a destination that doesn't exist.
+
+Props:
+  icon         Tabler icon name
+  title        what the feature is
+  description  one line on what it does
+  tone         icon tile tone  (default: brand)
+  layout       row | stack  (default: row)
+{% endcomment %}
+<c-vars icon="" title="" description="" tone="brand" layout="row" class="" />
+
+<div class="{% if layout == 'stack' %}flex flex-col gap-2{% else %}flex items-start gap-3{% endif %} {{ class }}"
+     {{ attrs }}>
+    {% if icon %}<c-icon-tile :name="icon" :tone="tone" size="sm" />{% endif %}
+    <div class="min-w-0">
+        <p class="text-body font-medium text-content">{{ title }}</p>
+        {% if description %}<p class="text-body text-content-muted">{{ description }}</p>{% endif %}
+        {{ slot }}
+    </div>
+</div>

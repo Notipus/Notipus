@@ -1,0 +1,52 @@
+{% comment %}
+Integration row — one connectable service, its state, and what you can do with it.
+
+Props:
+  integration  an entry from the integrations view's context
+  provider     which brand mark to show (see <c-provider-logo>)
+
+Slots:
+  actions  the connect / configure / disconnect controls
+
+Connection state is stated in words as well as colour, and the "awaiting first
+event" state is spelled out rather than hidden in a tooltip, because it is the
+single most common reason a new workspace thinks Notipus is broken.
+{% endcomment %}
+<c-vars integration="" provider="" class="" />
+
+<li class="px-gutter py-5 transition-colors hover:bg-surface-muted {{ class }}"
+    {{ attrs }}>
+    <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="flex min-w-0 flex-1 items-start gap-4">
+            <c-provider-logo :provider="provider" />
+            <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="text-body font-semibold text-content">{{ integration.name }}</h3>
+                    {% if integration.connected %}
+                        <c-badge tone="success" icon="circle-check">
+                            Connected
+                        </c-badge>
+                        {% if integration.webhook_verified_at is defined %}
+                            {% if integration.webhook_verified_at %}
+                                <c-badge tone="info" icon="antenna-bars-5">
+                                    Receiving events
+                                </c-badge>
+                            {% else %}
+                                <c-badge tone="warning" icon="clock">
+                                    No events yet
+                                </c-badge>
+                            {% endif %}
+                        {% endif %}
+                    {% endif %}
+                </div>
+                <p class="mt-1 text-body text-content-muted">{{ integration.description }}</p>
+                {% if integration.connected and integration.webhook_verified_at is defined and not integration.webhook_verified_at %}
+                    <p class="mt-1 text-caption text-content-subtle">
+                        Send a test event from {{ integration.name }} to confirm the connection.
+                    </p>
+                {% endif %}
+            </div>
+        </div>
+        <div class="flex flex-shrink-0 flex-wrap items-center gap-2">{{ actions }}</div>
+    </div>
+</li>

@@ -1,0 +1,17 @@
+{% comment %}
+Divider — a rule between two groups of content.
+
+Props:
+  label  optional centred text, e.g. "or"
+{% endcomment %}
+<c-vars label="" class="" />
+
+{% if label %}
+    <div class="flex items-center gap-3 {{ class }}" {{ attrs }}>
+        <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+        <span class="text-caption font-medium uppercase tracking-wide text-content-subtle">{{ label }}</span>
+        <span class="h-px flex-1 bg-border" aria-hidden="true"></span>
+    </div>
+{% else %}
+    <hr class="border-border {{ class }}" {{ attrs }}>
+{% endif %}

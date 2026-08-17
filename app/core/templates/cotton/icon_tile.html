@@ -1,0 +1,18 @@
+{% comment %}
+Icon tile — a rounded, tinted square holding one icon.
+
+The recurring "what is this section about" marker beside card and section
+headings. Tints are graphic, never behind text, so the bright brand value is
+safe to use here.
+
+Props:
+  name  Tabler icon name without the "ti ti-" prefix
+  tone  brand | success | warning | danger | info | neutral  (default: brand)
+  size  sm | md | lg                                         (default: md)
+{% endcomment %}
+<c-vars name="" tone="brand" size="md" class="" />
+
+<span class="inline-flex flex-shrink-0 items-center justify-center rounded-control {% if size == 'sm' %}h-8 w-8 text-body{% elif size == 'lg' %}h-12 w-12 text-title{% else %}h-10 w-10 text-heading{% endif %} {% if tone == 'success' %}bg-success-surface text-success-text {% elif tone == 'warning' %}bg-warning-surface text-warning-text {% elif tone == 'danger' %}bg-danger-surface text-danger-text {% elif tone == 'info' %}bg-info-surface text-info-text {% elif tone == 'neutral' %}bg-surface-muted text-content-muted {% else %}bg-brand-surface text-brand-text{% endif %} {{ class }}"
+      {{ attrs }}>
+    <i class="ti ti-{{ name }}" aria-hidden="true"></i>
+</span>

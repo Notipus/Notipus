@@ -1,0 +1,33 @@
+{% comment %}
+Form — a form with its CSRF token and vertical rhythm already handled.
+
+Every POST form in the app needs {% templatetag openblock %} csrf_token {% templatetag closeblock %};
+putting it here means it can't be forgotten.
+
+Props:
+  action   where it posts  (default: the current URL)
+  method   post | get      (default: post)
+  gap      spacing between children — tight | normal  (default: normal)
+
+Fields and the submit row are the slot. An `actions` slot renders a right-aligned
+row after a divider:
+
+  <c-form action="{% templatetag openblock %} url 'core:workspace_settings' {% templatetag closeblock %}">
+      <c-input name="name" label="Workspace name" :value="workspace.name" required />
+      <c-slot name="actions"><c-button type="submit">Save changes</c-button></c-slot>
+  </c-form>
+{% endcomment %}
+<c-vars action="" method="post" gap="normal" class="" />
+
+<form {% if action %}action="{{ action }}"{% endif %}
+      method="{{ method }}"
+      class="flex flex-col {% if gap == 'tight' %}gap-4{% else %}gap-5{% endif %} {{ class }}"
+      {{ attrs }}>
+    {% if method == "post" %}
+        {% csrf_token %}
+    {% endif %}
+    {{ slot }}
+    {% if actions %}
+        <div class="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-5">{{ actions }}</div>
+    {% endif %}
+</form>

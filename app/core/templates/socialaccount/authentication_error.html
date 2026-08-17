@@ -1,93 +1,45 @@
 {% extends "core/base.html.j2" %}
-{% load socialaccount %}
-{# IMPORTANT: This template MUST have .html extension (not .html.j2)
-   Django-allauth's template discovery only recognizes .html files #}
+{# IMPORTANT: This template MUST have .html extension (not .html.j2) #}
+{# Django-allauth's template discovery only recognizes .html files #}
 
-{% block title %}Login Failed - Notipus{% endblock %}
+{% block title %}Sign-in failed - Notipus{% endblock %}
 
 {% block content %}
-    <div class="min-h-screen flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="text-center">
-                <!-- Error Icon -->
-                <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-red-100 mb-4">
-                    <svg class="h-8 w-8 text-red-600"
-                         fill="none"
-                         viewBox="0 0 24 24"
-                         stroke="currentColor"
-                         aria-hidden="true">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                </div>
-                <h1 class="text-2xl sm:text-3xl font-extrabold text-gray-900 text-balance">Sign In Failed</h1>
-                <p class="mt-2 text-sm text-gray-600">An error occurred while attempting to sign in with your third-party account.</p>
+    <c-page width="narrow">
+        <c-card>
+            <div class="flex flex-col items-center text-center">
+                <c-icon-tile name="alert-triangle" tone="danger" size="lg" />
+                <h1 class="mt-4 text-title font-bold text-content">Sign-in failed</h1>
+                <p class="mt-2 text-lead text-content-muted">We couldn't complete the sign-in with your provider.</p>
             </div>
-        </div>
 
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="card">
-                <div class="card-body py-8 px-4 sm:px-10">
-                    <!-- Error Details -->
-                    <div class="rounded-md bg-red-50 p-4 mb-6">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <svg class="h-5 w-5 text-red-400"
-                                     viewBox="0 0 20 20"
-                                     fill="currentColor"
-                                     aria-hidden="true">
-                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd" />
-                                </svg>
-                            </div>
-                            <div class="ml-3">
-                                <h3 class="text-sm font-medium text-red-800">Authentication Error</h3>
-                                <div class="mt-2 text-sm text-red-700">
-                                    <p>This could happen due to:</p>
-                                    <ul class="list-disc list-inside mt-1 space-y-1">
-                                        <li>The sign-in request expired or was cancelled</li>
-                                        <li>Permission was denied by the provider</li>
-                                        <li>A temporary connection issue</li>
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+            <c-alert tone="danger" title="Usually one of these" class="mt-6">
+                <ul class="ml-4 list-disc space-y-1">
+                    <li>The sign-in request expired or was cancelled</li>
+                    <li>The provider denied permission</li>
+                    <li>A temporary connection problem</li>
+                </ul>
+            </c-alert>
 
-                    <!-- Action Buttons -->
-                    <div class="space-y-4">
-                        <a href="{% url 'account_login' %}"
-                           class="btn-primary w-full touch-target flex items-center justify-center">
-                            <svg class="w-5 h-5 mr-2"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24"
-                                 aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                            </svg>
-                            Try Again
-                        </a>
-
-                        <a href="{% url 'account_signup' %}"
-                           class="btn-secondary w-full touch-target flex items-center justify-center">
-                            <svg class="w-5 h-5 mr-2"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24"
-                                 aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-                            </svg>
-                            Create an Account
-                        </a>
-                    </div>
-
-                    <!-- Help Text -->
-                    <div class="mt-6 text-center">
-                        <p class="text-sm text-gray-500">
-                            If this problem persists, please
-                            <a href="mailto:support@notipus.com" class="link">contact support</a>.
-                        </p>
-                    </div>
-                </div>
+            <div class="mt-6 flex flex-col gap-2">
+                <c-button href="{% url 'account_login' %}" icon="refresh" block>Try signing in again</c-button>
+                <c-button href="{% url 'account_signup' %}"
+                          variant="secondary"
+                          icon="user-plus"
+                          block>
+                    Create an account instead
+                </c-button>
             </div>
-        </div>
-    </div>
+
+            <c-slot name="footer">
+                <span class="block text-center">
+                    Still stuck?
+                    <a href="mailto:support@notipus.com"
+                       class="rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                        Email support
+                    </a>
+                </span>
+            </c-slot>
+        </c-card>
+    </c-page>
 {% endblock %}

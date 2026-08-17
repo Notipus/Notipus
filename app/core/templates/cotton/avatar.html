@@ -1,0 +1,29 @@
+{% comment %}
+Avatar — a person, a company or a workspace, as a square.
+
+Shows `src` when there is an image and falls back to the first letter of `name`.
+A logo that fails to load falls back too, which matters here because company
+logos come from an external enrichment service.
+
+Props:
+  name  the thing being pictured; supplies the alt text and the initial
+  src   image URL
+  size  sm | md | lg  (default: md)
+{% endcomment %}
+<c-vars name="" src="" size="md" class="" />
+
+<span class="relative inline-flex flex-shrink-0 {% if size == 'sm' %}h-8 w-8{% elif size == 'lg' %}h-12 w-12{% else %}h-10 w-10{% endif %} {{ class }}"
+      {{ attrs }}>
+    <span class="flex h-full w-full items-center justify-center rounded-control border border-border bg-brand-surface font-semibold uppercase text-brand-text {% if size == 'sm' %}text-caption{% elif size == 'lg' %}text-heading{% else %}text-body{% endif %}"
+          aria-hidden="true">{{ name|first }}</span>
+    {% if src %}
+        {% comment %}Explicit width/height keeps Lighthouse's CLS audit quiet.{% endcomment %}
+        <img src="{{ src }}"
+             alt="{{ name }}"
+             width="{% if size == 'sm' %}32{% elif size == 'lg' %}48{% else %}40{% endif %}"
+             height="{% if size == 'sm' %}32{% elif size == 'lg' %}48{% else %}40{% endif %}"
+             loading="lazy"
+             class="absolute inset-0 h-full w-full rounded-control border border-border bg-surface object-cover"
+             onerror="this.remove()">
+    {% endif %}
+</span>

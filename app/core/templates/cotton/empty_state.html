@@ -1,0 +1,29 @@
+{% comment %}
+Empty state — an invitation to act, not an apology.
+
+Say what will appear here and how to make it appear. No "nothing to see" copy.
+
+Props:
+  icon         Tabler icon name
+  title        what this space is for
+  description  how to fill it
+
+An `actions` slot holds the way forward:
+
+  <c-empty-state icon="bolt" title="No events yet"
+                 description="Connect a payment provider and events land here within seconds.">
+      <c-slot name="actions"><c-button href="{% url 'core:integrations' %}" icon="plug">Set up an integration</c-button></c-slot>
+  </c-empty-state>
+{% endcomment %}
+<c-vars icon="" title="" description="" class="" />
+
+<div class="flex flex-col items-center px-4 py-12 text-center {{ class }}"
+     {{ attrs }}>
+    {% if icon %}<c-icon-tile :name="icon" tone="neutral" size="lg" />{% endif %}
+    <h3 class="mt-4 text-heading font-semibold text-content">{{ title }}</h3>
+    {% if description %}
+        <p class="mt-1 max-w-md text-body text-content-muted">{{ description }}</p>
+    {% endif %}
+    {% if actions %}<div class="mt-6 flex flex-wrap justify-center gap-2">{{ actions }}</div>{% endif %}
+    {{ slot }}
+</div>

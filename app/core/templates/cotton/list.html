@@ -1,0 +1,17 @@
+{% comment %}
+List — rows of the same kind of thing inside a card.
+
+Pair with `flush` on the card so the rows meet its edges:
+
+  <c-card title="Members" flush>
+      <c-list>
+          <c-list.row title="ada@example.com">…</c-list.row>
+      </c-list>
+  </c-card>
+
+Rows are the slot; see <c-list.row>.
+{% endcomment %}
+<c-vars class="" />
+
+<ul class="divide-y divide-border {{ class }}" {{ attrs }}>{{ slot }}
+</ul>

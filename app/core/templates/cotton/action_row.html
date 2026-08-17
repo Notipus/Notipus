@@ -1,0 +1,34 @@
+{% comment %}
+Action row — a navigable line in a list: icon, name, what it does, chevron.
+
+The building block of the quick-action lists on the settings and integration
+pages. Renders an <a> when given href, otherwise a <button>, so the same row can
+navigate or submit.
+
+Props:
+  title        what the destination is called, in the user's words
+  description  one line on what happens there
+  icon         Tabler icon name
+  tone         icon tile tone  (default: neutral)
+  href         destination
+  type         button type when there is no href  (default: button)
+
+A `trailing` slot replaces the chevron — a badge, say.
+{% endcomment %}
+<c-vars title=""
+        description=""
+        icon=""
+        tone="neutral"
+        href=""
+        type="button"
+        class="" />
+
+{% if href %}
+    <a href="{{ href }}"
+       class="group flex w-full items-center gap-3 rounded-control border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-border-strong hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 {{ class }}"
+       {{ attrs }}>{% include "cotton/_action_row_content.html" %}</a>
+{% else %}
+    <button type="{{ type }}"
+            class="group flex w-full items-center gap-3 rounded-control border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-border-strong hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 {{ class }}"
+            {{ attrs }}>{% include "cotton/_action_row_content.html" %}</button>
+{% endif %}

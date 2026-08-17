@@ -1,387 +1,138 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Shopify Integration - {{ organization.name }}
+    Connect Shopify - {{ organization.name }}
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-        <div class="max-w-2xl mx-auto">
-            <!-- Header -->
-            <div class="mb-8">
-                <div class="flex items-center">
-                    <a href="{% url 'core:integrations' %}"
-                       class="mr-4 text-gray-400 hover:text-gray-600 transition-colors">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
-                        </svg>
-                    </a>
-                    <div class="flex items-center">
-                        <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mr-4">
-                            <i class="ti ti-shopping-cart text-3xl text-green-600"></i>
-                        </div>
-                        <div>
-                            <h1 class="text-3xl font-bold text-gray-900">Connect Shopify</h1>
-                            <p class="mt-2 text-sm text-gray-600">Receive order and customer notifications from your Shopify store</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
+    {% comment %}Flash messages render once, in base.html.j2.{% endcomment %}
+    <c-page width="narrow"
+            back="{% url 'core:integrations' %}"
+            back_label="Integrations"
+            title="Connect Shopify"
+            subtitle="Orders and customers from your store, the moment they happen.">
+        {% if integration %}
+            <c-card title="Connection" icon="plug-connected">
+                <c-slot name="actions">
+                    {% if integration.is_webhook_verified %}
+                        <c-badge tone="success" icon="circle-check">
+                            Connected
+                        </c-badge>
+                    {% else %}
+                        <c-badge tone="warning" icon="clock">
+                            No events yet
+                        </c-badge>
+                    {% endif %}
+                </c-slot>
 
-            <!-- Messages -->
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="mb-6 p-4 rounded-md {% if message.tags == 'error' %}bg-red-50 border border-red-200{% elif message.tags == 'warning' %}bg-yellow-50 border border-yellow-200{% else %}bg-green-50 border border-green-200{% endif %}">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                {% if message.tags == 'error' %}
-                                    <svg class="h-5 w-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                {% elif message.tags == 'warning' %}
-                                    <svg class="h-5 w-5 text-yellow-400"
-                                         fill="currentColor"
-                                         viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                {% else %}
-                                    <svg class="h-5 w-5 text-green-400"
-                                         fill="currentColor"
-                                         viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                {% endif %}
-                            </div>
-                            <div class="ml-3">
-                                <p class="text-sm {% if message.tags == 'error' %}text-red-700{% elif message.tags == 'warning' %}text-yellow-700{% else %}text-green-700{% endif %}">
-                                    {{ message }}
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                {% endfor %}
-            {% endif %}
+                <c-definition>
+                    <c-definition.row label="Store">
+                        <a href="https://{{ integration.integration_settings.shop_domain }}/admin"
+                           target="_blank"
+                           rel="noopener noreferrer"
+                           class="inline-flex items-center gap-1 rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                            {{ integration.integration_settings.shop_domain }}
+                            <i class="ti ti-external-link" aria-hidden="true"></i>
+                        </a>
+                    </c-definition.row>
+                </c-definition>
+            </c-card>
 
-            {% if integration %}
-                <!-- Connected State -->
-                <div class="bg-white shadow rounded-lg mb-8">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <div class="flex items-center justify-between">
-                            <h2 class="text-lg font-medium text-gray-900">Connection Status</h2>
-                            {% if integration.is_webhook_verified %}
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                    <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                    Connected
-                                </span>
-                            {% else %}
-                                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                                    <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.828a1 1 0 101.415-1.414L11 9.586V6z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                    Awaiting verification
-                                </span>
-                            {% endif %}
-                        </div>
+            <c-card title="Events to send"
+                    description="Only what you tick reaches your notification channels."
+                    icon="checklist">
+                <c-form action="{% url 'core:update_shopify_events' %}">
+                    <div class="flex flex-col gap-3">
+                        {% for key, category in event_categories.items %}
+                            <c-checkbox name="event_categories"
+                                        id="event-{{ key }}"
+                                        :value="key"
+                                        :label="category.label"
+                                        :help="category.description"
+                                        checked="{% if key in enabled_categories %}1{% endif %}"
+                                        class="rounded-control bg-surface-muted p-3" />
+                        {% endfor %}
                     </div>
-                    <div class="px-6 py-6">
-                        <div class="flex items-center justify-between">
-                            <div>
-                                <p class="text-sm font-medium text-gray-900">Connected Store</p>
-                                <p class="text-sm text-gray-500">{{ integration.integration_settings.shop_domain }}</p>
-                            </div>
-                            <div class="flex items-center space-x-3">
-                                <a href="https://{{ integration.integration_settings.shop_domain }}/admin"
-                                   target="_blank"
-                                   rel="noopener noreferrer"
-                                   class="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors">
-                                    <svg class="w-4 h-4 mr-2"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14">
-                                        </path>
-                                    </svg>
-                                    View in Shopify
-                                </a>
-                            </div>
-                        </div>
+                    <c-slot name="actions">
+                        <c-button type="submit" variant="secondary" icon="refresh">
+                            Update events
+                        </c-button>
+                    </c-slot>
+                </c-form>
+            </c-card>
 
-                        <!-- Event Categories Configuration -->
-                        <div class="mt-6 pt-6 border-t border-gray-200">
-                            <h3 class="text-sm font-medium text-gray-900 mb-3">Event Subscriptions</h3>
-                            <form method="post"
-                                  action="{% url 'core:update_shopify_events' %}"
-                                  id="update-events-form">
-                                {% csrf_token %}
-                                <div class="space-y-3 mb-4">
-                                    {% for key, category in event_categories.items %}
-                                        <label class="flex items-start p-3 bg-gray-50 rounded-md hover:bg-gray-100 cursor-pointer transition-colors">
-                                            <input type="checkbox"
-                                                   name="event_categories"
-                                                   value="{{ key }}"
-                                                   {% if key in enabled_categories %}checked{% endif %}
-                                                   class="h-4 w-4 text-green-600 border-gray-300 rounded focus:ring-green-500 mt-0.5">
-                                            <span class="ml-3">
-                                                <span class="block text-sm font-medium text-gray-900">{{ category.label }}</span>
-                                                <span class="block text-sm text-gray-500">{{ category.description }}</span>
-                                            </span>
-                                        </label>
-                                    {% endfor %}
-                                </div>
-                                <button type="submit"
-                                        class="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors">
-                                    <svg class="w-4 h-4 mr-2"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15">
-                                        </path>
-                                    </svg>
-                                    Update Event Subscriptions
-                                </button>
-                            </form>
-                        </div>
+            <c-card title="Disconnect"
+                    description="Removes the webhooks from your store."
+                    icon="unlink"
+                    tone="danger">
+                <form method="post"
+                      action="{% url 'core:disconnect_shopify' %}"
+                      onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Disconnect Shopify?', message: 'Order notifications stop and the webhook subscriptions are removed from your store.', variant: 'warning', confirmText: 'Disconnect', cancelText: 'Keep connected'})">
+                    {% csrf_token %}
+                    <c-button type="submit" variant="danger" icon="unlink">
+                        Disconnect Shopify
+                    </c-button>
+                </form>
+            </c-card>
+        {% elif not shopify_configured %}
+            <c-alert tone="warning" title="Shopify isn't set up on this deployment">
+                The Shopify app credentials are missing, so the connection can't be started. Get in touch and we'll
+                sort it out.
+            </c-alert>
+        {% else %}
+            <c-card title="Your store"
+                    description="We'll send you to Shopify to authorise the connection."
+                    icon="building-store">
+                <c-form action="{% url 'core:shopify_connect' %}">
+                    <c-input name="shop_url"
+                             label="Store URL"
+                             placeholder="mystore or mystore.myshopify.com"
+                             help="Using a custom domain? We need the myshopify.com one, from Shopify admin → Settings → Domains."
+                             required />
 
-                        <!-- Disconnect Button -->
-                        <div class="mt-6 pt-6 border-t border-gray-200">
-                            <form method="post"
-                                  action="{% url 'core:disconnect_shopify' %}"
-                                  id="disconnect-shopify-form">
-                                {% csrf_token %}
-                                <button type="button"
-                                        onclick="confirmDisconnectShopify()"
-                                        class="inline-flex items-center px-4 py-2 border border-red-300 shadow-sm text-sm font-medium rounded-md text-red-700 bg-white hover:bg-red-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors">
-                                    <svg class="w-4 h-4 mr-2"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1">
-                                        </path>
-                                    </svg>
-                                    Disconnect Shopify
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-
-            {% elif not shopify_configured %}
-                <!-- Not Configured State -->
-                <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-6 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <svg class="h-5 w-5 text-yellow-400"
-                                 fill="currentColor"
-                                 viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd">
-                                </path>
-                            </svg>
-                        </div>
-                        <div class="ml-3">
-                            <h3 class="text-sm font-medium text-yellow-800">Shopify Integration Not Configured</h3>
-                            <div class="mt-2 text-sm text-yellow-700">
-                                <p>The Shopify integration has not been configured for this application. Please contact support for assistance.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-            {% else %}
-                <!-- Connect Form -->
-                <div class="bg-white shadow rounded-lg mb-8">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-medium text-gray-900">Connect Your Store</h2>
-                        <p class="mt-1 text-sm text-gray-500">Enter your Shopify store URL to get started</p>
-                    </div>
-                    <div class="px-6 py-6">
-                        <form method="post"
-                              action="{% url 'core:shopify_connect' %}"
-                              id="shopify-connect-form">
-                            {% csrf_token %}
-                            <div class="mb-6">
-                                <label for="shop_url" class="block text-sm font-medium text-gray-700 mb-2">Store URL</label>
-                                <input type="text"
-                                       name="shop_url"
-                                       id="shop_url"
-                                       class="block w-full px-3 py-3 rounded-md border border-gray-300 focus:ring-green-500 focus:border-green-500 sm:text-sm"
-                                       placeholder="mystore or mystore.myshopify.com"
-                                       required>
-                                <p class="mt-2 text-sm text-gray-500">
-                                    Enter your Shopify store name (e.g., <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">mystore</code>)
-                                    or full URL (e.g., <code class="text-xs bg-gray-100 px-1 py-0.5 rounded">mystore.myshopify.com</code>).
-                                </p>
-                                <p class="mt-1 text-sm text-gray-500">
-                                    <strong>Using a custom domain?</strong> You need your myshopify.com domain.
-                                    Find it in <span class="font-medium">Shopify Admin → Settings → Domains</span>.
-                                </p>
-                            </div>
-
-                            <!-- Event Categories -->
-                            <div class="mb-6">
-                                <label class="block text-sm font-medium text-gray-700 mb-3">Event Categories</label>
-                                <p class="text-sm text-gray-500 mb-3">Select which events to receive notifications for:</p>
-                                <div class="space-y-3">
-                                    {% for key, category in event_categories.items %}
-                                        <label class="flex items-start p-3 bg-gray-50 rounded-md hover:bg-gray-100 cursor-pointer transition-colors">
-                                            <input type="checkbox"
-                                                   name="event_categories"
-                                                   value="{{ key }}"
-                                                   {% if category.default %}checked{% endif %}
-                                                   class="h-4 w-4 text-green-600 border-gray-300 rounded focus:ring-green-500 mt-0.5">
-                                            <span class="ml-3">
-                                                <span class="block text-sm font-medium text-gray-900">{{ category.label }}</span>
-                                                <span class="block text-sm text-gray-500">{{ category.description }}</span>
-                                            </span>
-                                        </label>
-                                    {% endfor %}
-                                </div>
-                            </div>
-
-                            <button type="submit"
-                                    class="w-full inline-flex justify-center items-center px-4 py-3 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors">
-                                <svg class="w-5 h-5 mr-2"
-                                     fill="none"
-                                     stroke="currentColor"
-                                     viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
-                                    </path>
-                                </svg>
-                                Connect to Shopify
-                            </button>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- What This Integration Does -->
-                <div class="bg-white shadow rounded-lg mb-8">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-medium text-gray-900">What This Integration Does</h2>
-                    </div>
-                    <div class="px-6 py-6">
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            <div class="text-center">
-                                <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                                    <svg class="w-6 h-6 text-blue-600"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                    </svg>
-                                </div>
-                                <h3 class="text-sm font-medium text-gray-900">Real-time Notifications</h3>
-                                <p class="mt-1 text-sm text-gray-500">Get instant alerts when customers place orders</p>
-                            </div>
-                            <div class="text-center">
-                                <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                                    <svg class="w-6 h-6 text-green-600"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z">
-                                        </path>
-                                    </svg>
-                                </div>
-                                <h3 class="text-sm font-medium text-gray-900">Automatic Setup</h3>
-                                <p class="mt-1 text-sm text-gray-500">Webhooks are configured automatically for you</p>
-                            </div>
-                            <div class="text-center">
-                                <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mx-auto mb-3">
-                                    <svg class="w-6 h-6 text-purple-600"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01">
-                                        </path>
-                                    </svg>
-                                </div>
-                                <h3 class="text-sm font-medium text-gray-900">Order Tracking</h3>
-                                <p class="mt-1 text-sm text-gray-500">Track orders, payments, and fulfillment status</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Events We Track -->
-                <div class="bg-white shadow rounded-lg mb-8">
-                    <div class="px-6 py-4 border-b border-gray-200">
-                        <h2 class="text-lg font-medium text-gray-900">Available Event Categories</h2>
-                        <p class="mt-1 text-sm text-gray-500">You can choose which events to receive during setup</p>
-                    </div>
-                    <div class="px-6 py-6">
-                        <div class="space-y-4">
+                    <fieldset class="min-w-0">
+                        <legend class="mb-1.5 text-body font-medium text-content">Events to send</legend>
+                        <p class="mb-3 text-body text-content-muted">You can change this later.</p>
+                        <div class="flex flex-col gap-3">
                             {% for key, category in event_categories.items %}
-                                <div class="flex items-start">
-                                    <svg class="w-5 h-5 text-green-500 mr-3 mt-0.5"
-                                         fill="currentColor"
-                                         viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                    <div>
-                                        <span class="text-sm font-medium text-gray-900">{{ category.label }}</span>
-                                        <p class="text-sm text-gray-500">{{ category.description }}</p>
-                                    </div>
-                                </div>
+                                <c-checkbox name="event_categories"
+                                            id="event-{{ key }}"
+                                            :value="key"
+                                            :label="category.label"
+                                            :help="category.description"
+                                            :checked="category.default"
+                                            class="rounded-control bg-surface-muted p-3" />
                             {% endfor %}
                         </div>
-                    </div>
+                    </fieldset>
+
+                    <c-slot name="actions">
+                        <c-button type="submit" icon="plug-connected" block>
+                            Continue to Shopify
+                        </c-button>
+                    </c-slot>
+                </c-form>
+            </c-card>
+
+            <c-card title="What connecting does" icon="sparkles">
+                <div class="grid gap-5 sm:grid-cols-3">
+                    <c-feature layout="stack"
+                               icon="bolt"
+                               title="Orders in seconds"
+                               description="Each order arrives in your channel as it is placed." />
+                    <c-feature layout="stack"
+                               icon="wand"
+                               title="Webhooks set up for you"
+                               description="No endpoint URLs to paste anywhere." />
+                    <c-feature layout="stack"
+                               icon="lock"
+                               title="Read access only"
+                               description="Orders and customers, plus permission to create webhooks." />
                 </div>
-
-                <!-- Security Note -->
-                <div class="bg-blue-50 border border-blue-200 rounded-lg p-6">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd">
-                                </path>
-                            </svg>
-                        </div>
-                        <div class="ml-3">
-                            <h3 class="text-sm font-medium text-blue-800">Secure OAuth Connection</h3>
-                            <div class="mt-2 text-sm text-blue-700">
-                                <p>
-                                    You'll be redirected to Shopify to authorize this connection. We only request
-                                    read access to orders and customers, plus permission to set up webhooks.
-                                    You can revoke access at any time from your Shopify admin.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
-
-            <!-- Back Button -->
-            <div class="mt-8">
-                <a href="{% url 'core:integrations' %}"
-                   class="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition-colors">
-                    <svg class="w-4 h-4 mr-2"
-                         fill="none"
-                         stroke="currentColor"
-                         viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
-                    </svg>
-                    Back to Integrations
-                </a>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        async function confirmDisconnectShopify() {
-            const confirmed = await NotipusUI.confirmDisconnect(
-                'Shopify',
-                'You will stop receiving order notifications. The webhook subscriptions will be removed from your Shopify store.'
-            );
-            if (confirmed) {
-                document.getElementById('disconnect-shopify-form').submit();
-            }
-        }
-    </script>
+                <c-slot name="footer">
+                    You can revoke our access at any time from your Shopify admin.
+                </c-slot>
+            </c-card>
+        {% endif %}
+    </c-page>
 {% endblock content %}

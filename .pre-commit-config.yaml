@@ -17,10 +17,26 @@ repos:
 - repo: local
   hooks:
     - id: djlint
-      name: djlint
+      name: djlint (pages)
       entry: uv run djlint --reformat
       language: system
       files: \.html\.j2$
+
+    # Cotton components are .html, not .html.j2 — Cotton resolves <c-name> to
+    # cotton/name.html and the extension is fixed.
+    - id: djlint-components
+      name: djlint (components)
+      entry: uv run djlint --reformat
+      language: system
+      files: ^app/core/templates/.*\.html$
+      exclude: ^app/core/templates/admin/
+
+    - id: build-design-tokens
+      name: design tokens are in sync
+      entry: uv run python app/manage.py build_design_tokens --check
+      language: system
+      pass_filenames: false
+      files: ^(app/core/design_tokens\.py|src/css/tokens\.css)$
 
     - id: pytest
       name: pytest

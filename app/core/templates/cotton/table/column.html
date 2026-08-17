@@ -1,0 +1,8 @@
+{% comment %}
+Table header cell. Props: align (left | right | center, default left).
+{% endcomment %}
+<c-vars align="left" class="" />
+
+<th scope="col"
+    class="px-gutter py-3 text-caption font-semibold uppercase tracking-wide text-content-muted {% if align == 'right' %}text-right{% elif align == 'center' %}text-center{% else %}text-left{% endif %} {{ class }}"
+    {{ attrs }}>{{ slot }}</th>

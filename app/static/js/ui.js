@@ -33,57 +33,49 @@ const NotipusUI = (function () {
   let _resolvePromise = null;
   let _previouslyFocusedElement = null;
 
-  // Variant configurations
+  // Variant configurations.
+  //
+  // Every class here is a design token from app/core/design_tokens.py, so the
+  // dialog cannot drift from the components rendered server-side. Tailwind
+  // scans this file (see the @source rule in src/css/main.css), which is what
+  // keeps these classes in the bundle.
+  //
+  // Warning has no solid fill on purpose: an AA-compliant yellow goes brown and
+  // reads as the brand orange, so warning confirmations use the danger button
+  // and carry their meaning in the tinted icon.
   const VARIANTS = {
     danger: {
-      iconBg: "bg-red-100",
-      iconColor: "text-red-600",
-      buttonBg: "bg-red-600 hover:bg-red-700 focus-visible:ring-red-500",
-      icon: `<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-      </svg>`,
+      iconBg: "bg-danger-surface",
+      iconColor: "text-danger-text",
+      buttonBg: "bg-danger-solid hover:bg-danger-solid-hover",
+      icon: "ti-alert-triangle",
     },
     warning: {
-      iconBg: "bg-yellow-100",
-      iconColor: "text-yellow-600",
-      buttonBg:
-        "bg-yellow-600 hover:bg-yellow-700 focus-visible:ring-yellow-500",
-      icon: `<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-      </svg>`,
+      iconBg: "bg-warning-surface",
+      iconColor: "text-warning-text",
+      buttonBg: "bg-danger-solid hover:bg-danger-solid-hover",
+      icon: "ti-alert-circle",
     },
     info: {
-      iconBg: "bg-blue-100",
-      iconColor: "text-blue-600",
-      buttonBg: "bg-blue-600 hover:bg-blue-700 focus-visible:ring-blue-500",
-      icon: `<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
-      </svg>`,
+      iconBg: "bg-info-surface",
+      iconColor: "text-info-text",
+      buttonBg: "bg-info-solid hover:bg-info-solid-hover",
+      icon: "ti-info-circle",
     },
     success: {
-      iconBg: "bg-green-100",
-      iconColor: "text-green-600",
-      buttonBg: "bg-green-600 hover:bg-green-700 focus-visible:ring-green-500",
-      icon: `<svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>`,
+      iconBg: "bg-success-surface",
+      iconColor: "text-success-text",
+      buttonBg: "bg-success-solid hover:bg-success-solid-hover",
+      icon: "ti-circle-check",
     },
   };
 
-  // Toast icon configurations
+  // Toast icons, matched to the alert component's tone icons.
   const TOAST_ICONS = {
-    success: `<svg class="h-5 w-5 text-green-400" fill="currentColor" viewBox="0 0 20 20">
-      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
-    </svg>`,
-    error: `<svg class="h-5 w-5 text-red-400" fill="currentColor" viewBox="0 0 20 20">
-      <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
-    </svg>`,
-    warning: `<svg class="h-5 w-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
-      <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
-    </svg>`,
-    info: `<svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
-      <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
-    </svg>`,
+    success: { icon: "ti-circle-check", color: "text-success-text" },
+    error: { icon: "ti-alert-circle", color: "text-danger-text" },
+    warning: { icon: "ti-alert-triangle", color: "text-warning-text" },
+    info: { icon: "ti-info-circle", color: "text-info-text" },
   };
 
   /**
@@ -133,13 +125,13 @@ const NotipusUI = (function () {
       cancelBtn.textContent = cancelText;
 
       // Set variant styles
-      iconContainer.className = `mx-auto flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full sm:mx-0 sm:h-10 sm:w-10 ${variantConfig.iconBg}`;
+      iconContainer.className = `mx-auto flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-control sm:mx-0 ${variantConfig.iconBg}`;
       // Both halves come from the VARIANTS constant above; no caller input
       // reaches this markup (title/message go in via textContent).
-      iconContainer.innerHTML = `<span class="${variantConfig.iconColor}">${variantConfig.icon}</span>`; // nosemgrep
+      iconContainer.innerHTML = `<i class="ti ${variantConfig.icon} text-heading ${variantConfig.iconColor}" aria-hidden="true"></i>`; // nosemgrep
 
       // Reset confirm button classes and apply variant
-      confirmBtn.className = `inline-flex w-full justify-center rounded-lg px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors duration-200 sm:w-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${variantConfig.buttonBg}`;
+      confirmBtn.className = `inline-flex w-full items-center justify-center gap-2 rounded-control border border-transparent px-4 py-2 text-body font-medium text-content-inverse transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 sm:w-auto ${variantConfig.buttonBg}`;
 
       // Show modal with animation
       backdrop.classList.remove("hidden");
@@ -281,6 +273,32 @@ const NotipusUI = (function () {
   }
 
   /**
+   * Gate a form submission behind a confirmation dialog.
+   *
+   * Use from onsubmit so destructive forms get the styled dialog instead of the
+   * browser's confirm(), which cannot be themed and looks nothing like the rest
+   * of the interface:
+   *
+   *   <form onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Remove Ada?'})">
+   *
+   * @param {HTMLFormElement} form - The form being submitted
+   * @param {Object} options - Same options as confirm()
+   * @returns {boolean} - Always false; the form is resubmitted once confirmed
+   */
+  function confirmSubmit(form, options = {}) {
+    if (form.dataset.confirmed === "true") {
+      return true;
+    }
+    confirm(options).then((confirmed) => {
+      if (confirmed) {
+        form.dataset.confirmed = "true";
+        form.submit();
+      }
+    });
+    return false;
+  }
+
+  /**
    * Show a toast notification
    * @param {string} message - The message to display
    * @param {string} [type='info'] - Toast type: 'success', 'error', 'warning', 'info'
@@ -294,37 +312,28 @@ const NotipusUI = (function () {
     }
 
     const toastId = `toast-${Date.now()}`;
-    const icon = TOAST_ICONS[type] || TOAST_ICONS.info;
+    const { icon, color } = TOAST_ICONS[type] || TOAST_ICONS.info;
 
     const toastEl = document.createElement("div");
     toastEl.id = toastId;
     toastEl.className =
-      "pointer-events-auto w-full max-w-sm overflow-hidden rounded-lg bg-white shadow-lg ring-1 ring-black ring-opacity-5 transform transition-all duration-300 translate-x-full opacity-0";
-    // Structure is static markup; the caller's message goes in as text below,
-    // so a company or channel name containing markup can never become HTML.
+      "pointer-events-auto w-full max-w-sm overflow-hidden rounded-card border border-border bg-surface shadow-overlay transform transition-all duration-300 translate-x-full opacity-0";
+    // Structure is static markup — the icon class comes from the TOAST_ICONS
+    // constant above and the caller's message goes in as text below, so a
+    // company or channel name containing markup can never become HTML.
     toastEl.innerHTML = `
-      <div class="p-4">
-        <div class="flex items-start">
-          <div class="flex-shrink-0" data-toast-icon></div>
-          <div class="ml-3 flex-1 pt-0.5">
-            <p class="text-sm font-medium text-gray-900" data-toast-message></p>
-          </div>
-          <div class="ml-4 flex-shrink-0">
-            <button type="button" data-toast-dismiss
-                    class="inline-flex rounded-md bg-white text-gray-400 hover:text-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2">
-              <span class="sr-only">Close</span>
-              <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
-              </svg>
-            </button>
-          </div>
-        </div>
+      <div class="flex items-start gap-3 p-4">
+        <i class="ti ${icon} ${color} mt-0.5 flex-shrink-0 text-heading" aria-hidden="true"></i>
+        <p class="min-w-0 flex-1 text-body font-medium text-content" data-toast-message></p>
+        <button type="button" data-toast-dismiss
+                class="flex-shrink-0 rounded-control p-1 text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+          <span class="sr-only">Dismiss</span>
+          <i class="ti ti-x" aria-hidden="true"></i>
+        </button>
       </div>
     `;
 
     toastEl.querySelector("[data-toast-message]").textContent = message;
-    // Icons come from the TOAST_ICONS constant above, never from a caller.
-    toastEl.querySelector("[data-toast-icon]").innerHTML = icon; // nosemgrep
     toastEl
       .querySelector("[data-toast-dismiss]")
       .addEventListener("click", () => _dismissToast(toastId));
@@ -381,6 +390,7 @@ const NotipusUI = (function () {
     confirmDelete,
     confirmDisconnect,
     confirmAction,
+    confirmSubmit,
     toast,
     copyToClipboard,
     // Expose internal methods for onclick handlers

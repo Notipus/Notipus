@@ -1,0 +1,18 @@
+{% comment %}
+Segmented control — two or three mutually exclusive views of the same content.
+
+An ARIA radiogroup, not a set of buttons: only one can be on, and arrow keys
+move between them. Selection is applied by the page's own script; this component
+owns the markup and the resting styles only.
+
+Props:
+  label  accessible name for the group, e.g. "Billing interval"
+
+Options are the slot; see <c-segmented.option>.
+{% endcomment %}
+<c-vars label="" class="" />
+
+<div class="inline-flex items-center gap-1 rounded-pill border border-border bg-surface p-1 {{ class }}"
+     role="radiogroup"
+     {% if label %}aria-label="{{ label }}"{% endif %}
+     {{ attrs }}>{{ slot }}</div>

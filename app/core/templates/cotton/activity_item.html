@@ -1,0 +1,106 @@
+{% comment %}
+Activity item — one processed webhook event on the dashboard.
+
+Kept as a component because the row has real logic in it: which logo to show,
+which status reads as good or bad, and which of the enrichment badges apply.
+Spreading that across the dashboard template is how it drifted before.
+
+Props:
+  activity  one entry from the dashboard's recent_activity list
+{% endcomment %}
+<c-vars activity="" class="" />
+
+<li class="rounded-control bg-surface-muted p-4 transition-colors hover:bg-surface {{ class }}"
+    {{ attrs }}>
+    <div class="flex items-start gap-3">
+        {% if activity.company_logo_url or activity.company_domain %}
+            <c-avatar name="{{ activity.company_name|default:activity.company_domain }}"
+                      src="{% if activity.company_logo_url %}{{ activity.company_logo_url }}{% else %}{% url 'core:company-logo' domain=activity.company_domain %}{% endif %}" />
+        {% elif activity.status == "failed" or activity.status == "declined" or activity.status == "error" or activity.severity == "error" or activity.severity == "critical" %}
+            <c-icon-tile name="alert-triangle" tone="danger" />
+        {% elif activity.status == "cancelled" %}
+            <c-icon-tile name="circle-off" tone="neutral" />
+        {% elif activity.type == "order" %}
+            <c-icon-tile name="shopping-bag" tone="info" />
+        {% else %}
+            <c-icon-tile name="cash" tone="success" />
+        {% endif %}
+
+        <div class="flex min-w-0 flex-1 flex-wrap items-start justify-between gap-2">
+            <div class="min-w-0">
+                <h4 class="truncate text-body font-semibold text-content">
+                    {% if activity.headline %}
+                        {{ activity.headline }}
+                    {% elif activity.company_name %}
+                        {% if activity.type == "payment" %}
+                            ${{ activity.amount|floatformat:2 }} from {{ activity.company_name }}
+                        {% else %}
+                            Order from {{ activity.company_name }}
+                        {% endif %}
+                    {% else %}
+                        {% if activity.type == "payment" %}
+                            Payment {{ activity.status }}
+                        {% else %}
+                            Order {{ activity.status }}
+                        {% endif %}
+                    {% endif %}
+                </h4>
+
+                <p class="text-body text-content-muted">
+                    {% if activity.customer_email %}{{ activity.customer_email }}{% endif %}
+                    {% if activity.plan_name %}
+                        {% if activity.customer_email %}·{% endif %}
+                        {{ activity.plan_name }}
+                    {% elif activity.provider %}
+                        {% if activity.customer_email %}·{% endif %}
+                        {{ activity.provider|title }}
+                    {% endif %}
+                </p>
+
+                {% if activity.customer_ltv or activity.customer_tenure or activity.customer_status_flags %}
+                    <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                        {% if activity.customer_ltv %}<c-badge tone="info" icon="chart-line">LTV {{ activity.customer_ltv }}</c-badge>{% endif %}
+                        {% if activity.customer_tenure %}<c-badge icon="calendar">{{ activity.customer_tenure }}</c-badge>{% endif %}
+                        {% comment %}ti-star, not ti-star-filled: the webfont ships no -filled variants.{% endcomment %}
+                        {% if "vip" in activity.customer_status_flags %}<c-badge tone="brand" icon="star">VIP</c-badge>{% endif %}
+                        {% if "at_risk" in activity.customer_status_flags %}<c-badge tone="danger" icon="alert-triangle">At risk</c-badge>{% endif %}
+                    </div>
+                {% endif %}
+
+                {% if activity.insight_text %}
+                    <p class="mt-2 inline-flex items-center gap-1 rounded-control px-2 py-1 text-caption font-medium {% if activity.severity == 'error' or activity.severity == 'critical' %}bg-danger-surface text-danger-text {% elif activity.severity == 'warning' %}bg-warning-surface text-warning-text {% else %}bg-success-surface text-success-text{% endif %}">
+                        <i class="ti {% if activity.insight_icon == 'celebration' %}ti-confetti{% elif activity.insight_icon == 'trophy' %}ti-trophy{% elif activity.insight_icon == 'chart' %}ti-trending-up{% elif activity.insight_icon == 'warning' %}ti-alert-circle{% elif activity.insight_icon == 'new' %}ti-sparkles{% else %}ti-bulb{% endif %}"
+                           aria-hidden="true"></i>
+                        {{ activity.insight_text }}
+                    </p>
+                {% endif %}
+            </div>
+
+            <div class="flex flex-shrink-0 flex-col items-end gap-1">
+                <time class="text-caption text-content-subtle">{{ activity.processed_at|date:"M j, H:i" }}</time>
+                {% if activity.status == "success" or activity.status == "completed" or activity.status == "paid" %}
+                    <c-badge tone="success" icon="circle-check">
+                        Delivered
+                    </c-badge>
+                {% elif activity.status == "failed" or activity.status == "declined" or activity.status == "error" %}
+                    <c-badge tone="danger" icon="circle-x">
+                        Failed
+                    </c-badge>
+                {% elif activity.status == "active" %}
+                    <c-badge tone="warning" icon="clock">
+                        Active
+                    </c-badge>
+                {% else %}
+                    <c-badge>
+                        {{ activity.status|title }}
+                    </c-badge>
+                {% endif %}
+                {% if activity.event_count and activity.event_count > 1 %}
+                    <c-badge tone="info" icon="stack-2">
+                        {{ activity.event_count }} events
+                    </c-badge>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</li>

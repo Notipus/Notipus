@@ -40,8 +40,13 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         "orders/create": "order_created",
         "orders/paid": "payment_success",
         "orders/cancelled": "order_cancelled",
-        "orders/refunded": "refund_issued",
         "orders/fulfilled": "order_fulfilled",
+        # The refund topic is refunds/create. There is no orders/refunded
+        # topic: it was mapped here for a long time, and Shopify rejects
+        # it outright ("The following topic is invalid") when an app
+        # tries to subscribe. Kept parsed rather than mapped would be
+        # pointless, so it is simply gone.
+        "refunds/create": "refund_issued",
         # Fulfillment events
         "fulfillments/create": "fulfillment_created",
         "fulfillments/update": "fulfillment_updated",
@@ -50,6 +55,12 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         "customers/update": "customer_updated",
         # Checkout events
         "checkouts/create": "checkout_started",
+        # Subscription events
+        "subscription_contracts/create": "subscription_created",
+        "subscription_contracts/update": "subscription_updated",
+        "subscription_billing_attempts/success": "subscription_renewed",
+        "subscription_billing_attempts/failure": "payment_failure",
+        "subscription_billing_attempts/challenged": "payment_failure",
         # Test
         "test": "test",
     }
@@ -58,6 +69,33 @@ class ShopifySourcePlugin(BaseSourcePlugin):
     FULFILLMENT_TOPICS: ClassVar[set[str]] = {
         "fulfillments/create",
         "fulfillments/update",
+    }
+
+    # Subscription contract topics: the payload is a SubscriptionContract,
+    # whose top-level ``id`` is the contract id and whose customer travels
+    # in ``customer_id``.
+    SUBSCRIPTION_CONTRACT_TOPICS: ClassVar[set[str]] = {
+        "subscription_contracts/create",
+        "subscription_contracts/update",
+    }
+
+    # Billing attempt topics: a SubscriptionBillingAttempt, which carries
+    # no customer at all - only contract and order references.
+    BILLING_ATTEMPT_TOPICS: ClassVar[set[str]] = {
+        "subscription_billing_attempts/success",
+        "subscription_billing_attempts/failure",
+        "subscription_billing_attempts/challenged",
+    }
+
+    # Refund topics: a Refund, keyed to an order rather than a customer.
+    REFUND_TOPICS: ClassVar[set[str]] = {"refunds/create"}
+
+    # Contract statuses that mean the subscription has ended, promoted
+    # from subscription_updated so cancellations read as cancellations.
+    CANCELLED_CONTRACT_STATUSES: ClassVar[set[str]] = {
+        "cancelled",
+        "canceled",
+        "expired",
     }
 
     # Topic prefixes where the payload's top-level ``id`` is an order or
@@ -148,19 +186,39 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         return data
 
     def _is_test_webhook(self, topic: str, request: HttpRequest) -> bool:
-        """Check if this is a test webhook.
+        """Check whether this is a bare test ping with no event behind it.
+
+        Only the ``test`` topic qualifies. The ``X-Shopify-Test`` header
+        does *not*: Shopify sets it on orders paid through a test payment
+        gateway, which are ordinary orders with real line items and a
+        real customer. Skipping those made the integration impossible to
+        demonstrate - on a development store every order carries the
+        header, so a merchant evaluating Notipus, or anyone verifying
+        their setup with a test order, saw nothing at all and would
+        reasonably conclude it was broken.
+
+        Test-mode events are parsed like any other and flagged through
+        ``_is_test_event`` so downstream can label them.
 
         Args:
             topic: The webhook topic.
             request: The incoming HTTP request.
 
         Returns:
-            True if this is a test webhook, False otherwise.
+            True only for Shopify's contentless test ping.
         """
-        return (
-            topic == "test"
-            or request.headers.get("X-Shopify-Test", "").lower() == "true"
-        )
+        return topic == "test"
+
+    def _is_test_event(self, request: HttpRequest) -> bool:
+        """Report whether Shopify flagged this event as test-mode.
+
+        Args:
+            request: The incoming HTTP request.
+
+        Returns:
+            True when the order was placed against a test gateway.
+        """
+        return request.headers.get("X-Shopify-Test", "").lower() == "true"
 
     def _extract_shopify_customer_id(
         self, data: dict[str, Any], topic: str
@@ -401,6 +459,165 @@ class ShopifySourcePlugin(BaseSourcePlugin):
 
         return event_data
 
+    def _build_subscription_event_data(
+        self, event_type: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build event data for a SubscriptionContract payload.
+
+        The contract carries no money and no customer detail - only ids,
+        a status and the billing/delivery cadence. Anything richer has to
+        be resolved from the Admin API afterwards.
+
+        Args:
+            event_type: The internal event type.
+            data: Parsed contract payload.
+
+        Returns:
+            Standardized event data dictionary.
+        """
+        billing = data.get("billing_policy") or {}
+        delivery = data.get("delivery_policy") or {}
+        status = str(data.get("status") or "").lower()
+
+        # A contract update that ends the subscription is a cancellation,
+        # not a generic update.
+        if event_type == "subscription_updated" and status in (
+            self.CANCELLED_CONTRACT_STATUSES
+        ):
+            event_type = "subscription_canceled"
+
+        customer_id = data.get("customer_id")
+
+        event_data: dict[str, Any] = {
+            "type": event_type,
+            "customer_id": str(customer_id) if customer_id else None,
+            "provider": "shopify",
+            "external_id": str(data.get("id", "")),
+            "created_at": data.get("created_at"),
+            "status": "success",
+            "metadata": {
+                "subscription_contract_id": data.get("id"),
+                "subscription_status": data.get("status"),
+                "billing_interval": billing.get("interval"),
+                "billing_interval_count": billing.get("interval_count"),
+                "min_cycles": billing.get("min_cycles"),
+                "max_cycles": billing.get("max_cycles"),
+                "delivery_interval": delivery.get("interval"),
+                "delivery_interval_count": delivery.get("interval_count"),
+                "origin_order_id": data.get("origin_order_id"),
+                "is_recurring": True,
+            },
+        }
+
+        if data.get("currency_code"):
+            event_data["currency"] = data["currency_code"]
+
+        return event_data
+
+    def _build_billing_attempt_event_data(
+        self, event_type: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build event data for a SubscriptionBillingAttempt payload.
+
+        Billing attempts reference a contract and an order but never a
+        customer, so consolidation keys on the contract until the Admin
+        API fills the customer in.
+
+        Args:
+            event_type: The internal event type.
+            data: Parsed billing attempt payload.
+
+        Returns:
+            Standardized event data dictionary.
+        """
+        contract_id = data.get("subscription_contract_id")
+        order_id = data.get("order_id")
+        failed = event_type == "payment_failure"
+
+        return {
+            "type": event_type,
+            # No customer in the payload: fall back to the contract so
+            # repeat attempts for one subscription group together.
+            "customer_id": f"contract_{contract_id}" if contract_id else None,
+            "provider": "shopify",
+            "external_id": str(data.get("id", "")),
+            "created_at": data.get("origin_time") or data.get("created_at"),
+            "status": "failed" if failed else "success",
+            "metadata": {
+                "subscription_contract_id": contract_id,
+                "order_id": order_id,
+                "idempotency_key": data.get("idempotency_key"),
+                "error_code": data.get("error_code"),
+                "error_message": data.get("error_message"),
+                "next_action_url": data.get("next_action_url"),
+                "is_recurring": True,
+            },
+        }
+
+    def _build_refund_event_data(
+        self, event_type: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Build event data for a Refund payload.
+
+        A refund names neither customer nor total. The amount is summed
+        from its transactions, and the order is the only identity
+        available.
+
+        Args:
+            event_type: The internal event type.
+            data: Parsed refund payload.
+
+        Returns:
+            Standardized event data dictionary.
+        """
+        order_id = data.get("order_id")
+
+        amount = Decimal(0)
+        currency: str | None = None
+        for txn in data.get("transactions") or []:
+            raw = txn.get("amount")
+            if raw is None:
+                continue
+            try:
+                amount += Decimal(str(raw))
+            except InvalidOperation:
+                logger.warning("Invalid refund transaction amount %r", raw)
+            currency = currency or txn.get("currency")
+
+        line_items = []
+        for item in data.get("refund_line_items") or []:
+            inner = item.get("line_item") or {}
+            line_items.append(
+                {
+                    "name": inner.get("name", inner.get("title", "Unknown Product")),
+                    "sku": inner.get("sku", ""),
+                    "quantity": item.get("quantity", inner.get("quantity", 1)),
+                }
+            )
+
+        event_data: dict[str, Any] = {
+            "type": event_type,
+            "customer_id": f"order_{order_id}" if order_id else None,
+            "provider": "shopify",
+            "external_id": str(data.get("id", "")),
+            "created_at": data.get("created_at") or data.get("processed_at"),
+            "status": "success",
+            "amount": amount,
+            "metadata": {
+                "refund_id": data.get("id"),
+                "order_id": order_id,
+                "order_ref": str(order_id) if order_id else None,
+                "note": data.get("note"),
+                "restock": data.get("restock"),
+                "line_items": line_items,
+            },
+        }
+
+        if currency:
+            event_data["currency"] = currency
+
+        return event_data
+
     def _extract_customer_id_from_fulfillment(self, data: dict[str, Any]) -> str:
         """Extract customer ID from fulfillment webhook data.
 
@@ -459,7 +676,7 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         # Store webhook data for later use
         self._current_webhook_data = data
 
-        # Check for test webhook
+        # Shopify's contentless test ping carries no event to report.
         if self._is_test_webhook(topic, request):
             return None
 
@@ -471,8 +688,17 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             logger.warning("Ignoring unsupported Shopify webhook topic: %s", topic)
             return None
 
+        # Subscription and refund payloads are not orders and must not go
+        # through the order builder: their top-level ``id`` is a contract,
+        # attempt or refund id, never a customer's.
+        if topic in self.SUBSCRIPTION_CONTRACT_TOPICS:
+            event = self._build_subscription_event_data(event_type, data)
+        elif topic in self.BILLING_ATTEMPT_TOPICS:
+            event = self._build_billing_attempt_event_data(event_type, data)
+        elif topic in self.REFUND_TOPICS:
+            event = self._build_refund_event_data(event_type, data)
         # Handle fulfillment-specific topics differently
-        if topic in self.FULFILLMENT_TOPICS:
+        elif topic in self.FULFILLMENT_TOPICS:
             # Shopify has no dedicated "delivered" webhook topic; carriers
             # report delivery via ``shipment_status`` on fulfillment
             # updates. Promote those to the shipment_delivered event type.
@@ -488,12 +714,22 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             customer_id = self._extract_shopify_customer_id(data, topic)
             event = self._build_shopify_event_data(event_type, customer_id, data, topic)
 
+        # Flag test-gateway orders so a notification can say so. They are
+        # real orders and are processed like any other; the merchant just
+        # needs to know no money moved.
+        if self._is_test_event(request):
+            event.setdefault("metadata", {})["is_test"] = True
+
         # Dedup keys on the signed body, never the unsigned
         # X-Shopify-Webhook-Id header: Shopify's HMAC covers only the
         # body, so a captured body replayed with a fresh webhook-id
         # header must map to the SAME dedup key. Redeliveries resend the
         # identical body (identical hash), while distinct events differ
         # in signed fields (resource id, updated_at, financial_status).
+        #
+        # Confirmed against a live store: orders/create and orders/paid
+        # for one order arrive byte-identical, which is why the router's
+        # key includes the event type.
         event["content_hash"] = signed_content_hash(request)
 
         return event

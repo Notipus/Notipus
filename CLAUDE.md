@@ -31,6 +31,10 @@ PYTHONPATH=app DJANGO_SETTINGS_MODULE=django_notipus.test_settings uv run python
 # Frontend (Tailwind CSS)
 bun run build                           # Build CSS and fonts
 bun run dev                             # Watch mode
+
+# Design tokens (generates src/css/tokens.css from app/core/design_tokens.py)
+uv run python app/manage.py build_design_tokens
+uv run python app/manage.py build_design_tokens --check   # CI gate
 ```
 
 ## Architecture
@@ -63,8 +67,34 @@ BasePlugin (abstract)
 
 **Registry:** `PluginRegistry.instance()` singleton with `register()`, `get()`, `get_all()`, and `discover()` methods.
 
+### Design System (ADR-002)
+
+The UI is built from **Django Cotton** components on a **design token** layer.
+
+```
+app/core/design_tokens.py     → single source of truth for colour, type, radius, spacing
+src/css/tokens.css            → generated; imported by src/css/main.css
+app/core/templates/cotton/    → the component library (<c-button>, <c-card>, …)
+/ui/                          → renders every token and component (DEBUG only)
+```
+
+Rules that are enforced by `tests/test_design_tokens.py`, not just documented:
+
+- Templates and `ui.js` use semantic tokens (`bg-surface`, `text-content-muted`),
+  never Tailwind's stock palette (`bg-gray-100`).
+- Every colour pairing the components render clears WCAG AA — 4.5:1 for body
+  text, 3:1 for large text and non-text — which is what Google PageSpeed audits.
+- `src/css/tokens.css` matches `design_tokens.py`.
+- Every Tabler icon name referenced actually exists in the webfont.
+- Every Cotton `<c-vars>` prop has a default, so props cannot leak from the
+  surrounding page context.
+
+There is deliberately **no** `@layer components` block in `main.css`: a component
+owns its own utility classes, so there is only one place to change it.
+
 ### Key Directories
 - `app/core/` - Users, workspaces, integrations, billing, dashboard
+- `app/core/templates/cotton/` - Cotton component library
 - `app/webhooks/` - Event processing, insight detection, notification models
 - `app/plugins/` - Extensible plugin architecture
 - `app/django_notipus/` - Django settings and URL routing

@@ -185,7 +185,7 @@ class TestDedupKeyPrefersSignedContent:
             "external_id": "sub_1",
             "type": "payment_success",
         }
-        assert _get_dedup_key(event_data) == "chargify:sha256:abc123"
+        assert _get_dedup_key(event_data) == "chargify:payment_success:sha256:abc123"
 
     def test_content_hash_is_provider_namespaced(self) -> None:
         """Equal body hashes from different providers cannot collide."""
@@ -193,12 +193,31 @@ class TestDedupKeyPrefersSignedContent:
         shopify = {"provider": "shopify", "content_hash": "same"}
         assert _get_dedup_key(chargify) != _get_dedup_key(shopify)
 
+    def test_identical_body_under_different_types_stays_distinct(self) -> None:
+        """Shopify reuses one order body across several topics.
+
+        orders/create, orders/paid, orders/cancelled and orders/fulfilled
+        all serialise the same order resource, so keying on the body
+        alone would drop three real events as duplicates.
+        """
+        body = "identical-order-body-hash"
+        keys = {
+            _get_dedup_key({"provider": "shopify", "type": t, "content_hash": body})
+            for t in (
+                "order_created",
+                "payment_success",
+                "order_cancelled",
+                "order_fulfilled",
+            )
+        }
+        assert len(keys) == 4
+
     def test_missing_provider_falls_back_to_unknown_namespace(self) -> None:
         """A missing/empty provider never yields an un-namespaced key."""
-        assert _get_dedup_key({"content_hash": "abc"}) == "unknown:sha256:abc"
+        assert _get_dedup_key({"content_hash": "abc"}) == "unknown:unknown:sha256:abc"
         assert (
             _get_dedup_key({"provider": "", "content_hash": "abc"})
-            == "unknown:sha256:abc"
+            == "unknown:unknown:sha256:abc"
         )
 
     def test_event_id_still_used_without_content_hash(self) -> None:

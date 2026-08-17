@@ -8,6 +8,7 @@ Tests cover:
 - Helper functions (_normalize_shop_domain, _is_valid_shop_domain, etc.)
 """
 
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -133,7 +134,7 @@ class TestIntegrateShopifyView:
         response = client.get(reverse("core:integrate_shopify"))
 
         assert response.status_code == 200
-        assert b"Connect Your Store" in response.content
+        assert b"Store URL" in response.content
         assert b"shop_url" in response.content
 
     @override_settings(SHOPIFY_CLIENT_ID="test_client_id")
@@ -156,7 +157,7 @@ class TestIntegrateShopifyView:
         response = client.get(reverse("core:integrate_shopify"))
 
         assert response.status_code == 200
-        assert b"Connected" in response.content
+        assert b"teststore.myshopify.com" in response.content
         expected_domain = b"teststore.myshopify.com"
         assert expected_domain in response.content
 
@@ -440,12 +441,14 @@ class TestShopifyConnectCallbackView:
             is_active=True,
         ).first()
         assert integration is not None
-        assert integration.oauth_credentials["access_token"] == "test_access_token"
         assert (
             integration.integration_settings["shop_domain"] == "teststore.myshopify.com"
         )
-        # Webhook secret must be stored so HMAC validation can succeed
-        assert integration.webhook_secret == "test_secret"
+        # The exchange proves the merchant authorised the install; the
+        # resulting token is discarded rather than stored, and events are
+        # verified against the app's own client secret.
+        assert integration.oauth_credentials == {}
+        assert integration.webhook_secret == ""
 
     @override_settings(
         SHOPIFY_CLIENT_ID="test_client_id",
@@ -508,11 +511,8 @@ class TestDisconnectShopifyView:
         integration = Integration.objects.create(
             workspace=workspace,
             integration_type="shopify",
-            oauth_credentials={"access_token": "test_token"},
-            integration_settings={
-                "shop_domain": "teststore.myshopify.com",
-                "webhook_ids": [12345, 67890],
-            },
+            oauth_credentials={},
+            integration_settings={"shop_domain": "teststore.myshopify.com"},
             is_active=True,
         )
         return user, workspace, user_profile, integration
@@ -537,10 +537,7 @@ class TestDisconnectShopifyView:
 
     def test_disconnect_no_integration(self, client: Client) -> None:
         """Test disconnect when no integration exists."""
-        user = User.objects.create_user(
-            username="testuser",
-            password="testpass123",
-        )
+        user = User.objects.create_user(username="testuser", password="testpass123")
         workspace = Workspace.objects.create(name="Test Org")
         UserProfile.objects.create(user=user, workspace=workspace)
         client.force_login(user)
@@ -551,58 +548,30 @@ class TestDisconnectShopifyView:
         messages = list(get_messages(response.wsgi_request))
         assert any("no active" in str(m).lower() for m in messages)
 
-    @override_settings(SHOPIFY_API_VERSION="2025-01")
-    @patch("core.views.integrations.shopify.requests.delete")
-    def test_disconnect_success(
-        self, mock_delete: Mock, client: Client, setup_user_with_integration: tuple
+    @patch("core.views.integrations.shopify.requests.post")
+    def test_disconnect_calls_no_shopify_api(
+        self, mock_post: Mock, client: Client, setup_user_with_integration: tuple
     ) -> None:
-        """Test successful disconnection."""
-        user, workspace, _, integration = setup_user_with_integration
-        client.force_login(user)
+        """Disconnecting must not talk to Shopify.
 
-        # Mock webhook deletion
-        mock_delete.return_value = Mock(status_code=200)
+        Subscriptions belong to the app, not to the shop, so there is
+        nothing at Shopify's end to tear down - and no credential to do
+        it with.
+        """
+        user, _, _, integration = setup_user_with_integration
+        client.force_login(user)
 
         response = client.post(reverse("core:disconnect_shopify"))
 
         assert response.status_code == 302
-        assert response.url == reverse("core:integrations")
-
-        # Verify integration was deactivated
-        integration.refresh_from_db()
-        assert integration.is_active is False
-
-        # Verify webhooks were deleted
-        assert mock_delete.call_count == 2  # Two webhook IDs
-
-        messages = list(get_messages(response.wsgi_request))
-        assert any("disconnected" in str(m).lower() for m in messages)
-
-    @override_settings(SHOPIFY_API_VERSION="2025-01")
-    @patch("core.views.integrations.shopify.requests.delete")
-    def test_disconnect_webhook_deletion_failure(
-        self, mock_delete: Mock, client: Client, setup_user_with_integration: tuple
-    ) -> None:
-        """Test disconnection succeeds even if webhook deletion fails."""
-        user, workspace, _, integration = setup_user_with_integration
-        client.force_login(user)
-
-        # Mock webhook deletion failure
-        mock_delete.side_effect = requests.exceptions.RequestException("API error")
-
-        response = client.post(reverse("core:disconnect_shopify"))
-
-        assert response.status_code == 302
-        assert response.url == reverse("core:integrations")
-
-        # Verify integration was still deactivated
+        assert mock_post.call_count == 0
         integration.refresh_from_db()
         assert integration.is_active is False
 
 
 @pytest.mark.django_db
-class TestWebhookCreation:
-    """Test webhook creation functionality."""
+class TestNoCredentialsAreStored:
+    """Notipus must hold no standing access to a merchant's store."""
 
     @pytest.fixture
     def setup_user(self, client: Client) -> tuple[User, Workspace, UserProfile]:
@@ -616,50 +585,39 @@ class TestWebhookCreation:
             name="Test Workspace",
             shop_domain="test.myshopify.com",
         )
-        user_profile = UserProfile.objects.create(
-            user=user,
-            workspace=workspace,
-        )
+        user_profile = UserProfile.objects.create(user=user, workspace=workspace)
         return user, workspace, user_profile
 
-    @override_settings(
-        SHOPIFY_CLIENT_ID="test_client_id",
-        SHOPIFY_CLIENT_SECRET="test_secret",
-        SHOPIFY_API_VERSION="2025-01",
-        BASE_URL="http://localhost:8000",
-    )
-    @patch("core.views.integrations.shopify.requests.post")
-    def test_webhook_creation_all_topics(
-        self, mock_post: Mock, client: Client, setup_user: tuple
-    ) -> None:
-        """Test that all webhook topics are created."""
-        user, workspace, _ = setup_user
-        client.force_login(user)
+    @staticmethod
+    def _token_response() -> Mock:
+        """Build a mocked OAuth token-exchange response.
 
-        # Set up session
+        Returns:
+            A Mock shaped like a successful ``requests`` response.
+        """
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            "access_token": "shpat_a_real_looking_token",
+            "scope": "read_orders,read_customers",
+        }
+        response.raise_for_status = Mock()
+        return response
+
+    def _connect(self, client: Client) -> Any:
+        """Drive the OAuth callback to completion.
+
+        Args:
+            client: The Django test client.
+
+        Returns:
+            The HTTP response.
+        """
         session = client.session
         session["shopify_oauth_state"] = "test_state"
         session["shopify_shop_domain"] = "teststore.myshopify.com"
         session.save()
-
-        # Mock responses
-        token_response = Mock()
-        token_response.status_code = 200
-        token_response.json.return_value = {
-            "access_token": "test_access_token",
-            "scope": "read_orders,read_customers,write_webhooks",
-        }
-        token_response.raise_for_status = Mock()
-
-        webhook_response = Mock()
-        webhook_response.status_code = 201
-        webhook_response.json.return_value = {"webhook": {"id": 12345}}
-
-        # Token exchange + 5 webhook creations
-        # Token exchange + one call per default webhook topic (7)
-        mock_post.side_effect = [token_response] + [webhook_response] * 7
-
-        response = client.get(
+        return client.get(
             reverse("core:shopify_connect_callback"),
             {
                 "code": "test_code",
@@ -668,86 +626,79 @@ class TestWebhookCreation:
             },
         )
 
-        assert response.status_code == 302
-
-        # Verify all 7 default webhook topics were requested
-        # First call is token exchange, the rest are webhooks
-        webhook_calls = mock_post.call_args_list[1:]
-        assert len(webhook_calls) == 7
-
-        # Verify webhook URL format
-        for call in webhook_calls:
-            call_kwargs = call[1] if len(call) > 1 else {}
-            call_json = call_kwargs.get("json", {})
-            webhook_data = call_json.get("webhook", {})
-            assert str(workspace.uuid) in webhook_data.get("address", "")
-
     @override_settings(
         SHOPIFY_CLIENT_ID="test_client_id",
         SHOPIFY_CLIENT_SECRET="test_secret",
-        SHOPIFY_API_VERSION="2025-01",
-        BASE_URL="http://localhost:8000",
+        BASE_URL="https://notipus.example.com",
     )
     @patch("core.views.integrations.shopify.requests.post")
-    def test_webhook_creation_handles_existing(
+    def test_access_token_is_never_persisted(
         self, mock_post: Mock, client: Client, setup_user: tuple
     ) -> None:
-        """Test that existing webhooks (422) are handled gracefully."""
+        """The token is exchanged to prove consent, then discarded.
+
+        Storing it would leave Notipus able to read the merchant's whole
+        order and customer history at will, which is far more access
+        than delivering notifications requires.
+        """
         user, workspace, _ = setup_user
         client.force_login(user)
+        mock_post.side_effect = [self._token_response()]
 
-        # Set up session
-        session = client.session
-        session["shopify_oauth_state"] = "test_state"
-        session["shopify_shop_domain"] = "teststore.myshopify.com"
-        session.save()
-
-        # Mock responses
-        token_response = Mock()
-        token_response.status_code = 200
-        token_response.json.return_value = {
-            "access_token": "test_access_token",
-            "scope": "read_orders,read_customers,write_webhooks",
-        }
-        token_response.raise_for_status = Mock()
-
-        # Mix of success and "already exists" responses
-        success_response = Mock()
-        success_response.status_code = 201
-        success_response.json.return_value = {"webhook": {"id": 12345}}
-
-        exists_response = Mock()
-        exists_response.status_code = 422
-        exists_response.text = "Webhook already exists"
-
-        mock_post.side_effect = [
-            token_response,
-            success_response,
-            exists_response,
-            success_response,
-            exists_response,
-            success_response,
-            success_response,
-            success_response,
-        ]
-
-        response = client.get(
-            reverse("core:shopify_connect_callback"),
-            {
-                "code": "test_code",
-                "state": "test_state",
-                "shop": "teststore.myshopify.com",
-            },
-        )
+        response = self._connect(client)
 
         assert response.status_code == 302
-        assert response.url == reverse("core:integrations")
-
-        # Integration should still be created
         integration = Integration.objects.get(
-            workspace=workspace,
-            integration_type="shopify",
+            workspace=workspace, integration_type="shopify"
         )
-        assert integration.is_active is True
-        # Should have 5 successful webhook IDs (7 topics, 2 already existed)
-        assert len(integration.integration_settings.get("webhook_ids", [])) == 5
+        assert integration.oauth_credentials == {}
+        assert "shpat_a_real_looking_token" not in str(integration.oauth_credentials)
+        assert integration.webhook_secret == ""
+
+    @override_settings(
+        SHOPIFY_CLIENT_ID="test_client_id",
+        SHOPIFY_CLIENT_SECRET="test_secret",
+        BASE_URL="https://notipus.example.com",
+    )
+    @patch("core.views.integrations.shopify.requests.post")
+    def test_connect_makes_exactly_one_call(
+        self, mock_post: Mock, client: Client, setup_user: tuple
+    ) -> None:
+        """Only the token exchange. No Admin API traffic at all.
+
+        Subscriptions are declared in the app configuration, so there is
+        nothing to register per shop.
+        """
+        user, _, _ = setup_user
+        client.force_login(user)
+        mock_post.side_effect = [self._token_response()]
+
+        self._connect(client)
+
+        assert mock_post.call_count == 1
+        assert "oauth/access_token" in mock_post.call_args_list[0].args[0]
+
+    @override_settings(
+        SHOPIFY_CLIENT_ID="test_client_id",
+        SHOPIFY_CLIENT_SECRET="test_secret",
+        BASE_URL="https://notipus.example.com",
+    )
+    @patch("core.views.integrations.shopify.requests.post")
+    def test_shop_domain_is_kept_because_it_routes_events(
+        self, mock_post: Mock, client: Client, setup_user: tuple
+    ) -> None:
+        """Events arrive app-wide and are routed by shop domain."""
+        user, workspace, _ = setup_user
+        client.force_login(user)
+        mock_post.side_effect = [self._token_response()]
+
+        self._connect(client)
+
+        integration = Integration.objects.get(
+            workspace=workspace, integration_type="shopify"
+        )
+        assert (
+            integration.integration_settings["shop_domain"] == "teststore.myshopify.com"
+        )
+        assert integration.integration_settings["enabled_categories"]
+        assert "webhook_ids" not in integration.integration_settings

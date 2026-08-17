@@ -1,0 +1,51 @@
+{% comment %}
+Select, with its label, help and error.
+
+Options are the slot, so callers keep control of values and selected state:
+
+  <c-select name="role" label="Role">
+      <option value="admin" selected>Admin</option>
+      <option value="user">Member</option>
+  </c-select>
+
+Props:
+  name, id, label, help, error, required
+  size  sm | md   (default: md)
+  bare  render only the select, with no label or field wrapper
+
+Use `bare` where the control sits in a row that already names it — a per-row
+role picker, say — and give it an aria-label. It still draws its styling from
+the shared control classes, so it cannot drift away from every other field the
+way a hand-rolled select does.
+{% endcomment %}
+<c-vars name=""
+        id=""
+        label=""
+        help=""
+        error=""
+        required=""
+        size="md"
+        bare=""
+        class="" />
+
+{% if bare %}
+    <select name="{{ name }}"
+            {% if id %}id="{{ id }}"{% endif %}
+            class="{% include 'cotton/_input_classes.html' %} {% if size == 'sm' %}px-2 py-1 text-caption{% else %}pr-8{% endif %} {{ class }}"
+            {% if required %}required{% endif %}
+            {{ attrs }}>{{ slot }}</select>
+{% else %}
+    <c-field :label="label"
+             for="{{ id|default:name }}"
+             :help="help"
+             :error="error"
+             :required="required"
+             :class="class">
+        <select name="{{ name }}"
+                id="{{ id|default:name }}"
+                class="{% include 'cotton/_input_classes.html' %} {% if size == 'sm' %}px-2 py-1 text-caption{% else %}pr-8{% endif %}"
+                {% if required %}required{% endif %}
+                {% if error %}aria-invalid="true" aria-describedby="{{ id|default:name }}-error"{% elif help %}aria-describedby="{{ id|default:name }}-help"{% endif %}
+                {{ attrs }}>{{ slot }}</select>
+    </c-field>
+{% endif %}

@@ -1,0 +1,11 @@
+{% comment %}
+Table body cell.
+
+Props:
+  align   left | right | center  (default: left)
+  muted   render in secondary text colour
+{% endcomment %}
+<c-vars align="left" muted="" class="" />
+
+<td class="px-gutter py-3 align-middle {% if muted %}text-content-muted{% else %}text-content{% endif %} {% if align == 'right' %}text-right{% elif align == 'center' %}text-center{% else %}text-left{% endif %} {{ class }}"
+    {{ attrs }}>{{ slot }}</td>

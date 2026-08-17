@@ -1,0 +1,31 @@
+{% comment %}
+Multi-line text input, with its label, help and error.
+
+Props: name, id, value, placeholder, label, help, error, required, rows (default 4).
+{% endcomment %}
+<c-vars name=""
+        id=""
+        value=""
+        placeholder=""
+        label=""
+        help=""
+        error=""
+        required=""
+        rows="4"
+        class="" />
+
+<c-field :label="label"
+         for="{{ id|default:name }}"
+         :help="help"
+         :error="error"
+         :required="required"
+         :class="class">
+    <textarea name="{{ name }}"
+              id="{{ id|default:name }}"
+              rows="{{ rows }}"
+              class="{% include 'cotton/_input_classes.html' %}"
+              {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+              {% if required %}required{% endif %}
+              {% if error %}aria-invalid="true" aria-describedby="{{ id|default:name }}-error"{% elif help %}aria-describedby="{{ id|default:name }}-help"{% endif %}
+              {{ attrs }}>{{ value }}</textarea>
+</c-field>

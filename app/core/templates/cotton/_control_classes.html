@@ -1,0 +1,13 @@
+{% comment %}
+The button class list, factored out so c-button can emit either an anchor or a
+button element without repeating it. Included from inside a class attribute;
+expects `variant`, `size`, `block` and `class` in context. Not a component — the
+leading underscore keeps it out of the c-* namespace.
+
+Tag names are written without angle brackets in this comment on purpose: djlint
+reformats anything that looks like markup, even inside a comment block.
+
+Every colour a variant needs is set here rather than passed in through `class`:
+two competing text-* utilities are resolved by stylesheet order, not by the
+order they appear in the attribute, so "link plus a colour class" is a coin flip.
+{% endcomment %}inline-flex items-center justify-center gap-2 rounded-control font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 {% if block %}w-full{% endif %} {% if variant == "link" or variant == "link-danger" or variant == "link-muted" %}px-0 py-0 text-body{% elif size == "sm" %}px-3 py-1.5 text-caption{% elif size == "lg" %}px-6 py-3 text-lead{% else %}px-4 py-2 text-body{% endif %} {% if variant == "secondary" %}border border-border-strong bg-surface text-content hover:bg-surface-muted{% elif variant == "ghost" %}border border-transparent bg-transparent text-content-muted hover:bg-surface-muted hover:text-content{% elif variant == "danger" %}border border-transparent bg-danger-solid text-content-inverse hover:bg-danger-solid-hover{% elif variant == "link" %}border border-transparent bg-transparent text-brand-text underline-offset-4 hover:underline{% elif variant == "link-danger" %}border border-transparent bg-transparent text-danger-text underline-offset-4 hover:underline{% elif variant == "link-muted" %}border border-transparent bg-transparent text-content-muted underline-offset-4 hover:text-content hover:underline{% else %}border border-transparent bg-action text-content-inverse hover:bg-action-hover{% endif %} {{ class }}

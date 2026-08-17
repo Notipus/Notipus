@@ -1,0 +1,51 @@
+{% comment %}
+Card — the container everything on a page lives in.
+
+Flat by default: a border does the separating and the shadow is barely there,
+so a page of cards reads as one surface rather than a pile of floating boxes.
+
+Props:
+  title        heading text; renders an <h3> in the card header
+  description  one line under the title
+  icon         Tabler icon name, shown as a tile beside the title
+  tone         icon tile tone — brand | success | warning | danger | info | neutral
+  flush        drop the body padding (for tables and full-bleed lists)
+
+Slots:
+  slot     the card body
+  actions  right-aligned controls in the header
+  footer   a muted strip along the bottom
+
+  <c-card title="Monthly usage" icon="chart-bar">
+      <c-slot name="actions"><c-button size="sm" variant="secondary">Details</c-button></c-slot>
+      …
+  </c-card>
+{% endcomment %}
+<c-vars title="" description="" icon="" tone="brand" flush="" class="" />
+
+<section class="overflow-hidden rounded-card border border-border bg-surface shadow-card {{ class }}"
+         {{ attrs }}>
+    {% if title or actions %}
+        <header class="flex flex-wrap items-center justify-between gap-3 border-b border-border px-gutter py-4">
+            <div class="flex min-w-0 items-center gap-3">
+                {% if icon %}<c-icon-tile :name="icon" :tone="tone" size="sm" />{% endif %}
+                <div class="min-w-0">
+                    {% if title %}<h3 class="truncate text-heading font-semibold text-content">{{ title }}</h3>{% endif %}
+                    {% if description %}<p class="mt-0.5 text-body text-content-muted">{{ description }}</p>{% endif %}
+                </div>
+            </div>
+            {% if actions %}<div class="flex flex-shrink-0 items-center gap-2">{{ actions }}</div>{% endif %}
+        </header>
+    {% endif %}
+    {% comment %}
+    slot.strip so a card that is only a header and its actions — the "Trial in
+    progress" card on Billing, say — does not render an empty padded strip
+    underneath, which read as a broken or still-loading panel.
+    {% endcomment %}
+    {% if slot.strip %}<div class="{% if not flush %}px-gutter py-gutter{% endif %}">{{ slot }}</div>{% endif %}
+    {% if footer %}
+        <footer class="border-t border-border bg-surface-muted px-gutter py-4 text-body text-content-muted">
+            {{ footer }}
+        </footer>
+    {% endif %}
+</section>

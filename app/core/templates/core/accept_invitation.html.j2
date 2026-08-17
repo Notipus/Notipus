@@ -1,123 +1,57 @@
 {% extends "core/base.html.j2" %}
-{% load static %}
 
 {% block title %}
-    Join {{ workspace.name }} - Invitation
+    Join {{ workspace.name }} - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="flex justify-center">
-                <img src="{% static 'img/notipus-logo.png' %}"
-                     alt="Notipus"
-                     class="h-12 w-auto"
-                     width="48"
-                     height="48">
+    <c-page width="narrow">
+        <c-card>
+            <div class="flex flex-col items-center text-center">
+                <c-avatar :name="workspace.name" size="lg" />
+                <h1 class="mt-4 text-title font-bold text-content">Join {{ workspace.name }}</h1>
+                <p class="mt-2 text-lead text-content-muted">{{ invitation.invited_by.email }} invited you to this workspace.</p>
             </div>
-            <h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900">You're invited!</h2>
-            <p class="mt-2 text-center text-sm text-gray-600">{{ invitation.invited_by.email }} has invited you to join</p>
-        </div>
 
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
-                <!-- Workspace Info -->
-                <div class="text-center mb-8">
-                    <div class="w-16 h-16 rounded-full bg-primary-100 flex items-center justify-center mx-auto mb-4">
-                        <span class="text-2xl font-bold text-primary-600">{{ workspace.name|first|upper }}</span>
-                    </div>
-                    <h3 class="text-xl font-bold text-gray-900">{{ workspace.name }}</h3>
-                    <p class="mt-2 text-sm text-gray-500">
-                        You'll join as
-                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if invitation.role == 'owner' %}bg-purple-100 text-purple-800 {% elif invitation.role == 'admin' %}bg-blue-100 text-blue-800 {% else %}bg-gray-100 text-gray-800{% endif %}">
-                            {{ invitation.role|title }}
-                        </span>
-                    </p>
-                </div>
+            <c-definition class="mt-6">
+                <c-definition.row label="Invitation sent to" :value="invitation.email" />
+                <c-definition.row label="Role">
+                    <c-badge tone="brand">
+                        {{ invitation.role|title }}
+                    </c-badge>
+                </c-definition.row>
+                <c-definition.row label="Expires" value="{{ invitation.expires_at|date:'M j, Y' }}" />
+            </c-definition>
 
-                <!-- Invitation Details -->
-                <div class="bg-gray-50 rounded-lg p-4 mb-6">
-                    <dl class="space-y-2 text-sm">
-                        <div class="flex justify-between">
-                            <dt class="text-gray-500">Invitation for</dt>
-                            <dd class="text-gray-900 font-medium">
-                                {{ invitation.email }}
-                            </dd>
-                        </div>
-                        <div class="flex justify-between">
-                            <dt class="text-gray-500">Expires</dt>
-                            <dd class="text-gray-900">
-                                {{ invitation.expires_at|date:"M j, Y" }}
-                            </dd>
-                        </div>
-                    </dl>
-                </div>
-
+            <div class="mt-6 flex flex-col gap-3">
                 {% if user.is_authenticated %}
-                    <!-- User is logged in -->
                     {% if user.email|lower == invitation.email|lower %}
-                        <!-- Email matches - show accept button -->
-                        <form method="post"
-                              action="{% url 'core:confirm_accept_invitation' invitation.token %}">
-                            {% csrf_token %}
-                            <button type="submit"
-                                    class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition duration-150 ease-in-out">
-                                Accept Invitation
-                            </button>
-                        </form>
+                        <c-form action="{% url 'core:confirm_accept_invitation' invitation.token %}">
+                            <c-button type="submit" block>
+                                Join {{ workspace.name }}
+                            </c-button>
+                        </c-form>
                     {% else %}
-                        <!-- Email doesn't match -->
-                        <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
-                            <div class="flex">
-                                <div class="flex-shrink-0">
-                                    <svg class="h-5 w-5 text-amber-400"
-                                         fill="currentColor"
-                                         viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd">
-                                        </path>
-                                    </svg>
-                                </div>
-                                <div class="ml-3">
-                                    <p class="text-sm text-amber-700">
-                                        You're logged in as <strong>{{ user.email }}</strong>, but this invitation was sent to <strong>{{ invitation.email }}</strong>.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                        <a href="{% url 'account_logout' %}?next={{ request.path }}"
-                           class="w-full flex justify-center py-3 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition duration-150 ease-in-out">
-                            Sign out and use different account
-                        </a>
+                        <c-alert tone="warning" title="This invitation is for a different account">
+                            You are signed in as {{ user.email }}, but the invitation was sent to {{ invitation.email }}.
+                            Sign out and sign back in as {{ invitation.email }} to accept it.
+                        </c-alert>
+                        <c-button href="{% url 'account_logout' %}?next={{ request.path }}"
+                                  variant="secondary"
+                                  block>
+                            Sign out and use another account
+                        </c-button>
                     {% endif %}
                 {% else %}
-                    <!-- User is not logged in -->
-                    <div class="space-y-4">
-                        <a href="{% url 'account_login' %}?next={{ request.path }}"
-                           class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition duration-150 ease-in-out">
-                            Sign in to accept
-                        </a>
-                        <div class="relative">
-                            <div class="absolute inset-0 flex items-center">
-                                <div class="w-full border-t border-gray-300"></div>
-                            </div>
-                            <div class="relative flex justify-center text-sm">
-                                <span class="px-2 bg-white text-gray-500">or</span>
-                            </div>
-                        </div>
-                        <a href="{% url 'account_signup' %}?next={{ request.path }}&email={{ invitation.email|urlencode }}"
-                           class="w-full flex justify-center py-3 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition duration-150 ease-in-out">
-                            Create new account
-                        </a>
-                    </div>
+                    <c-button href="{% url 'account_login' %}?next={{ request.path }}" block>Sign in to accept</c-button>
+                    <c-divider label="or" />
+                    <c-button href="{% url 'account_signup' %}?next={{ request.path }}&email={{ invitation.email|urlencode }}"
+                              variant="secondary"
+                              block>
+                        Create an account
+                    </c-button>
                 {% endif %}
-
-                <p class="mt-6 text-center text-xs text-gray-500">
-                    By accepting this invitation, you agree to our
-                    <a href="#" class="text-primary-600 hover:text-primary-500">Terms of Service</a>
-                    and
-                    <a href="#" class="text-primary-600 hover:text-primary-500">Privacy Policy</a>.
-                </p>
             </div>
-        </div>
-    </div>
+        </c-card>
+    </c-page>
 {% endblock content %}

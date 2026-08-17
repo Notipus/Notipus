@@ -1,188 +1,45 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Checkout Cancelled - Notipus
+    Checkout cancelled - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="bg-white py-8 px-4 shadow-lg sm:rounded-xl sm:px-10 border border-gray-100">
-                <!-- Cancel Icon -->
-                <div class="text-center">
-                    <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-gray-100 mb-6">
-                        <svg class="h-8 w-8 text-gray-600"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </div>
-                    <h2 class="text-3xl font-extrabold text-gray-900">Checkout Cancelled</h2>
-                    <p class="mt-2 text-lg text-gray-600">No worries! Your payment was not processed.</p>
-                </div>
-
-                <!-- Information -->
-                <div class="mt-8">
-                    <div class="bg-blue-50 rounded-lg p-6 border border-blue-200">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <svg class="h-5 w-5 text-blue-400" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd">
-                                    </path>
-                                </svg>
-                            </div>
-                            <div class="ml-3">
-                                <h3 class="text-sm font-medium text-blue-800">What happened?</h3>
-                                <div class="mt-2 text-sm text-blue-700">
-                                    <p>
-                                        You cancelled the checkout process before completing your payment.
-                                        No charges were made to your payment method.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Next Steps -->
-                <div class="mt-8">
-                    <h3 class="text-lg font-medium text-gray-900 mb-4">What would you like to do?</h3>
-
-                    <div class="space-y-4">
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-primary-100 text-primary-600 font-medium text-sm">
-                                    1
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Try again</h4>
-                                <p class="text-sm text-gray-500">Go back to plan selection and complete your upgrade</p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-primary-100 text-primary-600 font-medium text-sm">
-                                    2
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Continue with current plan</h4>
-                                <p class="text-sm text-gray-500">Return to your dashboard and upgrade later</p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-primary-100 text-primary-600 font-medium text-sm">
-                                    3
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Get help</h4>
-                                <p class="text-sm text-gray-500">Contact our support team if you need assistance</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Action Buttons -->
-                <div class="mt-8 space-y-3">
-                    <a href="{% url 'core:upgrade_plan' %}"
-                       class="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 transition-all duration-200">
-                        <svg class="mr-2 h-4 w-4"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
-                        </svg>
-                        Try Again - View Plans
-                    </a>
-
-                    <a href="{% url 'core:dashboard' %}"
-                       class="w-full flex justify-center py-3 px-4 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                        <svg class="mr-2 h-4 w-4"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z">
-                            </path>
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 22h6"></path>
-                        </svg>
-                        Back to Dashboard
-                    </a>
-                </div>
-
-                <!-- Support Contact -->
-                <div class="mt-8 pt-6 border-t border-gray-200 text-center">
-                    <h4 class="text-sm font-medium text-gray-900 mb-3">Need help with billing?</h4>
-                    <div class="flex justify-center space-x-4 text-sm">
-                        <a href="mailto:billing@notipus.com"
-                           class="text-primary-600 hover:text-primary-500 font-medium inline-flex items-center gap-1"><i class="ti ti-mail"></i> Email Support</a>
-                        <a href="#"
-                           class="text-primary-600 hover:text-primary-500 font-medium inline-flex items-center gap-1"><i class="ti ti-message-circle"></i> Live Chat</a>
-                    </div>
-                </div>
+    <c-page width="narrow">
+        <c-card>
+            <div class="flex flex-col items-center text-center">
+                <c-icon-tile name="x" tone="neutral" size="lg" />
+                <h1 class="mt-4 text-title font-bold text-content">Checkout cancelled</h1>
+                <p class="mt-2 text-lead text-content-muted">Nothing was charged and your current plan is unchanged.</p>
             </div>
-        </div>
 
-        <!-- Why Upgrade? -->
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-2xl">
-            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-6">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4 text-center">🤔 Still considering an upgrade?</h3>
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
-                    <div>
-                        <div class="h-12 w-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                            <svg class="h-6 w-6 text-green-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                            </svg>
-                        </div>
-                        <h4 class="text-sm font-medium text-gray-900">Higher Limits</h4>
-                        <p class="text-xs text-gray-500 mt-1">Process more events without restrictions</p>
-                    </div>
-
-                    <div>
-                        <div class="h-12 w-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                            <svg class="h-6 w-6 text-blue-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
-                                </path>
-                            </svg>
-                        </div>
-                        <h4 class="text-sm font-medium text-gray-900">Advanced Features</h4>
-                        <p class="text-xs text-gray-500 mt-1">Analytics, reporting, and insights</p>
-                    </div>
-
-                    <div>
-                        <div class="h-12 w-12 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                            <svg class="h-6 w-6 text-purple-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192L5.636 18.364M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z">
-                                </path>
-                            </svg>
-                        </div>
-                        <h4 class="text-sm font-medium text-gray-900">Priority Support</h4>
-                        <p class="text-xs text-gray-500 mt-1">Get help faster when you need it</p>
-                    </div>
-                </div>
-
-                <div class="mt-6 text-center">
-                    <a href="{% url 'core:upgrade_plan' %}"
-                       class="inline-flex items-center px-4 py-2 border border-primary-300 rounded-lg text-sm font-medium text-primary-700 bg-primary-50 hover:bg-primary-100 transition-all duration-200">
-                        View Plans & Pricing
-                    </a>
-                </div>
+            <div class="mt-6 flex flex-col gap-2 sm:flex-row">
+                <c-button href="{% url 'core:upgrade_plan' %}" icon="arrow-left" block>Back to plans</c-button>
+                <c-button href="{% url 'core:dashboard' %}" variant="secondary" block>Go to dashboard</c-button>
             </div>
-        </div>
-    </div>
+        </c-card>
+
+        <c-card title="What a paid plan changes" icon="sparkles">
+            <div class="grid gap-5 sm:grid-cols-3">
+                <c-feature layout="stack"
+                           icon="bolt"
+                           title="More events"
+                           description="Room for a busy month without delivery pausing." />
+                <c-feature layout="stack"
+                           icon="users"
+                           title="More seats"
+                           description="Bring the rest of the team into the workspace." />
+                <c-feature layout="stack"
+                           icon="lifebuoy"
+                           title="Priority support"
+                           description="A faster answer when a webhook stops arriving." />
+            </div>
+            <c-slot name="footer">
+                <a href="mailto:billing@notipus.com"
+                   class="rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                    Ask billing a question
+                </a>
+            </c-slot>
+        </c-card>
+    </c-page>
 {% endblock content %}

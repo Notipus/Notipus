@@ -216,6 +216,12 @@ SECRET_KEY = os.environ.get("SECRET_DJANGO_KEY", _default_secret_key)
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DEBUG", "False").lower() == "true"
 
+# The component library at /ui/ exists for developers, not customers: it renders
+# every Cotton component and design token on one page. Gated on DEBUG so no
+# environment variable can expose it in production; UI_LIBRARY=false additionally
+# turns it off during development.
+UI_LIBRARY_ENABLED = DEBUG and os.environ.get("UI_LIBRARY", "true").lower() == "true"
+
 # Security validation: Ensure secret key is secure in production
 # Allow build-time commands that don't need a secure key
 _build_commands = {
@@ -228,6 +234,7 @@ _build_commands = {
     "sqlmigrate",
     "squashmigrations",
     "check",
+    "build_design_tokens",
 }
 _is_build_command = len(sys.argv) > 1 and sys.argv[1] in _build_commands
 
@@ -298,6 +305,10 @@ INSTALLED_APPS = [
     "django.contrib.sites",
     "django.contrib.humanize",
     # Third-party apps
+    # SimpleAppConfig opts out of Cotton's automatic TEMPLATES patching so the
+    # loader order below stays explicit — in particular so the cached loader is
+    # only added outside DEBUG.
+    "django_cotton.apps.SimpleAppConfig",
     "allauth",
     "allauth.account",
     "allauth.socialaccount",
@@ -331,12 +342,25 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "django_notipus.urls"
 
+# Cotton's loader compiles <c-*> tags into template tags, so it has to run
+# before the loaders that read files off disk. APP_DIRS cannot be combined with
+# an explicit loader list; app_directories.Loader is its equivalent.
+TEMPLATE_LOADERS: list[Any] = [
+    "django_cotton.cotton_loader.Loader",
+    "django.template.loaders.filesystem.Loader",
+    "django.template.loaders.app_directories.Loader",
+]
+if not DEBUG:
+    TEMPLATE_LOADERS = [("django.template.loaders.cached.Loader", TEMPLATE_LOADERS)]
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
         "DIRS": [BASE_DIR / "core" / "templates"],
-        "APP_DIRS": True,
         "OPTIONS": {
+            "loaders": TEMPLATE_LOADERS,
+            # Makes <c-*> component tags available without a {% load %} per file.
+            "builtins": ["django_cotton.templatetags.cotton"],
             "context_processors": [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",
@@ -553,20 +577,20 @@ if not DEBUG:
 
 # CSRF Protection
 CSRF_TRUSTED_ORIGINS = []
-if not DEBUG:
-    csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
-    if csrf_origins_env:
-        CSRF_TRUSTED_ORIGINS = [
-            origin.strip() for origin in csrf_origins_env.split(",")
-        ]
-    else:
-        # Default trusted origins for production
-        CSRF_TRUSTED_ORIGINS = [
-            "https://notipus.com",
-            "https://www.notipus.com",
-        ]
-        if APP_NAME:
-            CSRF_TRUSTED_ORIGINS.append(f"https://{APP_NAME}.fly.dev")
+# Honoured in DEBUG too: local end-to-end testing against Shopify runs the
+# dev server behind an HTTPS tunnel, and Django rejects POSTs whose Origin
+# header doesn't match a trusted origin.
+csrf_origins_env = os.environ.get("CSRF_TRUSTED_ORIGINS", "")
+if csrf_origins_env:
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in csrf_origins_env.split(",")]
+elif not DEBUG:
+    # Default trusted origins for production
+    CSRF_TRUSTED_ORIGINS = [
+        "https://notipus.com",
+        "https://www.notipus.com",
+    ]
+    if APP_NAME:
+        CSRF_TRUSTED_ORIGINS.append(f"https://{APP_NAME}.fly.dev")
 
 
 # Password validation
@@ -778,8 +802,23 @@ SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "")
 SHOPIFY_REDIRECT_URI = os.environ.get(
     "SHOPIFY_REDIRECT_URI", "http://localhost:8000/api/connect/shopify/callback/"
 )
-SHOPIFY_API_VERSION = "2025-01"  # Stable API version for webhook management
-SHOPIFY_SCOPES = "read_orders,read_customers,write_webhooks"
+# Stable API version for webhook management. Shopify supports each stable
+# version for 12 months and falls forward to the oldest accessible version
+# when an app targets a retired one, so keep this current.
+# ``or`` rather than a get() default: docker-compose passes the variable
+# through as an empty string when it is unset on the host.
+SHOPIFY_API_VERSION = os.environ.get("SHOPIFY_API_VERSION") or "2026-07"
+# Sent as the `scope` parameter on the OAuth authorize URL. Under
+# Shopify-managed installation - what the app uses - Shopify ignores it
+# and grants whatever shopify.app.toml declares; it only takes effect
+# under the legacy install flow. Kept in step with the toml regardless,
+# because two lists of scopes that disagree is a trap for whoever reads
+# them next, and the legacy flow is one config flag away.
+#
+# There is no write_webhooks scope in Shopify: permission to subscribe to
+# a topic comes from holding the matching read scope for the resource.
+# Requesting a non-existent scope makes the authorize step fail outright.
+SHOPIFY_SCOPES = "read_orders,read_customers,read_fulfillments"
 
 # Base URL for webhook endpoints (used in OAuth callbacks). Trailing
 # slash stripped so f"{BASE_URL}/webhook/..." concatenations cannot
