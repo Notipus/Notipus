@@ -1,5 +1,7 @@
 # Notipus — Enriched Notifications for Payment Events
 
+[![Opengrep](https://img.shields.io/github/check-runs/Notipus/Notipus/master?nameFilter=Opengrep&label=opengrep&logo=github)](https://github.com/Notipus/Notipus/actions/workflows/ci.yml?query=branch%3Amaster)
+
 Notipus turns payment and subscription webhooks from **Stripe**, **Shopify**, and **Maxio (formerly Chargify)** into enriched notifications in **Slack**, **Microsoft Teams**, or **Telegram**. It's more than a webhook relay: every alert tells you who the customer is, what they're worth, and whether they need attention — company background, contact name and role, lifetime value, tenure, and churn-risk flags, delivered where your team actually looks.
 
 Managed service: [notipus.com](https://notipus.com) · Self-hosting: [see below](#self-hosting)
@@ -195,6 +197,15 @@ uv run ruff check --fix .
 # Type checking
 uv run mypy app/
 ```
+
+CI additionally runs [Opengrep](https://github.com/opengrep/opengrep) (the OSS
+Semgrep fork) over the codebase; findings show up in the job log and in the
+repository's Security tab. A finding fails the check and blocks the deploy. To reproduce a CI finding locally, install the
+binary with `curl -fsSL https://raw.githubusercontent.com/opengrep/opengrep/main/install.sh | bash`,
+clone [opengrep-rules](https://github.com/opengrep/opengrep-rules) somewhere
+outside the repo, and run `opengrep scan --error --config <rules>/python .`.
+Suppress an individual false positive with a `# nosemgrep: <rule-id>` comment
+on the offending line.
 
 ### Pre-commit hooks
 

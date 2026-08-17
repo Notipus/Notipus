@@ -117,7 +117,9 @@ def _payload(request: HttpRequest) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-@csrf_exempt
+# Signed webhook from Shopify: authenticity comes from the HMAC check below,
+# not from a session cookie, so there is no CSRF surface to protect.
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def shopify_compliance_webhook(request: HttpRequest) -> JsonResponse:
     """Handle all three mandatory Shopify privacy webhooks.

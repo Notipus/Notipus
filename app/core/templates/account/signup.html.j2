@@ -73,6 +73,9 @@
 
 {% block extra_scripts %}
     <script>
+        {# Read from the page, not from the cookie: CSRF_COOKIE_HTTPONLY is on in production. #}
+        const CSRF_TOKEN = "{{ csrf_token }}";
+
         const passkeyModal = document.getElementById('passkey-modal');
 
         function openPasskeyModal() {
@@ -118,6 +121,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'X-CSRFToken': CSRF_TOKEN,
                     },
                     body: JSON.stringify({
                         username: username,
@@ -170,6 +174,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'X-CSRFToken': CSRF_TOKEN,
                     },
                     body: JSON.stringify({
                         credential: credentialData,

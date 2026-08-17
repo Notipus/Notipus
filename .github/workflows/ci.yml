@@ -54,6 +54,119 @@ jobs:
       - name: Check design tokens are in sync
         run: uv run python app/manage.py build_design_tokens --check
 
+  # Static analysis with Opengrep (the OSS Semgrep fork). Gating: findings turn
+  # this check red and deploy waits on it, so a hit holds up the release. Both
+  # the binary and the rule set are pinned, so results only change when we bump
+  # them here.
+  opengrep:
+    name: Opengrep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      OPENGREP_VERSION: v1.27.1
+      OPENGREP_SHA256: 58053da76672bbeb5b0a5441021c58338707052e10f81d777140ca879bd491ce
+      OPENGREP_RULES_REF: f1d2b562b414783763fd02a6ed2736eaed622efa
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Opengrep
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/opengrep" \
+            "https://github.com/opengrep/opengrep/releases/download/${OPENGREP_VERSION}/opengrep_manylinux_x86"
+          echo "${OPENGREP_SHA256}  ${RUNNER_TEMP}/opengrep" | sha256sum -c -
+          chmod +x "${RUNNER_TEMP}/opengrep"
+
+      # Cloned outside the workspace on purpose: the rule repo ships
+      # deliberately vulnerable fixtures, which opengrep would otherwise pick
+      # up as scan targets. Sparse checkout keeps it to the languages we ship.
+      - name: Fetch Opengrep rules
+        run: |
+          mkdir -p "${RUNNER_TEMP}/opengrep-rules"
+          cd "${RUNNER_TEMP}/opengrep-rules"
+          git init -q
+          git remote add origin https://github.com/opengrep/opengrep-rules.git
+          git sparse-checkout set python dockerfile javascript html generic
+          git fetch -q --depth 1 origin "${OPENGREP_RULES_REF}"
+          git checkout -q FETCH_HEAD
+
+      # Security rule sets only. The maintainability/best-practice trees were
+      # tried first and produced ~75 findings that were all style opinions or
+      # false positives (is-function-without-parentheses alone fired 39 times
+      # on stdlib and Django @property access) — ruff and mypy already own that
+      # ground. generic/nginx/security is out too: its header-redefinition rule
+      # found a real bug (see nginx.conf) but then kept firing on the fix, since
+      # it cannot tell a re-declared header from a dropped one.
+      # --error turns a finding into a red build; .gitignore is honoured by
+      # default, so .venv/node_modules/build output are out of scope.
+      #
+      # Deliberately no --sarif-output here: that flag makes opengrep report
+      # (and count) findings that carry a nosemgrep suppression, which would
+      # fail the build on every annotated line. The SARIF for code scanning is
+      # produced by the separate ungated step below.
+      - name: Run Opengrep
+        run: |
+          "${RUNNER_TEMP}/opengrep" scan \
+            --error \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/django/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/requests/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/cryptography/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/jwt/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/browser/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/dockerfile/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/html/security" \
+            .
+
+      # Second pass purely to produce the SARIF, so the gate above stays a
+      # clean pass/fail. No --error: this step reports, it does not judge.
+      - name: Generate SARIF
+        if: always()
+        run: |
+          "${RUNNER_TEMP}/opengrep" scan \
+            --sarif-output=opengrep.sarif \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/django/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/requests/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/cryptography/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/python/jwt/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/browser/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/javascript/lang/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/dockerfile/security" \
+            --config "${RUNNER_TEMP}/opengrep-rules/html/security" \
+            .
+
+      # opengrep marks a nosemgrep'd finding with `"suppressions": [{"kind":
+      # "inSource"}]` and reports it anyway. GitHub does not act on that field
+      # — it files every one as an open alert — so the Security tab would show
+      # the whole annotated set as unresolved while the gate above is green.
+      # Dropping them here is what makes the two agree: an alert exists if and
+      # only if the gate would fail on it.
+      # continue-on-error for the same reason as the upload below: this half of
+      # the job reports, it does not judge. A jq failure must not turn a green
+      # gate red.
+      - name: Drop suppressed findings from the SARIF
+        if: always()
+        continue-on-error: true
+        run: |
+          jq '.runs[].results |= map(select((.suppressions // []) | length == 0))' \
+            opengrep.sarif > opengrep.filtered.sarif
+          mv opengrep.filtered.sarif opengrep.sarif
+
+      # Uploaded even when the scan fails, so findings land in the Security tab
+      # instead of only the log. Fork PRs get a read-only token and cannot
+      # upload, hence continue-on-error.
+      - name: Upload SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@988661ebb5e81487b3fb31b2185d2856c0a10679 # v4
+        with:
+          sarif_file: opengrep.sarif
+          category: opengrep
+
   # Smoke-test build for every event; runs with a read-only token
   docker-build:
     name: Docker Build
@@ -118,7 +231,7 @@ jobs:
   deploy:
     name: Deploy to Fly.io
     runs-on: ubuntu-latest
-    needs: [test, docker-publish]
+    needs: [test, opengrep, docker-publish]
     # Only deploy on push to master (not PRs)
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     concurrency: deploy-group

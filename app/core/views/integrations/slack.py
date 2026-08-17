@@ -206,7 +206,11 @@ def slack_connect_callback(
         return HttpResponse("Slack connection failed. Please try again.", status=502)
 
     if not data.get("ok"):
-        return HttpResponse(f"Slack connection failed: {data.get('error')}", status=400)
+        # Slack's error code goes to the log, not into the response body: it is
+        # third-party text and reflecting it into HTML is an XSS shape for no
+        # benefit to the person reading the page.
+        logger.error(f"Slack OAuth token exchange rejected: {data.get('error')}")
+        return HttpResponse("Slack connection failed. Please try again.", status=400)
 
     # Store or update Slack integration
     integration, created = Integration.objects.get_or_create(

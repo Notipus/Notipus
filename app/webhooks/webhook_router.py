@@ -591,7 +591,9 @@ def _process_webhook(
         return _handle_webhook_exceptions(e, provider_name)
 
 
-@csrf_exempt
+# Unauthenticated liveness probe: no session, no state change. No csrf_exempt
+# because there is nothing to exempt - Django only enforces CSRF on unsafe
+# methods, and this one is GET.
 @require_http_methods(["GET"])
 def health_check(request: HttpRequest) -> JsonResponse:
     """Health check endpoint"""
@@ -609,7 +611,9 @@ def health_check(request: HttpRequest) -> JsonResponse:
 # === CUSTOMER-SPECIFIC WEBHOOKS ===
 
 
-@csrf_exempt
+# Signed webhook from Shopify: authenticity comes from the HMAC check below,
+# not from a session cookie, so there is no CSRF surface to protect.
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def customer_shopify_webhook(
     request: HttpRequest, organization_uuid: str
@@ -820,7 +824,9 @@ def _topic_is_enabled(integration: Integration, topic: str) -> bool:
     return any(category in enabled for category in owning_categories)
 
 
-@csrf_exempt
+# Signed webhook from Shopify: authenticity comes from the HMAC check below,
+# not from a session cookie, so there is no CSRF surface to protect.
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def shopify_events_webhook(request: HttpRequest) -> JsonResponse:
     """Receive Shopify events for every installed shop on one endpoint.
@@ -924,7 +930,9 @@ def shopify_events_webhook(request: HttpRequest) -> JsonResponse:
         return JsonResponse(create_error_response(e, 500), status=500)
 
 
-@csrf_exempt
+# Signed webhook from Maxio/Chargify: authenticity comes from the HMAC check
+# below, not from a session cookie, so there is no CSRF surface to protect.
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def customer_chargify_webhook(
     request: HttpRequest, organization_uuid: str
@@ -968,7 +976,9 @@ def customer_chargify_webhook(
         return JsonResponse(error_response, status=500)
 
 
-@csrf_exempt
+# Signed webhook from Stripe: authenticity comes from the signature check
+# below, not from a session cookie, so there is no CSRF surface to protect.
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def customer_stripe_webhook(
     request: HttpRequest, organization_uuid: str
@@ -1016,7 +1026,9 @@ def customer_stripe_webhook(
 # === GLOBAL BILLING WEBHOOKS (Notipus revenue) ===
 
 
-@csrf_exempt
+# Signed webhook from Stripe: authenticity comes from the signature check
+# below, not from a session cookie, so there is no CSRF surface to protect.
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
     """Handle global Stripe billing webhooks for Notipus revenue"""

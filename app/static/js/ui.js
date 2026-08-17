@@ -126,7 +126,9 @@ const NotipusUI = (function () {
 
       // Set variant styles
       iconContainer.className = `mx-auto flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-control sm:mx-0 ${variantConfig.iconBg}`;
-      iconContainer.innerHTML = `<i class="ti ${variantConfig.icon} text-heading ${variantConfig.iconColor}" aria-hidden="true"></i>`;
+      // Both halves come from the VARIANTS constant above; no caller input
+      // reaches this markup (title/message go in via textContent).
+      iconContainer.innerHTML = `<i class="ti ${variantConfig.icon} text-heading ${variantConfig.iconColor}" aria-hidden="true"></i>`; // nosemgrep
 
       // Reset confirm button classes and apply variant
       confirmBtn.className = `inline-flex w-full items-center justify-center gap-2 rounded-control border border-transparent px-4 py-2 text-body font-medium text-content-inverse transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 sm:w-auto ${variantConfig.buttonBg}`;
@@ -316,17 +318,26 @@ const NotipusUI = (function () {
     toastEl.id = toastId;
     toastEl.className =
       "pointer-events-auto w-full max-w-sm overflow-hidden rounded-card border border-border bg-surface shadow-overlay transform transition-all duration-300 translate-x-full opacity-0";
+    // Structure is static markup — the icon class comes from the TOAST_ICONS
+    // constant above and the caller's message goes in as text below, so a
+    // company or channel name containing markup can never become HTML.
+    // nosemgrep
     toastEl.innerHTML = `
       <div class="flex items-start gap-3 p-4">
         <i class="ti ${icon} ${color} mt-0.5 flex-shrink-0 text-heading" aria-hidden="true"></i>
-        <p class="min-w-0 flex-1 text-body font-medium text-content">${message}</p>
-        <button type="button" onclick="NotipusUI._dismissToast('${toastId}')"
+        <p class="min-w-0 flex-1 text-body font-medium text-content" data-toast-message></p>
+        <button type="button" data-toast-dismiss
                 class="flex-shrink-0 rounded-control p-1 text-content-subtle transition-colors hover:bg-surface-muted hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
           <span class="sr-only">Dismiss</span>
           <i class="ti ti-x" aria-hidden="true"></i>
         </button>
       </div>
     `;
+
+    toastEl.querySelector("[data-toast-message]").textContent = message;
+    toastEl
+      .querySelector("[data-toast-dismiss]")
+      .addEventListener("click", () => _dismissToast(toastId));
 
     container.appendChild(toastEl);
 

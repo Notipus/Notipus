@@ -33,4 +33,7 @@ def code_sample(value: str) -> SafeString:
     # first one the same treatment.
     body = textwrap.dedent("\n".join(lines[1:])) if len(lines) > 1 else ""
     sample = "\n".join(filter(None, [lines[0].strip(), body])).rstrip()
-    return mark_safe(escape(sample))
+    # Safe by construction: escape() runs first, so what mark_safe blesses is
+    # already entity-encoded. The whole point of the filter is to show markup
+    # as text rather than render it.
+    return mark_safe(escape(sample))  # nosemgrep

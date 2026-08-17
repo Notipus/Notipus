@@ -314,7 +314,8 @@ def _build_test_message(request: HttpRequest, workspace: Workspace) -> str:
         "🐙 <b>Test message from Notipus!</b>\n\n"
         "Your Telegram integration is working perfectly. "
         "You'll receive payment and subscription notifications here.\n\n"
-        f"<i>Sent by {username} from {workspace_name}</i>"
+        # Both interpolated values are html.escape'd above.
+        f"<i>Sent by {username} from {workspace_name}</i>"  # nosemgrep
     )
 
 

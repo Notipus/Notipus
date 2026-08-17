@@ -70,6 +70,12 @@ RUN rm -rf /app/node_modules /app/src /app/package.json /app/bun.lock /app/postc
 # Same Chainguard release as the builder stage above — keep in lockstep.
 FROM cgr.dev/chainguard/python:latest@sha256:a0365f7b90bf7b78a5e35f2709efb7c9263acf9c7b1905e0ec4c3e943c88e64d
 
+# Spelled out rather than left to the base image's default: the builder stage
+# above switches to root, and a reader (or a scanner) tracking USER through the
+# file should not have to know which stage that belonged to. 65532 is the
+# nonroot uid this image already runs as, so this changes nothing at runtime.
+USER 65532
+
 ENV PYTHONUNBUFFERED=1
 
 # Git SHA for Sentry release tracking (passed as build arg)

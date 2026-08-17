@@ -13,7 +13,6 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import HttpRequest, JsonResponse
 from django.utils.http import url_has_allowed_host_and_scheme
-from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .. import analytics
@@ -54,7 +53,6 @@ def _safe_redirect_target(request: HttpRequest, candidate: str | None) -> str:
     return "/dashboard/"
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_register_begin(request: HttpRequest) -> JsonResponse:
     """Start WebAuthn registration flow for adding a passkey.
@@ -79,7 +77,6 @@ def webauthn_register_begin(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to start registration"}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_register_complete(request: HttpRequest) -> JsonResponse:
     """Complete WebAuthn registration and store the credential.
@@ -122,7 +119,6 @@ def webauthn_register_complete(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to complete registration"}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_authenticate_begin(request: HttpRequest) -> JsonResponse:
     """Start WebAuthn authentication flow for passkey login.
@@ -148,7 +144,6 @@ def webauthn_authenticate_begin(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to start authentication"}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_authenticate_complete(request: HttpRequest) -> JsonResponse:
     """Complete WebAuthn authentication and log the user in.
@@ -233,7 +228,6 @@ def webauthn_credentials(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"error": "Method not allowed"}, status=405)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_signup_begin(request: HttpRequest) -> JsonResponse:
     """Start WebAuthn registration flow for passwordless signup.
@@ -272,7 +266,6 @@ def webauthn_signup_begin(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"error": "Failed to start registration"}, status=500)
 
 
-@csrf_exempt
 @require_http_methods(["POST"])
 def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:
     """Complete WebAuthn registration and create user account.
