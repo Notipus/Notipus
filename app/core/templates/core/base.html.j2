@@ -1,5 +1,6 @@
+{% load static %}
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-50">
+<html lang="en" class="h-full">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,12 +8,7 @@
               content="Notipus - Smart webhook notifications for Stripe, Shopify, and Chargify. Get real-time Slack alerts for payments, subscriptions, and orders.">
         <meta name="keywords"
               content="webhooks, notifications, Stripe, Shopify, Chargify, Slack, payments, subscriptions, SaaS">
-        <title>
-            {% block title %}
-                Notipus - Smart Webhook Notifications
-            {% endblock title %}
-        </title>
-        {% load static %}
+        <title>{% block title %}Notipus - Smart Webhook Notifications{% endblock title %}</title>
         <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}">
         <link rel="apple-touch-icon" href="{% static 'img/favicon.png' %}">
         <link rel="stylesheet" type="text/css" href="{% static 'dist/main.css' %}">
@@ -35,196 +31,24 @@
         {% block extra_head %}
         {% endblock extra_head %}
     </head>
-    <body class="h-full">
-        <div class="min-h-full">
-            <!-- Navigation -->
-            <nav class="bg-white shadow-sm border-b border-gray-200 relative">
-                <div class="container-responsive">
-                    <div class="flex justify-between h-16">
-                        <!-- Logo -->
-                        <div class="flex">
-                            <div class="flex-shrink-0 flex items-center">
-                                <a href="{% url 'core:landing' %}"
-                                   class="flex items-center space-x-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 rounded-lg">
-                                    <img src="{% static 'img/notipus-logo.png' %}"
-                                         alt="Notipus Logo"
-                                         class="h-10 w-auto"
-                                         width="40"
-                                         height="40">
-                                    <span class="text-xl sm:text-2xl font-bold text-gray-900">Notipus</span>
-                                </a>
-                            </div>
-                        </div>
-
-                        <!-- Desktop Navigation -->
-                        <div class="hidden md:flex md:items-center md:space-x-1">
-                            {% if user.is_authenticated %}
-                                <a href="{% url 'core:dashboard' %}" class="btn-ghost touch-target">Dashboard</a>
-                                <a href="{% url 'core:integrations' %}" class="btn-ghost touch-target">Integrations</a>
-                                <a href="{% url 'core:billing_dashboard' %}"
-                                   class="btn-ghost touch-target">Billing</a>
-                                {% if nav_workspace_role == 'owner' or nav_workspace_role == 'admin' %}
-                                    <a href="{% url 'core:members_list' %}" class="btn-ghost touch-target">Members</a>
-                                {% endif %}
-                                <a href="{% url 'core:workspace_settings' %}"
-                                   class="btn-ghost touch-target">Settings</a>
-                                <span class="mx-2 h-6 border-l border-gray-200" aria-hidden="true"></span>
-                                <span class="text-sm text-gray-700 px-2">Welcome, {{ user.get_short_name|default:user.username|title }}</span>
-                                <a href="{% url 'account_logout' %}" class="btn-ghost touch-target">Logout</a>
-                            {% else %}
-                                <a href="{% url 'account_login' %}" class="btn-ghost touch-target">Login</a>
-                                <a href="{% url 'account_signup' %}" class="btn-primary touch-target">Sign Up</a>
-                            {% endif %}
-                        </div>
-
-                        <!-- Mobile menu button -->
-                        <div class="flex items-center md:hidden">
-                            <button type="button"
-                                    class="mobile-menu-btn touch-target"
-                                    aria-controls="mobile-menu"
-                                    aria-expanded="false"
-                                    onclick="toggleMobileMenu()">
-                                <span class="sr-only">Open main menu</span>
-                                <!-- Hamburger icon -->
-                                <svg id="menu-icon-open"
-                                     class="h-6 w-6"
-                                     fill="none"
-                                     viewBox="0 0 24 24"
-                                     stroke="currentColor"
-                                     aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-                                </svg>
-                                <!-- Close icon (hidden by default) -->
-                                <svg id="menu-icon-close"
-                                     class="h-6 w-6 hidden"
-                                     fill="none"
-                                     viewBox="0 0 24 24"
-                                     stroke="currentColor"
-                                     aria-hidden="true">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Mobile menu -->
-                <div id="mobile-menu" class="mobile-menu hidden animate-slide-down">
-                    <div class="py-2 space-y-1 safe-area-inset">
-                        {% if user.is_authenticated %}
-                            <div class="px-4 py-3 border-b border-gray-100">
-                                <p class="text-sm text-gray-500">Signed in as</p>
-                                <p class="text-sm font-medium text-gray-900 truncate">{{ user.get_short_name|default:user.username|title }}</p>
-                            </div>
-                            <a href="{% url 'core:dashboard' %}" class="mobile-menu-item">
-                                <i class="ti ti-home w-5 mr-3 text-gray-400"></i>
-                                Dashboard
-                            </a>
-                            <a href="{% url 'core:integrations' %}" class="mobile-menu-item">
-                                <i class="ti ti-plug w-5 mr-3 text-gray-400"></i>
-                                Integrations
-                            </a>
-                            <a href="{% url 'core:billing_dashboard' %}" class="mobile-menu-item">
-                                <i class="ti ti-credit-card w-5 mr-3 text-gray-400"></i>
-                                Billing
-                            </a>
-                            {% if nav_workspace_role == 'owner' or nav_workspace_role == 'admin' %}
-                                <a href="{% url 'core:members_list' %}" class="mobile-menu-item">
-                                    <i class="ti ti-users w-5 mr-3 text-gray-400"></i>
-                                    Members
-                                </a>
-                            {% endif %}
-                            <a href="{% url 'core:workspace_settings' %}" class="mobile-menu-item">
-                                <i class="ti ti-settings w-5 mr-3 text-gray-400"></i>
-                                Settings
-                            </a>
-                            <div class="border-t border-gray-100 mt-2 pt-2">
-                                <a href="{% url 'account_logout' %}"
-                                   class="mobile-menu-item text-red-600 hover:text-red-700 hover:bg-red-50">
-                                    <i class="ti ti-logout w-5 mr-3"></i>
-                                    Logout
-                                </a>
-                            </div>
-                        {% else %}
-                            <a href="{% url 'account_login' %}" class="mobile-menu-item">
-                                <i class="ti ti-login w-5 mr-3 text-gray-400"></i>
-                                Login
-                            </a>
-                            <a href="{% url 'account_signup' %}"
-                               class="mobile-menu-item text-primary-600 hover:text-primary-700 font-medium">
-                                <i class="ti ti-user-plus w-5 mr-3"></i>
-                                Sign Up
-                            </a>
-                        {% endif %}
-                    </div>
-                </div>
-            </nav>
-
-            <!-- Flash Messages -->
-            {% if messages %}
-                <div class="container-responsive mt-4">
-                    {% for message in messages %}
-                        <div class="alert {% if message.tags == 'error' %}alert-danger{% elif message.tags == 'success' %}alert-success{% else %}alert-info{% endif %} mb-4 animate-fade-in"
-                             role="alert">
-                            <div class="flex">
-                                <div class="flex-shrink-0">
-                                    {% if message.tags == 'error' %}
-                                        <i class="ti ti-alert-circle text-red-400 text-lg"></i>
-                                    {% elif message.tags == 'success' %}
-                                        <i class="ti ti-circle-check text-green-400 text-lg"></i>
-                                    {% else %}
-                                        <i class="ti ti-info-circle text-blue-400 text-lg"></i>
-                                    {% endif %}
-                                </div>
-                                <div class="ml-3">
-                                    <p class="text-sm">{{ message }}</p>
-                                </div>
-                            </div>
-                        </div>
-                    {% endfor %}
-                </div>
-            {% endif %}
-
-            <!-- Main Content -->
-            <main>
+    <body class="h-full bg-canvas font-sans text-body text-content antialiased">
+        <a href="#main"
+           class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-control focus:bg-surface focus:px-4 focus:py-2 focus:text-body focus:font-medium focus:text-content focus:shadow-overlay">
+            Skip to content
+        </a>
+        <div class="flex min-h-full flex-col">
+            <c-layout.nav />
+            <c-messages />
+            <main id="main" class="flex-1">
                 {% block content %}
                 {% endblock content %}
             </main>
-
-            <!-- Footer -->
-            <footer class="bg-white border-t border-gray-200 mt-12">
-                <div class="container-responsive py-8">
-                    <div class="flex flex-col sm:flex-row items-center justify-between space-y-4 sm:space-y-0">
-                        <!-- Logo and copyright -->
-                        <div class="flex items-center space-x-2 text-sm text-gray-500">
-                            <img src="{% static 'img/notipus-logo.png' %}"
-                                 alt="Notipus"
-                                 class="h-6 w-auto opacity-60"
-                                 width="24"
-                                 height="24">
-                            <span>© {% now "Y" %} Notipus</span>
-                        </div>
-
-                        <!-- Links -->
-                        <div class="flex items-center space-x-6 text-sm">
-                            <a href="https://studio.viktopia.io"
-                               target="_blank"
-                               rel="noopener noreferrer"
-                               class="link-muted">A Viktopia Studio project</a>
-                        </div>
-                    </div>
-                </div>
-            </footer>
+            <c-layout.footer />
         </div>
 
-        <!-- Include Modal Component -->
-        {% include "core/partials/_modal.html.j2" %}
+        <c-modal-host />
 
-        <!-- NotipusUI Library -->
-        {% load static %}
         <script src="{% static 'js/ui.js' %}"></script>
-
-        <!-- Mobile menu toggle script -->
         <script>
             function toggleMobileMenu() {
                 const menu = document.getElementById('mobile-menu');
@@ -234,20 +58,13 @@
 
                 const isHidden = menu.classList.contains('hidden');
 
-                if (isHidden) {
-                    menu.classList.remove('hidden');
-                    openIcon.classList.add('hidden');
-                    closeIcon.classList.remove('hidden');
-                    button.setAttribute('aria-expanded', 'true');
-                } else {
-                    menu.classList.add('hidden');
-                    openIcon.classList.remove('hidden');
-                    closeIcon.classList.add('hidden');
-                    button.setAttribute('aria-expanded', 'false');
-                }
+                menu.classList.toggle('hidden', !isHidden);
+                openIcon.classList.toggle('hidden', isHidden);
+                closeIcon.classList.toggle('hidden', !isHidden);
+                button.setAttribute('aria-expanded', String(isHidden));
             }
 
-            // Close mobile menu when clicking outside
+            // Close the mobile menu when clicking outside it
             document.addEventListener('click', function(event) {
                 const menu = document.getElementById('mobile-menu');
                 const button = document.querySelector('[aria-controls="mobile-menu"]');
@@ -257,7 +74,7 @@
                 }
             });
 
-            // Close mobile menu on escape key
+            // Close the mobile menu on escape
             document.addEventListener('keydown', function(event) {
                 if (event.key === 'Escape') {
                     const menu = document.getElementById('mobile-menu');

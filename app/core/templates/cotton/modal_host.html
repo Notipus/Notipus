@@ -1,0 +1,50 @@
+{% comment %}
+Modal host — the single dialog NotipusUI.confirm() drives, plus the toast region.
+
+Rendered once by the base layout. Its content is set from JavaScript, so the
+markup here is only the shell; see app/static/js/ui.js for the behaviour.
+{% endcomment %}
+<div id="notipus-modal-backdrop"
+     class="fixed inset-0 z-50 hidden"
+     aria-hidden="true">
+    <div id="notipus-modal-overlay"
+         class="fixed inset-0 bg-surface-inverse/60 backdrop-blur-sm transition-opacity duration-200"
+         onclick="NotipusUI._closeModal(false)"></div>
+    <div class="fixed inset-0 z-10 overflow-y-auto">
+        <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
+            <div id="notipus-modal-panel"
+                 class="relative w-full transform overflow-hidden rounded-card bg-surface text-left shadow-overlay transition-all duration-200 sm:my-8 sm:max-w-lg"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-labelledby="notipus-modal-title">
+                <div class="px-gutter py-5">
+                    <div class="sm:flex sm:items-start sm:gap-4">
+                        <div id="notipus-modal-icon"
+                             class="mx-auto flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-control sm:mx-0">
+                        </div>
+                        <div class="mt-3 min-w-0 text-center sm:mt-0 sm:text-left">
+                            <h3 id="notipus-modal-title"
+                                class="text-heading font-semibold text-content"></h3>
+                            <p id="notipus-modal-message" class="mt-1 text-body text-content-muted"></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex flex-col gap-2 border-t border-border bg-surface-muted px-gutter py-4 sm:flex-row-reverse">
+                    <button type="button"
+                            id="notipus-modal-confirm"
+                            class="inline-flex w-full items-center justify-center gap-2 rounded-control border border-transparent px-4 py-2 text-body font-medium text-content-inverse transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 sm:w-auto"
+                            onclick="NotipusUI._closeModal(true)"></button>
+                    <button type="button"
+                            id="notipus-modal-cancel"
+                            class="inline-flex w-full items-center justify-center gap-2 rounded-control border border-border-strong bg-surface px-4 py-2 text-body font-medium text-content transition-colors hover:bg-surface-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 sm:w-auto"
+                            onclick="NotipusUI._closeModal(false)"></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="notipus-toast-container"
+     class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"
+     aria-live="polite"
+     aria-atomic="true"></div>

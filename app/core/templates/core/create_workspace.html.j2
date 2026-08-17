@@ -1,93 +1,47 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Create Workspace - Notipus
+    Create workspace - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="text-center">
-                <h2 class="mt-6 text-3xl font-extrabold text-gray-900">Create Your Workspace</h2>
-                <p class="mt-2 text-sm text-gray-600">Set up your workspace to get started with Notipus</p>
-            </div>
-        </div>
+    <c-page width="narrow"
+            title="Create your workspace"
+            subtitle="A workspace holds your integrations, your team and your notification history.">
+        <c-card>
+            <c-form>
+                <c-input name="name"
+                         label="Workspace name"
+                         :value="suggested_name"
+                         placeholder="Your company name"
+                         help="Shown throughout Notipus and in your notifications."
+                         maxlength="200"
+                         required
+                         autofocus />
+                <c-input name="shop_domain"
+                         label="Business domain"
+                         placeholder="yourbusiness.com"
+                         help="Your main website. Optional — you can add it later." />
+                <c-slot name="actions">
+                    <c-button type="submit" block>
+                        Create workspace
+                    </c-button>
+                </c-slot>
+            </c-form>
+        </c-card>
 
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="bg-white py-8 px-4 shadow-lg sm:rounded-lg sm:px-10">
-
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="mb-4 p-3 rounded-md {% if message.tags == 'error' %}bg-red-50 border border-red-200{% else %}bg-green-50 border border-green-200{% endif %}">
-                            <div class="text-sm {% if message.tags == 'error' %}text-red-700{% else %}text-green-700{% endif %}">
-                                {{ message }}
-                            </div>
-                        </div>
-                    {% endfor %}
-                {% endif %}
-
-                <form class="space-y-6" method="post">
-                    {% csrf_token %}
-
-                    <!-- Workspace Name Field -->
-                    <div>
-                        <label for="name" class="block text-sm font-medium text-gray-700">Workspace Name</label>
-                        <div class="mt-1">
-                            <input id="name"
-                                   name="name"
-                                   type="text"
-                                   required
-                                   maxlength="200"
-                                   value="{{ suggested_name }}"
-                                   class="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                                   placeholder="Your Company Name">
-                        </div>
-                        <p class="mt-1 text-xs text-gray-500">This will be the name of your workspace</p>
-                    </div>
-
-                    <!-- Business Domain Field -->
-                    <div>
-                        <label for="shop_domain" class="block text-sm font-medium text-gray-700">
-                            Business Domain <span class="text-gray-400">(Optional)</span>
-                        </label>
-                        <div class="mt-1">
-                            <input id="shop_domain"
-                                   name="shop_domain"
-                                   type="text"
-                                   class="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md placeholder-gray-400 focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                                   placeholder="yourbusiness.com">
-                        </div>
-                        <p class="mt-1 text-xs text-gray-500">Your main website or business domain (can be added later)</p>
-                    </div>
-
-                    <!-- Submit Button -->
-                    <div>
-                        <button type="submit"
-                                class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition duration-150 ease-in-out">
-                            Create Workspace
-                        </button>
-                    </div>
-                </form>
-
-                <!-- Additional Info -->
-                <div class="mt-6">
-                    <div class="text-center">
-                        <p class="text-xs text-gray-500">You can update these details later in your workspace settings</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Next Steps Preview -->
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h3 class="text-sm font-medium text-blue-900 mb-2">Next Steps:</h3>
-                <ul class="text-xs text-blue-700 space-y-1">
-                    <li>• Connect your Slack workspace for notifications</li>
-                    <li>• Set up integrations (Shopify, Stripe, etc.)</li>
-                    <li>• Configure webhook endpoints</li>
-                </ul>
-            </div>
-        </div>
-    </div>
+        <c-card title="What happens next" icon="route">
+            <c-checklist>
+                <c-checklist.item index="1"
+                                  title="Connect Slack"
+                                  description="Choose the channel your notifications land in." />
+                <c-checklist.item index="2"
+                                  title="Connect a payment provider"
+                                  description="Stripe, Shopify or Chargify — this is where events come from." />
+                <c-checklist.item index="3"
+                                  title="Choose your events"
+                                  description="Pick which payments and orders are worth interrupting someone for." />
+            </c-checklist>
+        </c-card>
+    </c-page>
 {% endblock content %}

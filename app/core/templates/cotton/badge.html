@@ -1,0 +1,25 @@
+{% comment %}
+Badge — a small, non-interactive status label.
+
+Use it to state a fact about the thing beside it: a plan name, a connection
+state, an event count. If it can be clicked it is a button, not a badge.
+
+Props:
+  tone  neutral | brand | success | warning | danger | info  (default: neutral)
+  icon  Tabler icon name without the "ti ti-" prefix
+  dot   show a filled status dot instead of an icon
+
+The label is the slot: <c-badge tone="success" icon="circle-check">Connected</c-badge>
+{% endcomment %}
+<c-vars tone="neutral" icon="" dot="" class="" />
+
+<span class="inline-flex items-center gap-1.5 rounded-pill border px-2.5 py-0.5 text-caption font-medium {% if tone == 'brand' %}border-brand-border bg-brand-surface text-brand-text {% elif tone == 'success' %}border-success-border bg-success-surface text-success-text {% elif tone == 'warning' %}border-warning-border bg-warning-surface text-warning-text {% elif tone == 'danger' %}border-danger-border bg-danger-surface text-danger-text {% elif tone == 'info' %}border-info-border bg-info-surface text-info-text {% else %}border-border bg-surface-muted text-content-muted{% endif %} {{ class }}"
+      {{ attrs }}>
+    {% if dot %}
+        <span class="h-1.5 w-1.5 rounded-pill {% if tone == 'brand' %}bg-brand {% elif tone == 'success' %}bg-success-solid {% elif tone == 'warning' %}bg-warning-solid {% elif tone == 'danger' %}bg-danger-solid {% elif tone == 'info' %}bg-info-solid {% else %}bg-content-subtle{% endif %}"
+              aria-hidden="true"></span>
+    {% elif icon %}
+        <i class="ti ti-{{ icon }}" aria-hidden="true"></i>
+    {% endif %}
+    {{ slot }}
+</span>

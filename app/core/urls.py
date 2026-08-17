@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.urls import path
 
 from . import views
@@ -6,6 +7,13 @@ from .views.logos import CompanyLogoView
 app_name = "core"
 
 urlpatterns = [
+    # Component library. Routed only in development, and the view 404s on its
+    # own too, so neither the URL nor the page can exist in production.
+    *(
+        [path("ui/", views.ui_library, name="ui_library")]
+        if settings.UI_LIBRARY_ENABLED
+        else []
+    ),
     # Company logos (served from database)
     path("logos/<str:domain>/", CompanyLogoView.as_view(), name="company-logo"),
     # Landing and dashboard

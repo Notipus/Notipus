@@ -1,0 +1,104 @@
+{% comment %}
+Top navigation.
+
+Takes no props. `user` and `nav_workspace_role` come from the context
+processors, and the active link is worked out from request.path — so a new page
+lights up the right nav item without the view or the template being told to.
+{% endcomment %}
+{% load static %}
+<nav class="relative border-b border-border bg-surface">
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div class="flex h-16 justify-between">
+            <div class="flex items-center">
+                <a href="{% url 'core:landing' %}"
+                   class="flex items-center gap-3 rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                    <img src="{% static 'img/notipus-logo.png' %}"
+                         alt=""
+                         class="h-9 w-auto"
+                         width="36"
+                         height="36">
+                    <span class="text-heading font-bold text-content">Notipus</span>
+                </a>
+            </div>
+
+            <div class="hidden items-center gap-1 md:flex">
+                {% if user.is_authenticated %}
+                    <c-nav-link href="{% url 'core:dashboard' %}"
+                                current="{% if request.path == '/dashboard/' %}1{% endif %}">Dashboard</c-nav-link>
+                    <c-nav-link href="{% url 'core:integrations' %}"
+                                current="{% if '/integrat' in request.path %}1{% endif %}">Integrations</c-nav-link>
+                    <c-nav-link href="{% url 'core:billing_dashboard' %}"
+                                current="{% if '/billing/' in request.path %}1{% endif %}">Billing</c-nav-link>
+                    {% if nav_workspace_role == "owner" or nav_workspace_role == "admin" %}
+                        <c-nav-link href="{% url 'core:members_list' %}"
+                                    current="{% if '/members' in request.path %}1{% endif %}">Members</c-nav-link>
+                    {% endif %}
+                    <c-nav-link href="{% url 'core:workspace_settings' %}"
+                                current="{% if '/workspace/settings/' in request.path %}1{% endif %}">Settings</c-nav-link>
+                    <span class="mx-2 h-6 border-l border-border" aria-hidden="true"></span>
+                    <span class="px-2 text-body text-content-muted">{{ user.get_short_name|default:user.username|title }}</span>
+                    <c-nav-link href="{% url 'account_logout' %}">Log out</c-nav-link>
+                {% else %}
+                    <c-nav-link href="{% url 'account_login' %}">Log in</c-nav-link>
+                    <c-button href="{% url 'account_signup' %}" size="sm">Sign up</c-button>
+                {% endif %}
+            </div>
+
+            <div class="flex items-center md:hidden">
+                <button type="button"
+                        class="inline-flex h-11 w-11 items-center justify-center rounded-control text-content-muted transition-colors hover:bg-surface-muted hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
+                        aria-controls="mobile-menu"
+                        aria-expanded="false"
+                        onclick="toggleMobileMenu()">
+                    <span class="sr-only">Open main menu</span>
+                    <i id="menu-icon-open"
+                       class="ti ti-menu-2 text-heading"
+                       aria-hidden="true"></i>
+                    <i id="menu-icon-close"
+                       class="ti ti-x hidden text-heading"
+                       aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="mobile-menu"
+         class="absolute inset-x-0 top-full z-40 hidden animate-slide-down border-b border-border bg-surface shadow-raised md:hidden">
+        <div class="safe-area-inset space-y-1 py-2">
+            {% if user.is_authenticated %}
+                <div class="border-b border-border px-4 py-3">
+                    <p class="text-body text-content-subtle">Signed in as</p>
+                    <p class="truncate text-body font-medium text-content">{{ user.get_short_name|default:user.username|title }}</p>
+                </div>
+                <c-nav-link href="{% url 'core:dashboard' %}"
+                            icon="home"
+                            mobile
+                            current="{% if request.path == '/dashboard/' %}1{% endif %}">Dashboard</c-nav-link>
+                <c-nav-link href="{% url 'core:integrations' %}"
+                            icon="plug"
+                            mobile
+                            current="{% if '/integrat' in request.path %}1{% endif %}">Integrations</c-nav-link>
+                <c-nav-link href="{% url 'core:billing_dashboard' %}"
+                            icon="credit-card"
+                            mobile
+                            current="{% if '/billing/' in request.path %}1{% endif %}">Billing</c-nav-link>
+                {% if nav_workspace_role == "owner" or nav_workspace_role == "admin" %}
+                    <c-nav-link href="{% url 'core:members_list' %}"
+                                icon="users"
+                                mobile
+                                current="{% if '/members' in request.path %}1{% endif %}">Members</c-nav-link>
+                {% endif %}
+                <c-nav-link href="{% url 'core:workspace_settings' %}"
+                            icon="settings"
+                            mobile
+                            current="{% if '/workspace/settings/' in request.path %}1{% endif %}">Settings</c-nav-link>
+                <div class="mt-2 border-t border-border pt-2">
+                    <c-nav-link href="{% url 'account_logout' %}" icon="logout" mobile>Log out</c-nav-link>
+                </div>
+            {% else %}
+                <c-nav-link href="{% url 'account_login' %}" icon="login" mobile>Log in</c-nav-link>
+                <c-nav-link href="{% url 'account_signup' %}" icon="user-plus" mobile>Sign up</c-nav-link>
+            {% endif %}
+        </div>
+    </div>
+</nav>

@@ -1,0 +1,12 @@
+{% comment %}
+Definition list — labelled facts, one per line.
+
+Used for invoice details, invitation details and plan summaries: content that is
+a set of name/value pairs rather than a table.
+
+Rows are the slot; see <c-definition.row>.
+{% endcomment %}
+<c-vars class="" />
+
+<dl class="divide-y divide-border {{ class }}" {{ attrs }}>{{ slot }}
+</dl>

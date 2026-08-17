@@ -2,83 +2,58 @@
 {% load socialaccount %}
 
 {% block title %}
-    Sign In - Notipus
+    Sign in - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
+    <c-page width="narrow">
+        <c-card>
             <div class="text-center">
-                <h1 class="text-2xl sm:text-3xl font-extrabold text-gray-900 text-balance">Sign in to your account</h1>
-                <p class="mt-2 text-sm text-gray-600">Welcome back to Notipus</p>
+                <h1 class="text-title font-bold text-content text-balance">Sign in to Notipus</h1>
+                <p class="mt-2 text-lead text-content-muted">Welcome back.</p>
             </div>
-        </div>
 
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="card">
-                <div class="card-body py-8 px-4 sm:px-10">
-                    <!-- Passkey Login Option -->
-                    <div class="mb-6">
-                        <button id="passkey-login"
-                                class="btn-primary w-full touch-target"
-                                data-next="{{ redirect_field_value|default:'' }}">
-                            <svg class="w-5 h-5 mr-2"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24"
-                                 aria-hidden="true">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 12H9v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-3c0-1.042.018-2.042.057-3H4zm7-4a2 2 0 11-4 0 2 2 0 014 0z">
-                                </path>
-                            </svg>
-                            Continue with Passkey
-                        </button>
-                    </div>
+            <div class="mt-8 flex flex-col gap-4">
+                <c-button id="passkey-login"
+                          icon="fingerprint"
+                          size="lg"
+                          block
+                          data-next="{{ redirect_field_value|default:'' }}">
+                    Continue with a passkey
+                </c-button>
 
-                    <!-- Divider -->
-                    <div class="divider-with-text mb-6">
-                        <div class="divider-text">
-                            <span>Or continue with</span>
-                        </div>
-                    </div>
+                <c-divider label="or" />
 
-                    <!-- OAuth Buttons -->
-                    <form method="post"
-                          action="{% provider_login_url 'slack' next=redirect_field_value %}">
-                        {% csrf_token %}
-                        <button type="submit" class="btn-secondary w-full touch-target">
-                            <i class="ti ti-brand-slack mr-2" aria-hidden="true"></i>
-                            Continue with Slack
-                        </button>
-                    </form>
-
-                    <!-- Signup Link -->
-                    <div class="mt-6 text-center">
-                        <span class="text-sm text-gray-600">
-                            Don't have an account?
-                            <a href="{% url 'account_signup' %}" class="link">Create one now</a>
-                        </span>
-                    </div>
-                </div>
+                <c-form action="{% provider_login_url 'slack' next=redirect_field_value %}">
+                    <c-button type="submit" variant="secondary" size="lg" icon="brand-slack" block>
+                        Continue with Slack
+                    </c-button>
+                </c-form>
             </div>
-        </div>
-    </div>
 
+            <c-slot name="footer">
+                <span class="block text-center">
+                    New here?
+                    <a href="{% url 'account_signup' %}"
+                       class="rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                        Create an account
+                    </a>
+                </span>
+            </c-slot>
+        </c-card>
+    </c-page>
+{% endblock content %}
+
+{% block extra_scripts %}
     <script>
         // WebAuthn passkey authentication
         document.getElementById('passkey-login').addEventListener('click', async function() {
             const button = this;
-            const originalText = button.innerHTML;
+            const originalHtml = button.innerHTML;
 
             try {
-                // Disable button and show loading state
                 button.disabled = true;
-                button.innerHTML = `
-            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-gray-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            Authenticating...
-        `;
+                button.innerHTML = '<i class="ti ti-loader-2 animate-spin" aria-hidden="true"></i> Waiting for your passkey…';
 
                 // Step 1: Get authentication options from server
                 const beginResponse = await fetch('/webauthn/authenticate/begin/', {
@@ -154,7 +129,6 @@
 
                 const completeData = await completeResponse.json();
                 if (completeData.success) {
-                    // Redirect to dashboard
                     window.location.href = completeData.redirect_url || '/dashboard/';
                 } else {
                     throw new Error(completeData.error || 'Authentication failed');
@@ -163,24 +137,22 @@
             } catch (error) {
                 console.error('WebAuthn error:', error);
 
-                // Show user-friendly error message
-                let errorMessage = 'Passkey authentication failed. ';
+                let errorMessage;
 
                 if (error.name === 'NotSupportedError') {
-                    errorMessage += 'Passkeys are not supported on this device.';
+                    errorMessage = 'This device does not support passkeys. Use Slack to sign in instead.';
                 } else if (error.name === 'NotAllowedError') {
-                    errorMessage += 'Authentication was cancelled or timed out.';
+                    errorMessage = 'Passkey sign-in was cancelled or timed out.';
                 } else if (error.name === 'SecurityError') {
-                    errorMessage += 'Security error occurred.';
+                    errorMessage = 'Your browser blocked the passkey request on this page.';
                 } else {
-                    errorMessage += 'Please try again or use Slack sign-in.';
+                    errorMessage = 'Passkey sign-in did not work. Try again, or use Slack.';
                 }
 
-                alert(errorMessage);
+                NotipusUI.toast(errorMessage, 'error', 6000);
             } finally {
-                // Restore button state
                 button.disabled = false;
-                button.innerHTML = originalText;
+                button.innerHTML = originalHtml;
             }
         });
 
@@ -206,12 +178,11 @@
             return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
         }
 
-        // Check if WebAuthn is supported
+        // Hide the passkey button on browsers that cannot do WebAuthn at all
         function checkWebAuthnSupport() {
             const button = document.getElementById('passkey-login');
 
             if (!window.PublicKeyCredential) {
-                // Check if it's a very old browser
                 const isOldBrowser = /MSIE|Trident/.test(navigator.userAgent) ||
                     (navigator.userAgent.includes('Chrome/') &&
                         parseInt(navigator.userAgent.match(/Chrome\/(\d+)/)[1]) < 67);
@@ -229,11 +200,10 @@
             return true;
         }
 
-        // Run the check when DOM is loaded
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', checkWebAuthnSupport);
         } else {
             checkWebAuthnSupport();
         }
     </script>
-{% endblock content %}
+{% endblock extra_scripts %}

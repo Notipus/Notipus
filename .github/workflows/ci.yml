@@ -40,10 +40,19 @@ jobs:
       - name: Run type checking
         run: uv run mypy app/
 
+      # Two passes: page templates are .html.j2, Cotton components are .html
+      # (Cotton resolves <c-name> to cotton/name.html and the extension is fixed).
       - name: Run template linting
         run: |
-          uv run djlint app/core/templates --check
-          uv run djlint app/core/templates --lint
+          uv run djlint app/core/templates --extension=html.j2 --check
+          uv run djlint app/core/templates --extension=html.j2 --lint
+          uv run djlint app/core/templates --extension=html --check
+          uv run djlint app/core/templates --extension=html --lint
+
+      # The CSS bundle itself is built by the docker-build job; this only checks
+      # that src/css/tokens.css still matches app/core/design_tokens.py.
+      - name: Check design tokens are in sync
+        run: uv run python app/manage.py build_design_tokens --check
 
   # Smoke-test build for every event; runs with a read-only token
   docker-build:

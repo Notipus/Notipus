@@ -1,0 +1,39 @@
+{% comment %}
+One row in a <c-list>: something on the left, controls on the right.
+
+Props:
+  title        the row's name — a person, an invitation, an integration
+  description  one line of supporting detail
+  icon         Tabler icon shown as a tile on the left
+  tone         icon tile tone  (default: neutral)
+
+Slots:
+  leading  replaces the icon — an avatar, a provider logo
+  actions  right-aligned controls
+  slot     extra content under the title
+{% endcomment %}
+<c-vars title="" description="" icon="" tone="neutral" class="" />
+
+<li class="flex flex-wrap items-center justify-between gap-3 px-gutter py-4 {{ class }}"
+    {{ attrs }}>
+    <div class="flex min-w-0 flex-1 items-center gap-3">
+        {% comment %}
+        The icon tile matches <c-avatar>'s default size, because rows in one list
+        mix the two — a member has an avatar, a pending invitation has an icon —
+        and a smaller tile shifted those rows' text 7px out of line with each other.
+        {% endcomment %}
+        {% if leading %}
+            {{ leading }}
+        {% elif icon %}
+            <c-icon-tile :name="icon" :tone="tone" />
+        {% endif %}
+        <div class="min-w-0">
+            <p class="truncate text-body font-medium text-content">{{ title }}</p>
+            {% if description %}<p class="truncate text-body text-content-muted">{{ description }}</p>{% endif %}
+            {{ slot }}
+        </div>
+    </div>
+    {% if actions %}
+        <div class="flex flex-shrink-0 flex-wrap items-center gap-3">{{ actions }}</div>
+    {% endif %}
+</li>

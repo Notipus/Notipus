@@ -238,7 +238,7 @@ class TestMembersListView:
         """Test members list is accessible by owner."""
         response = authenticated_owner_client.get(reverse("core:members_list"))
         assert response.status_code == 200
-        assert b"Team Members" in response.content
+        assert b"Members" in response.content
 
     def test_accessible_by_admin(self, authenticated_admin_client) -> None:
         """Test members list is accessible by admin."""

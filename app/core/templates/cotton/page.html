@@ -1,0 +1,52 @@
+{% comment %}
+Page — the shell every screen starts with.
+
+Owns the three things pages used to each decide for themselves: how wide the
+content is, how far it sits from the nav, and how the title block is built. One
+<h1> per page comes from here, so no page has to remember.
+
+Props:
+  title     the page's h1
+  subtitle  one line under it
+  width     narrow (42rem, forms) | default (72rem) | wide (80rem)
+  back      href for a back link
+  back_label  text for that link  (default: "Back")
+
+Slots:
+  slot     the page content; children are stacked with the `stack` rhythm
+  actions  controls aligned with the title
+
+  <c-page title="Members" subtitle="Who can see this workspace.">
+      <c-slot name="actions"><c-button icon="user-plus">Invite member</c-button></c-slot>
+      <c-card>…</c-card>
+  </c-page>
+{% endcomment %}
+<c-vars title=""
+        subtitle=""
+        width="default"
+        back=""
+        back_label="Back"
+        class="" />
+
+<div class="min-h-full bg-canvas">
+    <div class="mx-auto px-4 py-10 sm:px-6 lg:px-8 {% if width == 'narrow' %}max-w-2xl{% elif width == 'wide' %}max-w-7xl{% else %}max-w-6xl{% endif %} {{ class }}"
+         {{ attrs }}>
+        {% if back %}
+            <a href="{{ back }}"
+               class="mb-4 inline-flex items-center gap-1 rounded-control text-body text-content-muted transition-colors hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                <i class="ti ti-arrow-left" aria-hidden="true"></i>
+                {{ back_label }}
+            </a>
+        {% endif %}
+        {% if title %}
+            <header class="mb-8 flex flex-wrap items-end justify-between gap-4">
+                <div class="min-w-0">
+                    <h1 class="text-title font-bold text-content">{{ title }}</h1>
+                    {% if subtitle %}<p class="mt-2 text-lead text-content-muted">{{ subtitle }}</p>{% endif %}
+                </div>
+                {% if actions %}<div class="flex flex-shrink-0 flex-wrap items-center gap-2">{{ actions }}</div>{% endif %}
+            </header>
+        {% endif %}
+        <div class="flex flex-col gap-stack">{{ slot }}</div>
+    </div>
+</div>

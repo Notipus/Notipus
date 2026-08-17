@@ -1,29 +1,25 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Page Not Found - Notipus
+    Page not found - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-[60vh] flex items-center justify-center px-4 sm:px-6 lg:px-8">
-        <div class="max-w-md w-full text-center">
-            <div class="mb-8">
-                <h1 class="text-9xl font-bold text-primary-600">404</h1>
+    <c-page width="narrow">
+        <c-card>
+            <div class="flex flex-col items-center px-4 py-12 text-center">
+                <c-icon-tile name="map-question" tone="neutral" size="lg" />
+                <p class="mt-4 font-mono text-caption uppercase tracking-widest text-content-subtle">Error 404</p>
+                <h1 class="mt-1 text-title font-bold text-content">Page not found</h1>
+                <p class="mt-2 max-w-md text-body text-content-muted">
+                    The link may be out of date, or the page may have moved. Your dashboard has everything you were
+                    probably looking for.
+                </p>
+                <div class="mt-6 flex flex-wrap justify-center gap-2">
+                    <c-button href="{% url 'core:dashboard' %}" icon="home">Go to dashboard</c-button>
+                    <c-button href="{% url 'core:integrations' %}" variant="secondary">View integrations</c-button>
+                </div>
             </div>
-            <h2 class="text-3xl font-bold text-gray-900 mb-4">Page Not Found</h2>
-            <p class="text-lg text-gray-600 mb-8">
-                Sorry, we couldn't find the page you're looking for. It might have been moved or deleted.
-            </p>
-            <div class="flex flex-col sm:flex-row gap-4 justify-center">
-                <a href="{% url 'core:dashboard' %}"
-                   class="inline-flex items-center justify-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 transition-colors duration-200">
-                    Go to Dashboard
-                </a>
-                <a href="{% url 'account_login' %}"
-                   class="inline-flex items-center justify-center px-6 py-3 border border-gray-300 text-base font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 transition-colors duration-200">
-                    Login
-                </a>
-            </div>
-        </div>
-    </div>
+        </c-card>
+    </c-page>
 {% endblock content %}

@@ -134,7 +134,7 @@ class TestIntegrateShopifyView:
         response = client.get(reverse("core:integrate_shopify"))
 
         assert response.status_code == 200
-        assert b"Connect Your Store" in response.content
+        assert b"Store URL" in response.content
         assert b"shop_url" in response.content
 
     @override_settings(SHOPIFY_CLIENT_ID="test_client_id")
@@ -157,7 +157,7 @@ class TestIntegrateShopifyView:
         response = client.get(reverse("core:integrate_shopify"))
 
         assert response.status_code == 200
-        assert b"Connected" in response.content
+        assert b"teststore.myshopify.com" in response.content
         expected_domain = b"teststore.myshopify.com"
         assert expected_domain in response.content
 

@@ -1,0 +1,18 @@
+{% comment %}
+Navigation link — one destination in the top bar or the mobile menu.
+
+Props:
+  href     destination
+  icon     Tabler icon name; shown in the mobile layout only
+  mobile   render the full-width mobile row instead of the compact bar item
+  current  mark as the page the user is on (aria-current and a brand tint)
+{% endcomment %}
+<c-vars href="" icon="" mobile="" current="" class="" />
+
+<a href="{{ href }}"
+   {% if current %}aria-current="page"{% endif %}
+   class="rounded-control font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 {% if mobile %}flex items-center gap-3 px-4 py-3 text-lead{% else %}inline-flex items-center px-3 py-2 text-body{% endif %} {% if current %}bg-brand-surface text-brand-text{% else %}text-content-muted hover:bg-surface-muted hover:text-content{% endif %} {{ class }}"
+   {{ attrs }}>
+    {% if icon and mobile %}<i class="ti ti-{{ icon }} w-5 text-content-subtle" aria-hidden="true"></i>{% endif %}
+    {{ slot }}
+</a>

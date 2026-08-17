@@ -1,0 +1,26 @@
+{% comment %}
+One name/value pair in a <c-definition>.
+
+Props:
+  label  what the value is
+  value  the value, when it is plain text
+
+Use the slot instead of `value` when the value is markup — a badge, a link.
+{% endcomment %}
+<c-vars label="" value="" class="" />
+
+<div class="flex flex-wrap items-center justify-between gap-2 py-2.5 {{ class }}"
+     {{ attrs }}>
+    <dt class="text-body text-content-muted">{{ label }}</dt>
+    {% comment %}
+    Presence, not truthiness: a row whose value is 0 — "Failed deliveries", say —
+    would otherwise fall through to the empty slot and render nothing at all.
+    {% endcomment %}
+    <dd class="text-body font-medium text-content">
+        {% if value is not None and value != "" %}
+            {{ value }}
+        {% else %}
+            {{ slot }}
+        {% endif %}
+    </dd>
+</div>

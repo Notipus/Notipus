@@ -1,0 +1,38 @@
+{% comment %}
+Field — label, control, help and error, wired together.
+
+Handles the accessibility plumbing once: the label points at the control, and
+help and error text are announced with it via aria-describedby. Wrap any custom
+control in it; <c-input>, <c-select> and <c-textarea> already use it.
+
+Props:
+  label     the label text
+  for       id of the control it labels
+  help      guidance shown under the control
+  error     error message; replaces the help text and colours the field
+  required  marks the label
+
+The control is the slot. Its aria-describedby should reference
+"{{ for }}-help" and "{{ for }}-error"; the built-in controls do this for you.
+{% endcomment %}
+<c-vars label="" for="" help="" error="" required="" class="" />
+
+<div class="min-w-0 {{ class }}" {{ attrs }}>
+    {% if label %}
+        <label for="{{ for }}"
+               class="mb-1.5 block text-body font-medium text-content">
+            {{ label }}
+            {% if required %}<span class="text-danger-text" aria-hidden="true">*</span>{% endif %}
+        </label>
+    {% endif %}
+    {{ slot }}
+    {% if error %}
+        <p id="{{ for }}-error"
+           class="mt-1.5 flex items-center gap-1 text-body text-danger-text">
+            <i class="ti ti-alert-circle" aria-hidden="true"></i>
+            {{ error }}
+        </p>
+    {% elif help %}
+        <p id="{{ for }}-help" class="mt-1.5 text-body text-content-muted">{{ help }}</p>
+    {% endif %}
+</div>

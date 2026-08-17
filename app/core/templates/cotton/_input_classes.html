@@ -1,0 +1,9 @@
+{% comment %}
+Shared class list for text-like form controls, so 
+<c-input>
+, 
+<c-textarea>
+ and
+<c-select>
+ cannot drift apart. Expects `error` in context. Not a component.
+{% endcomment %}block w-full rounded-control border bg-surface px-3 py-2 text-body text-content placeholder:text-content-subtle transition-colors focus:outline-none focus:ring-2 focus:ring-focus focus:ring-offset-1 disabled:cursor-not-allowed disabled:bg-surface-muted disabled:text-content-subtle {% if error %}border-danger-solid{% else %}border-border-control{% endif %}

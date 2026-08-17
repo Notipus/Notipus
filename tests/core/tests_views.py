@@ -563,7 +563,7 @@ class StripeIntegrationViewsTest(TestCase):
         response = self.client.get(reverse("core:integrate_stripe"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Awaiting webhook verification")
+        self.assertContains(response, "Waiting for the first event")
 
     def test_integrate_stripe_shows_existing_connection_status(self) -> None:
         """A verified integration shows the connected state."""

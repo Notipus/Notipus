@@ -1,0 +1,33 @@
+{% comment %}
+Table — rows of the same kind of thing.
+
+Scrolls horizontally inside its own box so a wide table never makes the page
+scroll sideways on a phone.
+
+Props:
+  caption  describes the table for screen readers; visually hidden
+
+Slots:
+  head  the <tr> of <c-table.column> cells
+  slot  the <tr> body rows
+
+  <c-table caption="Workspace members">
+      <c-slot name="head"><c-table.column>Member</c-table.column></c-slot>
+      <tr><c-table.cell>…</c-table.cell></tr>
+  </c-table>
+{% endcomment %}
+<c-vars caption="" class="" />
+
+<div class="overflow-x-auto {{ class }}" {{ attrs }}>
+    <table class="w-full border-collapse text-body">
+        {% if caption %}<caption class="sr-only">{{ caption }}</caption>{% endif %}
+        {% if head %}
+            <thead class="border-b border-border bg-surface-muted">
+                <tr>{{ head }}</tr>
+            </thead>
+        {% endif %}
+        <tbody class="divide-y divide-border">
+            {{ slot }}
+        </tbody>
+    </table>
+</div>

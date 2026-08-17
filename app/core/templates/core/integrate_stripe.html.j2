@@ -5,334 +5,145 @@
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
-        <!-- Header -->
-        <div class="max-w-4xl mx-auto pt-8 px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center">
-                <a href="{% url 'core:integrations' %}"
-                   class="mr-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200">
-                    <i class="ti ti-arrow-left text-xl"></i>
-                </a>
-                <div>
-                    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center gap-3">
-                        <span class="p-2 bg-[#635bff]/10 rounded-xl">
-                            <svg class="w-6 h-6" viewBox="0 0 24 24" fill="#635bff">
-                                <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305z" />
-                            </svg>
-                        </span>
-                        Connect Stripe
-                    </h1>
-                    <p class="mt-1 text-gray-500">Receive payment and subscription webhooks from your Stripe account</p>
+    <c-page back="{% url 'core:integrations' %}"
+            back_label="Integrations"
+            title="Connect Stripe"
+            subtitle="Payments, subscriptions and trials from your Stripe account, delivered where your team already is.">
+        {% if existing_integration and existing_integration.is_webhook_verified %}
+            <c-alert tone="success" title="Stripe is connected">
+                Events are arriving. Paste a new signing secret below if you ever roll it.
+            </c-alert>
+        {% elif existing_integration %}
+            <c-alert tone="warning" title="Waiting for the first event">
+                Your signing secret is saved. Send a test webhook from Stripe and this turns green.
+            </c-alert>
+        {% endif %}
+
+        <c-card title="Set up the webhook"
+                description="Stripe gives you the signing secret at the end; paste it in step 5."
+                icon="list-numbers">
+            <c-form>
+                <c-checklist>
+                    <c-checklist.item index="1" title="Open your Stripe dashboard">
+                        <p class="text-body text-content-muted">
+                            Go to
+                            <a href="https://dashboard.stripe.com/webhooks/create"
+                               target="_blank"
+                               rel="noopener noreferrer"
+                               class="font-medium text-brand-text underline-offset-4 hover:underline">Developers → Webhooks</a>
+                            and choose "Add destination".
+                        </p>
+                    </c-checklist.item>
+
+                    <c-checklist.item index="2" title="Select the events to send">
+                        <p class="text-body text-content-muted">
+                            Under "Events from" pick <strong>Your account</strong>, then add each of these.
+                        </p>
+                        <div class="mt-3 flex flex-col gap-2">
+                            {% for event in webhook_events %}
+                                <div class="flex items-center gap-2">
+                                    <i class="ti ti-check flex-shrink-0 text-content-subtle"
+                                       id="check-{{ forloop.counter }}"
+                                       aria-hidden="true"></i>
+                                    <code class="flex-1 truncate rounded-control border border-border bg-surface-muted px-3 py-2 font-mono text-caption text-content">{{ event }}</code>
+                                    <c-button type="button"
+                                              variant="secondary"
+                                              size="sm"
+                                              icon="copy"
+                                              onclick="copyEvent('{{ event }}', {{ forloop.counter }})">
+                                        Copy
+                                    </c-button>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </c-checklist.item>
+
+                    <c-checklist.item index="3"
+                                      title="Choose the destination type"
+                                      description="Pick “Webhook endpoint”, then continue." />
+
+                    <c-checklist.item index="4" title="Paste the endpoint URL">
+                        <c-code-block value="{{ webhook_url }}" class="mt-3" />
+                    </c-checklist.item>
+
+                    <c-checklist.item index="5" title="Copy the signing secret back here">
+                        <p class="text-body text-content-muted">
+                            Stripe shows it once the endpoint exists. It starts with
+                            <code class="rounded bg-surface-muted px-1 font-mono">whsec_</code>.
+                        </p>
+                        <div class="mt-3">
+                            <c-input name="webhook_secret"
+                                     label="Signing secret"
+                                     placeholder="whsec_…"
+                                     help="We store this encrypted and use it to verify every incoming webhook."
+                                     secret
+                                     required />
+                        </div>
+                    </c-checklist.item>
+                </c-checklist>
+
+                <c-slot name="actions">
+                    <c-button type="submit" icon="plug-connected">
+                        {% if existing_integration %}
+                            Update Stripe
+                        {% else %}
+                            Connect Stripe
+                        {% endif %}
+                    </c-button>
+                </c-slot>
+            </c-form>
+        </c-card>
+
+        <c-card title="Not the person with Stripe access?"
+                description="Send these steps to whoever manages your Stripe account."
+                icon="mail-forward">
+            <c-form action="{% url 'core:email_setup_instructions' 'stripe' %}">
+                <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <c-input name="recipient_email"
+                             type="email"
+                             label="Their email address"
+                             placeholder="colleague@yourcompany.com"
+                             autocomplete="email"
+                             required
+                             class="flex-1" />
+                    <c-button type="submit" variant="secondary" icon="send">
+                        Send instructions
+                    </c-button>
                 </div>
-            </div>
-        </div>
+            </c-form>
+            <c-slot name="footer">
+                They create the endpoint and send you back the signing secret to paste above.
+            </c-slot>
+        </c-card>
 
-        <!-- Main content -->
-        <div class="max-w-4xl mx-auto py-8 sm:px-6 lg:px-8">
-            {% if existing_integration and existing_integration.is_webhook_verified %}
-                <!-- Verified Connected -->
-                <div class="bg-green-50 border border-green-200 rounded-xl p-6 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <svg class="h-5 w-5 text-green-400"
-                                 fill="currentColor"
-                                 viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
-                                </path>
-                            </svg>
-                        </div>
-                        <div class="ml-3">
-                            <h3 class="text-sm font-medium text-green-800">Stripe is connected!</h3>
-                            <div class="mt-2 text-sm text-green-700">
-                                <p>Your Stripe account is successfully connected. You can update your webhook signing secret below if needed.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            {% elif existing_integration %}
-                <!-- Awaiting Webhook Verification -->
-                <div class="bg-amber-50 border border-amber-200 rounded-xl p-6 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <svg class="h-5 w-5 text-amber-400"
-                                 fill="currentColor"
-                                 viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.828a1 1 0 101.415-1.414L11 9.586V6z" clip-rule="evenodd">
-                                </path>
-                            </svg>
-                        </div>
-                        <div class="ml-3">
-                            <h3 class="text-sm font-medium text-amber-800">Awaiting webhook verification</h3>
-                            <div class="mt-2 text-sm text-amber-700">
-                                <p>Your Stripe credentials have been saved. Send a test webhook from Stripe to verify the connection.</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
+        <c-card title="What Stripe events become" icon="sparkles">
+            <ul class="flex flex-col gap-2">
+                <c-plan-card.feature>
+                    A payment succeeds or fails, with the customer's history attached
+                </c-plan-card.feature>
+                <c-plan-card.feature>
+                    A subscription starts, changes or cancels
+                </c-plan-card.feature>
+                <c-plan-card.feature>
+                    A trial is about to end
+                </c-plan-card.feature>
+                <c-plan-card.feature>
+                    A checkout completes
+                </c-plan-card.feature>
+            </ul>
+        </c-card>
+    </c-page>
+{% endblock content %}
 
-            <!-- Benefits -->
-            <div class="mb-8 bg-gradient-to-r from-[#635bff]/5 to-indigo-50 rounded-xl p-6 border border-[#635bff]/20">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                    <i class="ti ti-sparkles text-[#635bff]"></i>
-                    What you'll get with Stripe integration:
-                </h3>
-                <ul class="space-y-2 text-gray-700">
-                    <li class="flex items-center">
-                        <svg class="h-4 w-4 text-[#635bff] mr-2"
-                             fill="currentColor"
-                             viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                            </path>
-                        </svg>
-                        Real-time notifications for subscription changes
-                    </li>
-                    <li class="flex items-center">
-                        <svg class="h-4 w-4 text-[#635bff] mr-2"
-                             fill="currentColor"
-                             viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                            </path>
-                        </svg>
-                        Instant alerts for successful and failed payments
-                    </li>
-                    <li class="flex items-center">
-                        <svg class="h-4 w-4 text-[#635bff] mr-2"
-                             fill="currentColor"
-                             viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                            </path>
-                        </svg>
-                        Trial ending reminders
-                    </li>
-                    <li class="flex items-center">
-                        <svg class="h-4 w-4 text-[#635bff] mr-2"
-                             fill="currentColor"
-                             viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                            </path>
-                        </svg>
-                        Checkout completion notifications
-                    </li>
-                    <li class="flex items-center">
-                        <svg class="h-4 w-4 text-[#635bff] mr-2"
-                             fill="currentColor"
-                             viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                            </path>
-                        </svg>
-                        Intelligent notifications to your preferred channels
-                    </li>
-                </ul>
-            </div>
-
-            <!-- Setup Instructions -->
-            <form method="post">
-                {% csrf_token %}
-                <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
-                    <h3 class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                        <i class="ti ti-list-numbers text-[#635bff]"></i>
-                        Setup Instructions
-                    </h3>
-                    <p class="text-sm text-gray-600 mb-6">
-                        Follow these steps to connect your Stripe account. The signing secret is provided by Stripe after you create the webhook endpoint.
-                    </p>
-
-                    <div class="space-y-4">
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                    1
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Go to your Stripe Dashboard</h4>
-                                <p class="text-sm text-gray-500">
-                                    Navigate to <a href="https://dashboard.stripe.com/webhooks/create"
-    target="_blank"
-    rel="noopener"
-    class="text-[#635bff] hover:underline">Developers → Webhooks</a> and click "Add destination"
-                                </p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                    2
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Select events</h4>
-                                <p class="text-sm text-gray-500 mb-3">
-                                    Under "Events from", select <strong>"Your account"</strong>. Then search for and select each of these events. Click "Continue".
-                                </p>
-                                <div class="grid grid-cols-1 gap-2">
-                                    {% for event in webhook_events %}
-                                        <div class="flex items-center gap-2">
-                                            <i class="ti ti-check text-gray-300 flex-shrink-0"
-                                               id="check-{{ loop.index }}"></i>
-                                            <div class="flex flex-1 min-w-0">
-                                                <input type="text"
-                                                       value="{{ event }}"
-                                                       readonly
-                                                       class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg block w-full p-2 font-mono">
-                                                <button onclick="copyEvent('{{ event }}', {{ loop.index }})"
-                                                        class="inline-flex items-center px-3 py-2 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 transition-colors"
-                                                        type="button">
-                                                    <i class="ti ti-copy mr-1"></i> Copy
-                                                </button>
-                                            </div>
-                                        </div>
-                                    {% endfor %}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                    3
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Choose destination type</h4>
-                                <p class="text-sm text-gray-500">
-                                    Select <strong>"Webhook endpoint"</strong> as the destination type. Click "Continue".
-                                </p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                    4
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Configure the endpoint</h4>
-                                <p class="text-sm text-gray-500">
-                                    Copy this URL and paste it into the "Endpoint URL" field. Click "Create destination".
-                                </p>
-                                <div class="mt-3 flex">
-                                    <input type="text"
-                                           id="webhook-url"
-                                           value="{{ webhook_url }}"
-                                           readonly
-                                           class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-l-lg focus:ring-[#635bff] focus:border-[#635bff] block w-full p-2.5 font-mono">
-                                    <button onclick="NotipusUI.copyToClipboard('{{ webhook_url }}')"
-                                            class="inline-flex items-center px-3 py-2.5 text-sm font-medium text-gray-500 bg-gray-100 border border-l-0 border-gray-300 rounded-r-lg hover:bg-gray-200 focus:ring-2 focus:ring-[#635bff]"
-                                            type="button">
-                                        <i class="ti ti-copy mr-1"></i> Copy
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                    5
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Copy the signing secret</h4>
-                                <p class="text-sm text-gray-500">
-                                    After creating the endpoint, Stripe will show you the "Signing secret" (starts with <code class="bg-gray-100 px-1 rounded">whsec_</code>). Copy it and paste it below.
-                                </p>
-                                <div class="mt-3">
-                                    <input type="password"
-                                           name="webhook_secret"
-                                           id="webhook_secret"
-                                           class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-[#635bff] focus:border-[#635bff] block w-full p-2.5"
-                                           placeholder="whsec_..."
-                                           required>
-                                    <p class="mt-2 text-sm text-gray-500">
-                                        This is shown by Stripe after you create the webhook endpoint. Look for "Signing secret" in your new endpoint's details.
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#635bff]/10 text-[#635bff] font-medium text-sm">
-                                    6
-                                </div>
-                            </div>
-                            <div class="ml-3 flex-1">
-                                <h4 class="text-sm font-medium text-gray-900">Complete the connection</h4>
-                                <p class="text-sm text-gray-500">Click the button below to complete the setup.</p>
-                                <button type="submit"
-                                        class="mt-4 inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#635bff] hover:bg-[#5851db] transition-all duration-200 shadow-lg">
-                                    <svg class="mr-2 h-5 w-5"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1">
-                                        </path>
-                                    </svg>
-                                    {% if existing_integration %}
-                                        Update
-                                    {% else %}
-                                        Connect
-                                    {% endif %}
-                                    Stripe
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </form>
-
-            <!-- Email instructions to a colleague -->
-            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
-                <h3 class="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                    <i class="ti ti-mail-forward text-[#635bff]"></i>
-                    Not the person with Stripe access?
-                </h3>
-                <p class="text-sm text-gray-600 mb-4">
-                    Email these instructions to the teammate who manages your Stripe account.
-                    They'll create the webhook endpoint and send you back the signing secret to paste above.
-                </p>
-                <form method="post"
-                      action="{% url 'core:email_setup_instructions' 'stripe' %}"
-                      class="flex flex-col sm:flex-row gap-3">
-                    {% csrf_token %}
-                    <input type="email"
-                           name="recipient_email"
-                           required
-                           autocomplete="email"
-                           aria-label="Colleague's email address"
-                           placeholder="colleague@yourcompany.com"
-                           class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-[#635bff] focus:border-[#635bff] block w-full p-2.5">
-                    <button type="submit"
-                            class="inline-flex items-center justify-center px-4 py-2.5 text-sm font-medium rounded-lg text-[#635bff] bg-[#635bff]/10 hover:bg-[#635bff]/20 transition-colors">
-                        <i class="ti ti-send mr-2"></i> Send instructions
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <!-- JavaScript for copy to clipboard -->
+{% block extra_scripts %}
     <script>
         function copyEvent(text, index) {
-            var check = document.getElementById('check-' + index);
+            const check = document.getElementById('check-' + index);
             if (check) {
-                check.classList.remove('text-gray-300');
-                check.classList.add('text-green-500');
+                check.classList.remove('text-content-subtle');
+                check.classList.add('text-success-text');
             }
             NotipusUI.copyToClipboard(text);
         }
-
-        // The read-only copy helpers live inside the POST form; without this,
-        // pressing Enter in one would submit and trigger required-field
-        // validation on the webhook_secret input.
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && e.target.matches('input[readonly]')) {
-                e.preventDefault();
-            }
-        });
     </script>
-{% endblock content %}
+{% endblock extra_scripts %}

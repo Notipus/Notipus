@@ -2,338 +2,120 @@
 {% load humanize %}
 
 {% block title %}
-    Upgrade Plan - Notipus
+    Change plan - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
-        <!-- Header -->
-        <div class="max-w-7xl mx-auto pt-8 px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center">
-                <a href="{% url 'core:billing_dashboard' %}"
-                   class="mr-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200">
-                    <i class="ti ti-arrow-left text-xl"></i>
-                </a>
-                <div>
-                    <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center gap-3">
-                        <span class="p-2 bg-primary-100 rounded-xl">
-                            <i class="ti ti-rocket text-primary-600 text-xl"></i>
-                        </span>
-                        Change Your Plan
-                    </h1>
-                    <p class="mt-1 text-gray-500">Choose the plan that fits your business</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Main content -->
-        <div class="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-            <!-- Current Plan Banner -->
-            <div class="bg-gradient-to-r from-primary-600 to-primary-700 rounded-xl p-4 sm:p-6 mb-8 text-white">
-                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between">
-                    <div class="flex-1 min-w-0">
-                        <h3 class="text-lg font-semibold truncate">Current Plan: {{ current_plan|title }}</h3>
-                        {% if events_used %}
-                            <p class="text-primary-100 mt-1 text-sm sm:text-base">
-                                You've used {{ events_used|intcomma }} of the {{ events_limit|intcomma }} events in your plan this month{% if usage_percentage >= 80 and pause_at %} — delivery stops at {{ pause_at|intcomma }}{% endif %}.
-                            </p>
-                        {% else %}
-                            <p class="text-primary-100 mt-1 text-sm sm:text-base">Ready to unlock more features and higher limits?</p>
-                        {% endif %}
-                    </div>
-                    <div class="flex items-center mt-4 sm:mt-0 sm:ml-4">
-                        <svg class="h-6 w-6 sm:h-8 sm:w-8 text-primary-200"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z">
-                            </path>
-                        </svg>
-                    </div>
-                </div>
-            </div>
-
-            {% if has_yearly_plans %}
-                <!-- Billing interval toggle: yearly first, so the lower
-                     per-month price anchors (matches the marketing site) -->
-                <div class="flex justify-center mb-8">
-                    <div class="inline-flex items-center bg-white rounded-full border border-gray-200 shadow-sm p-1"
-                         role="radiogroup"
-                         aria-label="Billing interval">
-                        <button type="button"
-                                id="interval-toggle-yearly"
-                                class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
-                                data-interval="yearly"
-                                role="radio"
-                                aria-checked="true"
-                                tabindex="0">Yearly</button>
-                        <button type="button"
-                                id="interval-toggle-monthly"
-                                class="interval-toggle px-4 py-2 rounded-full text-sm font-semibold transition-all duration-200"
-                                data-interval="monthly"
-                                role="radio"
-                                aria-checked="false"
-                                tabindex="-1">Monthly</button>
-                    </div>
-                </div>
+    <c-page width="wide"
+            back="{% url 'core:billing_dashboard' %}"
+            back_label="Billing"
+            title="Change plan"
+            subtitle="Every plan includes all integrations. What changes is how many events a month you can send.">
+        <c-alert tone="info" title="You're on {{ current_plan|title }}">
+            {% if events_used %}
+                You've used {{ events_used|intcomma }} of {{ events_limit|intcomma }} events this month{% if usage_percentage >= 80 and pause_at %}; delivery pauses at {{ pause_at|intcomma }}{% endif %}.
+            {% else %}
+                Changing plan takes effect immediately and your integrations keep running.
             {% endif %}
+        </c-alert>
 
-            <!-- Plan Comparison Cards -->
-            <div class="grid grid-cols-1 {% if plans|length == 2 %}md:grid-cols-2 max-w-4xl mx-auto{% else %}md:grid-cols-2 lg:grid-cols-3{% endif %} gap-6 lg:gap-8 mb-8">
-                {% for plan in plans %}
-                    <div class="group relative bg-white rounded-2xl shadow-lg border {% if plan.recommended %}border-primary-500 ring-2 ring-primary-500 ring-opacity-50 shadow-primary-500/25{% else %}border-gray-200 hover:border-gray-300 hover:shadow-xl{% endif %} transition-all duration-300 transform hover:scale-105">
-                        {% if plan.recommended %}
-                            <div class="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-10">
-                                <span class="inline-flex px-4 py-1.5 rounded-full text-xs font-bold tracking-wide uppercase bg-gradient-to-r from-primary-500 to-primary-600 text-white shadow-lg border-2 border-white">
-                                    🔥 Most Popular
-                                </span>
-                            </div>
-                            <!-- Recommended plan background accent -->
-                            <div class="absolute inset-0 bg-gradient-to-br from-primary-50/50 to-transparent pointer-events-none"></div>
-                        {% endif %}
-
-                        <div class="relative p-6 lg:p-8 h-full flex flex-col">
-                            <!-- Plan Header -->
-                            <div class="text-center mb-8">
-                                {% if plan.recommended %}
-                                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-primary-500 to-primary-600 rounded-full mb-4 shadow-lg">
-                                        <svg class="w-8 h-8 text-white"
-                                             fill="none"
-                                             stroke="currentColor"
-                                             viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                                        </svg>
-                                    </div>
-                                {% elif plan.id == "basic" %}
-                                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-primary-400 to-primary-500 rounded-full mb-4 shadow-lg">
-                                        <svg class="w-8 h-8 text-white"
-                                             fill="none"
-                                             stroke="currentColor"
-                                             viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z">
-                                            </path>
-                                        </svg>
-                                    </div>
-                                {% else %}
-                                    <div class="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-r from-gray-700 to-gray-900 rounded-full mb-4 shadow-lg">
-                                        <svg class="w-8 h-8 text-white"
-                                             fill="none"
-                                             stroke="currentColor"
-                                             viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-4m-5 0H9m0 0H5m0 0v-4a2 2 0 012-2h4a2 2 0 012 2v4">
-                                            </path>
-                                        </svg>
-                                    </div>
-                                {% endif %}
-
-                                <h3 class="text-xl lg:text-2xl font-bold text-gray-900 mb-2">{{ plan.name }}</h3>
-
-                                {% if plan.price_yearly %}
-                                    <div class="price-yearly" data-interval-block="yearly">
-                                        <div class="flex items-baseline justify-center mb-1">
-                                            <span class="text-4xl lg:text-5xl font-extrabold {% if plan.recommended %}text-primary-600{% else %}text-gray-900{% endif %}">${{ plan.price_yearly_per_month }}</span>
-                                            <span class="ml-2 text-base lg:text-lg font-medium text-gray-500">/month</span>
-                                        </div>
-                                        <p class="text-sm text-gray-500 mb-2">
-                                            ${{ plan.price_yearly }} billed annually{% if plan.yearly_savings %} · Save ${{ plan.yearly_savings }}{% endif %}
-                                        </p>
-                                    </div>
-                                {% endif %}
-                                <div class="{% if plan.price_yearly %}price-monthly hidden{% endif %} mb-2"
-                                     {% if plan.price_yearly %}data-interval-block="monthly"{% endif %}>
-                                    <div class="flex items-baseline justify-center">
-                                        <span class="text-4xl lg:text-5xl font-extrabold {% if plan.recommended %}text-primary-600{% else %}text-gray-900{% endif %}">${{ plan.price }}</span>
-                                        <span class="ml-2 text-base lg:text-lg font-medium text-gray-500">/{{ plan.interval }}</span>
-                                    </div>
-                                </div>
-
-                                {% if plan.recommended %}
-                                    <p class="text-sm text-primary-600 font-semibold bg-primary-50 px-3 py-1 rounded-full inline-block">
-                                        Perfect for growing teams
-                                    </p>
-                                {% elif plan.is_downgrade %}
-                                    <p class="text-sm text-gray-600 font-semibold bg-gray-100 px-3 py-1 rounded-full inline-block">
-                                        Lower tier than your current plan
-                                    </p>
-                                {% elif plan.id == "basic" %}
-                                    <p class="text-sm text-primary-600 font-semibold bg-primary-50 px-3 py-1 rounded-full inline-block">
-                                        Great for getting started
-                                    </p>
-                                {% else %}
-                                    <p class="text-sm text-gray-700 font-semibold bg-gray-100 px-3 py-1 rounded-full inline-block">
-                                        For large organizations
-                                    </p>
-                                {% endif %}
-                            </div>
-
-                            <!-- Features List -->
-                            <div class="space-y-4 mb-8">
-                                {% for feature in plan.features %}
-                                    <div class="flex items-start">
-                                        <div class="flex-shrink-0 mt-1">
-                                            <div class="w-5 h-5 bg-green-100 rounded-full flex items-center justify-center">
-                                                <svg class="h-3 w-3 text-green-600"
-                                                     fill="currentColor"
-                                                     viewBox="0 0 20 20">
-                                                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                                                    </path>
-                                                </svg>
-                                            </div>
-                                        </div>
-                                        <span class="ml-3 text-sm font-medium text-gray-700 leading-relaxed">{{ feature }}</span>
-                                    </div>
-                                {% endfor %}
-                            </div>
-
-                            <!-- CTA Button -->
-                            <div class="mt-auto">
-                                {% if plan.id == current_plan %}
-                                    <div class="w-full py-4 px-6 border-2 border-gray-200 rounded-xl text-center bg-gray-50">
-                                        <div class="flex items-center justify-center">
-                                            <svg class="w-5 h-5 text-green-500 mr-2"
-                                                 fill="currentColor"
-                                                 viewBox="0 0 20 20">
-                                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
-                                                </path>
-                                            </svg>
-                                            <span class="text-sm font-semibold text-gray-600">Current Plan</span>
-                                        </div>
-                                    </div>
-                                {% else %}
-                                    <a href="{% url 'core:checkout' plan_name=plan.id %}{% if plan.price_yearly %}?interval=yearly{% endif %}"
-                                       {% if plan.price_yearly %}data-checkout-base="{% url 'core:checkout' plan_name=plan.id %}"{% endif %}
-                                       class="checkout-link group/btn w-full inline-flex items-center justify-center py-4 px-6 rounded-xl text-sm font-bold tracking-wide transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 {% if plan.recommended %}bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 text-white border-2 border-primary-600{% else %}bg-white text-primary-600 border-2 border-primary-600 hover:bg-primary-50 hover:border-primary-700{% endif %}">
-                                        {% if plan.recommended %}
-                                            <svg class="mr-2 h-5 w-5 group-hover/btn:scale-110 transition-transform"
-                                                 fill="none"
-                                                 stroke="currentColor"
-                                                 viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
-                                            </svg>
-                                            <span>Upgrade to {{ plan.name }}</span>
-                                        {% elif plan.is_downgrade %}
-                                            <span>Downgrade to {{ plan.name }}</span>
-                                        {% else %}
-                                            <span>Choose {{ plan.name }}</span>
-                                            <svg class="ml-2 h-5 w-5 group-hover/btn:translate-x-1 transition-transform"
-                                                 fill="none"
-                                                 stroke="currentColor"
-                                                 viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
-                                            </svg>
-                                        {% endif %}
-                                    </a>
-                                {% endif %}
-                            </div>
-                        </div>
-                    </div>
-                {% endfor %}
+        {% if has_yearly_plans %}
+            {% comment %}Yearly first: the lower per-month price anchors, matching the marketing site.{% endcomment %}
+            <div class="flex justify-center">
+                <c-segmented label="Billing interval">
+                    <c-segmented.option value="yearly" selected>
+                        Yearly
+                    </c-segmented.option>
+                    <c-segmented.option value="monthly">
+                        Monthly
+                    </c-segmented.option>
+                </c-segmented>
             </div>
+        {% endif %}
 
-            <!-- Benefits Section -->
-            <div class="bg-white rounded-xl shadow-lg border border-gray-100 p-8 mb-8">
-                <h3 class="text-2xl font-bold text-gray-900 text-center mb-8">Why Upgrade?</h3>
-
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div class="text-center">
-                        <div class="h-16 w-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <svg class="h-8 w-8 text-primary-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                            </svg>
-                        </div>
-                        <h4 class="text-lg font-semibold text-gray-900 mb-2">Higher Limits</h4>
-                        <p class="text-gray-600">Process more webhook events without hitting rate limits</p>
-                    </div>
-
-                    <div class="text-center">
-                        <div class="h-16 w-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <svg class="h-8 w-8 text-primary-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a1 1 0 01-1-1V9a1 1 0 011-1h1a2 2 0 100-4H4a1 1 0 01-1-1V4a1 1 0 011-1h3a1 1 0 001-1v-1a2 2 0 114 0z">
-                                </path>
-                            </svg>
-                        </div>
-                        <h4 class="text-lg font-semibold text-gray-900 mb-2">All Integrations</h4>
-                        <p class="text-gray-600">Connect with all available services and platforms seamlessly</p>
-                    </div>
-
-                    <div class="text-center">
-                        <div class="h-16 w-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <svg class="h-8 w-8 text-primary-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z">
-                                </path>
-                            </svg>
-                        </div>
-                        <h4 class="text-lg font-semibold text-gray-900 mb-2">Premium Features</h4>
-                        <p class="text-gray-600">Access advanced features and priority support on Pro and Enterprise plans</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- FAQ Section -->
-            <div class="bg-white rounded-xl shadow-lg border border-gray-100 p-8">
-                <h3 class="text-2xl font-bold text-gray-900 text-center mb-8">Frequently Asked Questions</h3>
-
-                <div class="space-y-6">
-                    <div class="border-b border-gray-200 pb-6">
-                        <h4 class="text-lg font-medium text-gray-900 mb-2">When will I be charged?</h4>
-                        <p class="text-gray-600">
-                            Your new plan takes effect immediately, and you'll be charged a prorated amount for the remainder of your billing cycle. Your next full billing cycle will start on your regular billing date.
+        <div class="grid gap-6 {% if plans|length == 2 %}mx-auto max-w-4xl md:grid-cols-2{% else %}md:grid-cols-2 lg:grid-cols-3{% endif %}">
+            {% for plan in plans %}
+                <c-plan-card :name="plan.name"
+                             price="{% if plan.price_yearly %}${{ plan.price_yearly_per_month }}{% else %}${{ plan.price }}{% endif %}"
+                             period="{% if plan.price_yearly %}/month{% else %}/{{ plan.interval }}{% endif %}"
+                             description="{% if plan.recommended %}Built for growing teams{% elif plan.is_downgrade %}A lower tier than your current plan{% elif plan.id == 'basic' %}Enough to get going{% else %}For large organisations{% endif %}"
+                             :featured="plan.recommended"
+                             current="{% if plan.id == current_plan %}1{% endif %}">
+                    <c-slot name="actions">
+                        <c-button href="{% url 'core:checkout' plan_name=plan.id %}{% if plan.price_yearly %}?interval=yearly{% endif %}"
+                                  variant="{% if plan.recommended %}primary{% else %}secondary{% endif %}"
+                                  block
+                                  class="checkout-link"
+                                  data-checkout-base="{% url 'core:checkout' plan_name=plan.id %}">
+                            {% if plan.is_downgrade %}
+                                Move to {{ plan.name }}
+                            {% else %}
+                                Choose {{ plan.name }}
+                            {% endif %}
+                        </c-button>
+                    </c-slot>
+                    <c-slot name="features">
+                        {% for feature in plan.features %}<c-plan-card.feature>{{ feature }}</c-plan-card.feature>{% endfor %}
+                    </c-slot>
+                    {% if plan.price_yearly %}
+                        <p class="mt-3 text-body text-content-subtle"
+                           data-interval-block="yearly">
+                            ${{ plan.price_yearly }} billed annually{% if plan.yearly_savings %} · saves ${{ plan.yearly_savings }}{% endif %}
                         </p>
-                    </div>
-
-                    <div class="border-b border-gray-200 pb-6">
-                        <h4 class="text-lg font-medium text-gray-900 mb-2">Can I downgrade later?</h4>
-                        <p class="text-gray-600">
-                            Yes, you can change your plan anytime. Downgrades take effect at the end of your current billing cycle to ensure you get the full value of your current plan.
-                        </p>
-                    </div>
-
-                    <div>
-                        <h4 class="text-lg font-medium text-gray-900 mb-2">What happens to my existing integrations?</h4>
-                        <p class="text-gray-600">
-                            All your existing integrations, settings, and data remain unchanged when you upgrade. You'll simply get access to higher limits and additional features.
-                        </p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Support -->
-            <div class="mt-8 text-center">
-                <p class="text-gray-600">
-                    Need help choosing the right plan?
-                    <a href="mailto:sales@notipus.com"
-                       class="text-primary-600 hover:text-primary-500 font-medium">Contact our sales team</a>
-                </p>
-            </div>
+                        <p class="mt-3 hidden text-body text-content-subtle"
+                           data-interval-block="monthly">${{ plan.price }} billed each month</p>
+                    {% endif %}
+                </c-plan-card>
+            {% endfor %}
         </div>
-    </div>
+
+        <c-card title="What changing plan does and doesn't do" icon="help-circle">
+            <div class="flex flex-col gap-5">
+                <div>
+                    <h3 class="text-body font-semibold text-content">When am I charged?</h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        Straight away, prorated for the rest of the current billing cycle. Your renewal date doesn't move.
+                    </p>
+                </div>
+                <div>
+                    <h3 class="text-body font-semibold text-content">Can I go back down?</h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        Yes. Downgrades take effect at the end of the current cycle, so you keep what you paid for.
+                    </p>
+                </div>
+                <div>
+                    <h3 class="text-body font-semibold text-content">What happens to my integrations?</h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        Nothing. Connections, channels and event settings all carry over untouched.
+                    </p>
+                </div>
+            </div>
+        </c-card>
+
+        <p class="text-center text-body text-content-muted">
+            Not sure which fits?
+            <a href="mailto:sales@notipus.com"
+               class="rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                Talk to us
+            </a>
+        </p>
+    </c-page>
+{% endblock content %}
+
+{% block extra_scripts %}
     <script>
         (function() {
-            const ACTIVE = ["bg-primary-600", "text-white", "shadow"];
-            const INACTIVE = ["text-gray-600"];
-            const radios = Array.from(document.querySelectorAll(".interval-toggle"));
+            const radios = Array.from(document.querySelectorAll("[data-segment]"));
             if (!radios.length) return;
 
             function select(interval, focus) {
                 radios.forEach(function(btn) {
-                    const on = btn.dataset.interval === interval;
+                    const on = btn.dataset.segment === interval;
                     btn.setAttribute("aria-checked", on ? "true" : "false");
                     btn.tabIndex = on ? 0 : -1;
-                    ACTIVE.forEach(function(c) {
-                        btn.classList.toggle(c, on);
-                    });
-                    INACTIVE.forEach(function(c) {
-                        btn.classList.toggle(c, !on);
-                    });
+                    btn.classList.toggle("bg-action", on);
+                    btn.classList.toggle("text-content-inverse", on);
+                    btn.classList.toggle("text-content-muted", !on);
                     if (on && focus) btn.focus();
                 });
                 document.querySelectorAll("[data-interval-block]").forEach(function(block) {
@@ -346,17 +128,18 @@
 
             radios.forEach(function(btn, index) {
                 btn.addEventListener("click", function() {
-                    select(btn.dataset.interval, false);
+                    select(btn.dataset.segment, false);
                 });
                 btn.addEventListener("keydown", function(event) {
                     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
                     event.preventDefault();
                     const step = (event.key === "ArrowRight" || event.key === "ArrowDown") ? 1 : -1;
                     const next = radios[(index + step + radios.length) % radios.length];
-                    select(next.dataset.interval, true);
+                    select(next.dataset.segment, true);
                 });
             });
+
             select("yearly", false);
         })();
     </script>
-{% endblock content %}
+{% endblock extra_scripts %}

@@ -58,29 +58,29 @@ class ErrorTemplateRenderingTests(TestCase):
         """Test that the 404 template renders without errors."""
         html = render_to_string("404.html.j2", {})
         assert "404" in html
-        assert "Page Not Found" in html
-        assert "Go to Dashboard" in html
+        assert "Page not found" in html
+        assert "Go to dashboard" in html
 
     def test_500_template_renders(self) -> None:
         """Test that the 500 template renders without errors."""
         html = render_to_string("500.html.j2", {})
         assert "500" in html
-        assert "Server Error" in html
-        assert "Go to Dashboard" in html
+        assert "Server error" in html
+        assert "Go to dashboard" in html
 
     def test_404_view_returns_correct_status(self) -> None:
         """Test that the custom 404 view returns 404 status code."""
         request = self.factory.get("/nonexistent/")
         response = custom_404(request, Exception("Not found"))
         assert response.status_code == 404
-        assert b"Page Not Found" in response.content
+        assert b"Page not found" in response.content
 
     def test_500_view_returns_correct_status(self) -> None:
         """Test that the custom 500 view returns 500 status code."""
         request = self.factory.get("/")
         response = custom_500(request)
         assert response.status_code == 500
-        assert b"Server Error" in response.content
+        assert b"Server error" in response.content
 
 
 class TemplateContextTests(TestCase):
@@ -155,7 +155,7 @@ class Error404IntegrationTests(TestCase):
         response = self.client.get("/this-page-definitely-does-not-exist/")
         assert response.status_code == 404
         # Should render our custom 404 template
-        assert b"Page Not Found" in response.content
+        assert b"Page not found" in response.content
 
     def test_nonexistent_api_endpoint_returns_404(self) -> None:
         """Test that a non-existent API endpoint returns 404."""
@@ -315,13 +315,13 @@ class AuthenticationTemplateTests(TestCase):
         """Test login page renders correctly."""
         response = self.client.get("/accounts/login/")
         assert response.status_code == 200
-        assert b"Login" in response.content or b"Sign In" in response.content
+        assert b"Sign in to Notipus" in response.content
 
     def test_signup_page_renders(self) -> None:
         """Test signup page renders correctly."""
         response = self.client.get("/accounts/signup/")
         assert response.status_code == 200
-        assert b"Sign Up" in response.content or b"Register" in response.content
+        assert b"Create your account" in response.content
 
 
 class AllTemplatesValidationTests(TestCase):

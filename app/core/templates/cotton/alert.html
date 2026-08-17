@@ -1,0 +1,31 @@
+{% comment %}
+Alert — a block that tells the reader what happened and what to do next.
+
+Every tone ships its own icon so the message never relies on colour alone,
+which is both a WCAG 1.4.1 requirement and simply easier to scan.
+
+Props:
+  tone   info | success | warning | danger  (default: info)
+  title  optional bold first line
+  icon   override the tone's default icon
+
+Body copy is the slot. An `actions` slot renders below the copy:
+
+  <c-alert tone="warning" title="Trial ends Friday">
+      Add a payment method to keep notifications flowing.
+      <c-slot name="actions"><c-button size="sm" href="/billing/">Add payment method</c-button></c-slot>
+  </c-alert>
+{% endcomment %}
+<c-vars tone="info" title="" icon="" class="" />
+
+<div class="flex gap-3 rounded-card border p-4 text-body {% if tone == 'success' %}border-success-border bg-success-surface text-success-text {% elif tone == 'warning' %}border-warning-border bg-warning-surface text-warning-text {% elif tone == 'danger' %}border-danger-border bg-danger-surface text-danger-text {% else %}border-info-border bg-info-surface text-info-text{% endif %} {{ class }}"
+     role="{% if tone == 'danger' %}alert{% else %}status{% endif %}"
+     {{ attrs }}>
+    <i class="ti mt-0.5 flex-shrink-0 text-heading {% if icon %}ti-{{ icon }} {% elif tone == 'success' %}ti-circle-check {% elif tone == 'warning' %}ti-alert-triangle {% elif tone == 'danger' %}ti-alert-circle {% else %}ti-info-circle{% endif %}"
+       aria-hidden="true"></i>
+    <div class="min-w-0 flex-1">
+        {% if title %}<p class="font-semibold">{{ title }}</p>{% endif %}
+        <div class="{% if title %}mt-1{% endif %}">{{ slot }}</div>
+        {% if actions %}<div class="mt-3 flex flex-wrap gap-2">{{ actions }}</div>{% endif %}
+    </div>
+</div>

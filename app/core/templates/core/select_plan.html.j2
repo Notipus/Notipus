@@ -1,110 +1,72 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Select Your Plan - Notipus
+    Choose a plan - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="bg-gray-50 min-h-screen py-12">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <!-- Header -->
-            <div class="text-center">
-                <h2 class="text-3xl font-extrabold text-gray-900 sm:text-4xl">Choose the perfect plan for your team</h2>
-                <p class="mt-4 text-lg text-gray-600">Start free with 20 events/month, or try any paid plan free for 14 days.</p>
-            </div>
+    <c-page width="wide"
+            title="Choose a plan"
+            subtitle="Start free with 20 events a month, or try any paid plan free for 14 days.">
+        <div class="grid gap-6 sm:grid-cols-2 xl:grid-cols-4">
+            {% for plan in plans %}
+                <c-plan-card :name="plan.display_name"
+                             :price="plan.price"
+                             period="{% if '$' in plan.price %}/month{% endif %}"
+                             :description="plan.description"
+                             featured="{% if plan.name == 'pro' %}1{% endif %}">
+                    <c-slot name="actions">
+                        <c-form>
+                            <input type="hidden" name="plan" value="{{ plan.name }}">
+                            <c-button type="submit"
+                                      variant="{% if plan.name == 'pro' %}primary{% else %}secondary{% endif %}"
+                                      block>
+                                {% if plan.name == "free" %}
+                                    Start free
+                                {% else %}
+                                    Start 14-day trial
+                                {% endif %}
+                            </c-button>
+                        </c-form>
+                    </c-slot>
+                    <c-slot name="features">
+                        {% for feature in plan.features %}<c-plan-card.feature>{{ feature }}</c-plan-card.feature>{% endfor %}
+                    </c-slot>
+                </c-plan-card>
+            {% endfor %}
+        </div>
 
-            <!-- Plan Cards -->
-            <div class="mt-12 space-y-4 sm:mt-16 sm:space-y-0 sm:grid sm:grid-cols-2 sm:gap-6 lg:max-w-4xl lg:mx-auto xl:max-w-none xl:mx-0 xl:grid-cols-4">
-                {% for plan in plans %}
-                    <div class="relative border border-gray-200 rounded-lg shadow-sm divide-y divide-gray-200 {% if plan.name == 'pro' %}ring-2 ring-primary-500{% endif %}">
-                        {% if plan.name == 'pro' %}
-                            <div class="absolute -top-4 left-1/2 transform -translate-x-1/2">
-                                <span class="inline-flex whitespace-nowrap px-4 py-1 rounded-full text-sm font-semibold tracking-wide uppercase bg-primary-500 text-white shadow">
-                                    Most Popular
-                                </span>
-                            </div>
-                        {% endif %}
-
-                        <div class="p-6">
-                            <h3 class="text-lg leading-6 font-medium text-gray-900">{{ plan.display_name }}</h3>
-                            <p class="mt-4 text-sm text-gray-500">{{ plan.description }}</p>
-                            <p class="mt-8">
-                                <span class="text-4xl font-extrabold text-gray-900">{{ plan.price }}</span>
-                                {% if '$' in plan.price %}<span class="text-base font-medium text-gray-500">/month</span>{% endif %}
-                            </p>
-
-                            <form method="post" class="mt-8">
-                                {% csrf_token %}
-                                <input type="hidden" name="plan" value="{{ plan.name }}">
-                                <button type="submit"
-                                        class="{% if plan.name == 'pro' %}bg-primary-500 hover:bg-primary-600 text-white border-transparent{% else %}bg-white text-primary-500 border-primary-500 hover:bg-primary-50{% endif %} block w-full border rounded-md py-2 text-sm font-semibold text-center">
-                                    {% if plan.name == 'free' %}
-                                        Get Started Free
-                                    {% else %}
-                                        Start 14-Day Free Trial
-                                    {% endif %}
-                                </button>
-                            </form>
-                        </div>
-
-                        <div class="pt-6 pb-8 px-6">
-                            <h4 class="text-xs font-medium text-gray-900 tracking-wide uppercase">What's included</h4>
-                            <ul class="mt-6 space-y-4">
-                                {% for feature in plan.features %}
-                                    <li class="flex space-x-3">
-                                        <svg class="flex-shrink-0 h-5 w-5 text-green-500"
-                                             fill="currentColor"
-                                             viewBox="0 0 20 20">
-                                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd">
-                                            </path>
-                                        </svg>
-                                        <span class="text-sm text-gray-500">{{ feature }}</span>
-                                    </li>
-                                {% endfor %}
-                            </ul>
-                        </div>
-                    </div>
-                {% endfor %}
-            </div>
-
-            <!-- FAQ Section -->
-            <div class="mt-16">
-                <div class="max-w-3xl mx-auto">
-                    <h3 class="text-2xl font-extrabold text-gray-900 text-center mb-8">Frequently Asked Questions</h3>
-
-                    <div class="space-y-6">
-                        <div class="bg-white rounded-lg shadow p-6">
-                            <h4 class="text-lg font-medium text-gray-900 mb-2">Can I change my plan later?</h4>
-                            <p class="text-gray-600">
-                                Yes, you can upgrade or downgrade your plan at any time. Changes take effect immediately and we'll prorate any billing adjustments.
-                            </p>
-                        </div>
-
-                        <div class="bg-white rounded-lg shadow p-6">
-                            <h4 class="text-lg font-medium text-gray-900 mb-2">How does the free trial work?</h4>
-                            <p class="text-gray-600">
-                                All paid plans include a 14-day free trial. You'll need to enter your card details, but you won't be charged until the trial ends. The Free plan has no trial - it's free forever with 20 events/month.
-                            </p>
-                        </div>
-
-                        <div class="bg-white rounded-lg shadow p-6">
-                            <h4 class="text-lg font-medium text-gray-900 mb-2">Do you offer annual billing?</h4>
-                            <p class="text-gray-600">
-                                Yes! Once your workspace is set up, you can switch to annual billing from the Billing page — each plan's yearly price and exact savings are shown there.
-                            </p>
-                        </div>
-                    </div>
+        <c-card title="Questions people ask before choosing" icon="help-circle">
+            <div class="flex flex-col gap-5">
+                <div>
+                    <h3 class="text-body font-semibold text-content">Can I change plan later?</h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        Yes, at any time. Changes take effect immediately and we prorate the difference.
+                    </p>
+                </div>
+                <div>
+                    <h3 class="text-body font-semibold text-content">How does the free trial work?</h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        Every paid plan includes 14 days free. You enter card details up front but are not charged until
+                        the trial ends. The Free plan has no trial — it stays free, with 20 events a month.
+                    </p>
+                </div>
+                <div>
+                    <h3 class="text-body font-semibold text-content">Do you offer annual billing?</h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        Yes. Once your workspace is set up you can switch to annual billing from the Billing page, where
+                        each plan's yearly price and saving is shown.
+                    </p>
                 </div>
             </div>
+        </c-card>
 
-            <!-- Support -->
-            <div class="mt-16 text-center">
-                <p class="text-gray-600">
-                    Have questions?
-                    <a href="mailto:support@notipus.com"
-                       class="text-primary-600 hover:text-primary-500 font-medium">Contact our support team</a>
-                </p>
-            </div>
-        </div>
-    </div>
+        <p class="text-center text-body text-content-muted">
+            Still deciding?
+            <a href="mailto:support@notipus.com"
+               class="rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                Ask us anything
+            </a>
+        </p>
+    </c-page>
 {% endblock content %}

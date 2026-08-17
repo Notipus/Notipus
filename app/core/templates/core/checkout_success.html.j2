@@ -1,208 +1,68 @@
 {% extends "core/base.html.j2" %}
 
 {% block title %}
-    Payment Successful - Notipus
+    Payment received - Notipus
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-        <div class="sm:mx-auto sm:w-full sm:max-w-md">
-            <div class="bg-white py-8 px-4 shadow-xl sm:rounded-xl sm:px-10 border border-gray-100">
-                <!-- Success Icon -->
-                <div class="text-center">
-                    <div class="mx-auto flex items-center justify-center h-16 w-16 rounded-full bg-green-100 mb-6">
-                        <svg class="h-8 w-8 text-green-600"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                        </svg>
-                    </div>
-                    <h2 class="text-3xl font-extrabold text-gray-900 flex items-center justify-center gap-2">
-                        <i class="ti ti-confetti text-green-500"></i> Payment Successful!
-                    </h2>
-                    <p class="mt-2 text-lg text-gray-600">
-                        Welcome to your
-                        {% if plan_name %}{{ plan_name|title }}{% endif %}
-                        plan
-                    </p>
-                </div>
-
-                <!-- Success Details -->
-                <div class="mt-8">
-                    <div class="bg-green-50 rounded-lg p-6 border border-green-200">
-                        <div class="flex">
-                            <div class="flex-shrink-0">
-                                <svg class="h-5 w-5 text-green-400"
-                                     fill="currentColor"
-                                     viewBox="0 0 20 20">
-                                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd">
-                                    </path>
-                                </svg>
-                            </div>
-                            <div class="ml-3">
-                                <h3 class="text-sm font-medium text-green-800">Your subscription is now active</h3>
-                                <div class="mt-2 text-sm text-green-700">
-                                    <ul class="list-disc list-inside space-y-1">
-                                        {% if plan_name == "basic" %}
-                                            <li>Up to 10,000 monthly events</li>
-                                            <li>All integrations enabled</li>
-                                        {% elif plan_name == "pro" %}
-                                            <li>Up to 100,000 monthly events</li>
-                                            <li>All integrations enabled</li>
-                                            <li>Priority support access</li>
-                                        {% elif plan_name == "enterprise" %}
-                                            <li>1,000,000 monthly events</li>
-                                            <li>Custom integrations available</li>
-                                            <li>Dedicated support representative</li>
-                                        {% else %}
-                                            <li>Your new plan features are now available</li>
-                                        {% endif %}
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Next Steps -->
-                <div class="mt-8">
-                    <h3 class="text-lg font-medium text-gray-900 mb-4">What's next?</h3>
-
-                    <div class="space-y-4">
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-primary-100 text-primary-600 font-medium text-sm">
-                                    1
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Check your email</h4>
-                                <p class="text-sm text-gray-500">We've sent you a receipt and welcome email with important details</p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-primary-100 text-primary-600 font-medium text-sm">
-                                    2
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Explore your dashboard</h4>
-                                <p class="text-sm text-gray-500">Your new plan features are immediately available</p>
-                            </div>
-                        </div>
-
-                        <div class="flex items-start">
-                            <div class="flex-shrink-0">
-                                <div class="flex items-center justify-center h-8 w-8 rounded-full bg-primary-100 text-primary-600 font-medium text-sm">
-                                    3
-                                </div>
-                            </div>
-                            <div class="ml-3">
-                                <h4 class="text-sm font-medium text-gray-900">Set up more integrations</h4>
-                                <p class="text-sm text-gray-500">Connect more services to maximize your notifications</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Action Buttons -->
-                <div class="mt-8 space-y-3">
-                    <a href="{% url 'core:dashboard' %}"
-                       class="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-gradient-to-r from-primary-600 to-primary-700 hover:from-primary-700 hover:to-primary-800 transition-all duration-200">
-                        <svg class="mr-2 h-4 w-4"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z">
-                            </path>
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 22h6"></path>
-                        </svg>
-                        Go to Dashboard
-                    </a>
-
-                    <a href="{% url 'core:billing_dashboard' %}"
-                       class="w-full flex justify-center py-3 px-4 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                        <svg class="mr-2 h-4 w-4"
-                             fill="none"
-                             stroke="currentColor"
-                             viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z">
-                            </path>
-                        </svg>
-                        View Billing Details
-                    </a>
-                </div>
-
-                <!-- Additional Info -->
-                <div class="mt-8 pt-6 border-t border-gray-200">
-                    <div class="text-center">
-                        <h4 class="text-sm font-medium text-gray-900 mb-2">Need help getting started?</h4>
-                        <div class="flex justify-center space-x-4 text-sm">
-                            <a href="mailto:support@notipus.com"
-                               class="text-primary-600 hover:text-primary-500 font-medium inline-flex items-center gap-1"><i class="ti ti-mail"></i> Email Support</a>
-                            <a href="#"
-                               class="text-primary-600 hover:text-primary-500 font-medium inline-flex items-center gap-1"><i class="ti ti-book"></i> Documentation</a>
-                            <a href="#"
-                               class="text-primary-600 hover:text-primary-500 font-medium inline-flex items-center gap-1"><i class="ti ti-message-circle"></i> Live Chat</a>
-                        </div>
-                    </div>
-                </div>
+    <c-page width="narrow">
+        <c-card>
+            <div class="flex flex-col items-center text-center">
+                <c-icon-tile name="circle-check" tone="success" size="lg" />
+                <h1 class="mt-4 text-title font-bold text-content">Payment received</h1>
+                <p class="mt-2 text-lead text-content-muted">
+                    You're on the
+                    {% if plan_name %}{{ plan_name|title }}{% endif %}
+                    plan. The new limits are already live.
+                </p>
             </div>
-        </div>
 
-        <!-- Additional Success Info -->
-        <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-2xl">
-            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-6">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4 text-center flex items-center justify-center gap-2">
-                    <i class="ti ti-rocket text-primary-600"></i> You're all set! Here's what happens next:
-                </h3>
+            <c-alert tone="success" title="Active on this workspace" class="mt-6">
+                <ul class="flex flex-col gap-1">
+                    {% if plan_name == "basic" %}
+                        <li>Up to 10,000 events a month</li>
+                        <li>Every integration</li>
+                    {% elif plan_name == "pro" %}
+                        <li>Up to 100,000 events a month</li>
+                        <li>Every integration</li>
+                        <li>Priority support</li>
+                    {% elif plan_name == "enterprise" %}
+                        <li>1,000,000 events a month</li>
+                        <li>Custom integrations</li>
+                        <li>A named support contact</li>
+                    {% else %}
+                        <li>Your new plan's limits are in effect</li>
+                    {% endif %}
+                </ul>
+            </c-alert>
 
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
-                    <div>
-                        <div class="h-12 w-12 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                            <svg class="h-6 w-6 text-blue-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
-                            </svg>
-                        </div>
-                        <h4 class="text-sm font-medium text-gray-900">Instant Access</h4>
-                        <p class="text-xs text-gray-500 mt-1">All features are active immediately</p>
-                    </div>
+            <c-divider class="my-6" />
 
-                    <div>
-                        <div class="h-12 w-12 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                            <svg class="h-6 w-6 text-green-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z">
-                                </path>
-                            </svg>
-                        </div>
-                        <h4 class="text-sm font-medium text-gray-900">Auto-Renewal</h4>
-                        <p class="text-xs text-gray-500 mt-1">Monthly billing with easy cancellation</p>
-                    </div>
+            <c-checklist>
+                <c-checklist.item index="1"
+                                  title="Check your inbox"
+                                  description="Your receipt and invoice are on the way." />
+                <c-checklist.item index="2"
+                                  title="Connect what's left"
+                                  description="More sources mean more of your business shows up in Slack."
+                                  href="{% url 'core:integrations' %}" />
+                <c-checklist.item index="3"
+                                  title="Watch your usage"
+                                  description="Billing shows how much of the new limit you're using." />
+            </c-checklist>
 
-                    <div>
-                        <div class="h-12 w-12 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                            <svg class="h-6 w-6 text-purple-600"
-                                 fill="none"
-                                 stroke="currentColor"
-                                 viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192L5.636 18.364M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z">
-                                </path>
-                            </svg>
-                        </div>
-                        <h4 class="text-sm font-medium text-gray-900">Premium Support</h4>
-                        <p class="text-xs text-gray-500 mt-1">Priority help when you need it</p>
-                    </div>
-                </div>
+            <div class="mt-6 flex flex-col gap-2 sm:flex-row">
+                <c-button href="{% url 'core:dashboard' %}" icon="home" block>Go to dashboard</c-button>
+                <c-button href="{% url 'core:billing_dashboard' %}" variant="secondary" block>View billing</c-button>
             </div>
-        </div>
-    </div>
+        </c-card>
+
+        <p class="text-center text-body text-content-muted">
+            Something not right?
+            <a href="mailto:billing@notipus.com"
+               class="rounded-control font-medium text-brand-text underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+                Email billing support
+            </a>
+        </p>
+    </c-page>
 {% endblock content %}

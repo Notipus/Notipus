@@ -1,0 +1,22 @@
+{% comment %}
+Site footer. Takes no props.
+{% endcomment %}
+{% load static %}
+<footer class="border-t border-border bg-surface">
+    <div class="mx-auto flex max-w-7xl flex-col items-center justify-between gap-4 px-4 py-8 text-body text-content-subtle sm:flex-row sm:px-6 lg:px-8">
+        <div class="flex items-center gap-2">
+            <img src="{% static 'img/notipus-logo.png' %}"
+                 alt=""
+                 class="h-6 w-auto opacity-60"
+                 width="24"
+                 height="24">
+            <span>© {% now "Y" %} Notipus</span>
+        </div>
+        <a href="https://studio.viktopia.io"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="rounded-control transition-colors hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2">
+            A Viktopia Studio project
+        </a>
+    </div>
+</footer>

@@ -5,200 +5,83 @@
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-gray-50 to-indigo-50">
-        <!-- Header -->
-        <div class="bg-white shadow-sm">
-            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-                <div class="md:flex md:items-center md:justify-between">
-                    <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-3">
-                            <div class="w-12 h-12 bg-[#6264A7]/10 rounded-xl flex items-center justify-center">
-                                <i class="ti ti-brand-teams text-[#6264A7] text-2xl"></i>
-                            </div>
-                            <div>
-                                <h1 class="text-3xl font-bold leading-7 text-gray-900 sm:text-4xl">Connect Microsoft Teams</h1>
-                                <p class="mt-1 text-lg text-gray-600">Receive real-time notifications in a Teams channel</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="mt-4 flex md:mt-0 md:ml-4">
-                        <a href="{% url 'core:integrations' %}"
-                           class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-all duration-200">
-                            <i class="ti ti-arrow-left mr-2"></i>
-                            Back to Integrations
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
+    <c-page back="{% url 'core:integrations' %}"
+            back_label="Integrations"
+            title="Connect Microsoft Teams"
+            subtitle="Notifications posted into a Teams channel by a workflow you create.">
+        {% if existing_integration %}
+            <c-alert tone="success" title="Microsoft Teams is connected">
+                Re-enter a webhook URL below to point it at a different channel.
+            </c-alert>
+        {% endif %}
 
-        <!-- Main content -->
-        <div class="max-w-4xl mx-auto py-8 sm:px-6 lg:px-8">
-            {% if existing_integration %}
-                <!-- Already Connected -->
-                <div class="bg-green-50 border border-green-200 rounded-xl p-6 mb-8">
-                    <div class="flex">
-                        <div class="flex-shrink-0">
-                            <i class="ti ti-circle-check text-green-500 text-xl"></i>
-                        </div>
-                        <div class="ml-3">
-                            <h3 class="text-sm font-medium text-green-800">Microsoft Teams is connected!</h3>
-                            <p class="mt-2 text-sm text-green-700">Your Teams workflow is connected. Re-enter a webhook URL below to update it.</p>
-                        </div>
-                    </div>
-                </div>
-            {% endif %}
+        <c-card title="Workflow webhook URL"
+                description="Teams gives you this when you create the workflow."
+                icon="link">
+            <c-form>
+                {% comment %}
+                The stored webhook URL is never rendered back into this field. It is a
+                bearer secret — anyone holding it can post to the channel — so updating
+                means pasting it again.
+                {% endcomment %}
+                <c-input name="webhook_url"
+                         type="url"
+                         label="Webhook URL"
+                         placeholder="https://prod-XX.westus.logic.azure.com:443/workflows/…"
+                         help="Created with the Workflows app in Teams; the steps are below.{% if existing_integration %} Re-enter it to update the connection.{% endif %}"
+                         autocomplete="off"
+                         required />
+                <c-slot name="actions">
+                    <c-button type="submit" icon="plug-connected">
+                        {% if existing_integration %}
+                            Update connection
+                        {% else %}
+                            Connect Microsoft Teams
+                        {% endif %}
+                    </c-button>
+                </c-slot>
+            </c-form>
+        </c-card>
 
-            <!-- Integration Setup -->
-            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8 mb-8">
-                <div class="flex items-center mb-6">
-                    <div class="h-12 w-12 bg-[#6264A7]/10 rounded-xl flex items-center justify-center">
-                        <i class="ti ti-brand-teams text-[#6264A7] text-2xl"></i>
-                    </div>
-                    <div class="ml-4">
-                        <h3 class="text-xl font-semibold text-gray-900">Teams Workflow Setup</h3>
-                        <p class="text-gray-600">Paste the webhook URL from your Teams workflow</p>
-                    </div>
-                </div>
+        <c-card title="Creating the workflow" icon="list-check">
+            <c-checklist>
+                <c-checklist.item index="1"
+                                  title="Open the Workflows app in Teams"
+                                  description="It replaces the retiring Incoming Webhook connector." />
+                <c-checklist.item index="2"
+                                  title="Use the webhook template"
+                                  description="Pick “Post to a channel when a webhook request is received”, then choose the team and channel." />
+                <c-checklist.item index="3"
+                                  title="Copy the HTTP POST URL"
+                                  description="Teams shows it once the workflow is saved. Paste it above." />
+                <c-checklist.item index="4"
+                                  title="Send a test"
+                                  description="Use send test on the integrations page to put a sample card in the channel." />
+            </c-checklist>
+            <c-slot name="footer">
+                Microsoft's own guide:
+                <a href="https://support.microsoft.com/en-us/office/create-incoming-webhooks-with-workflows-for-microsoft-teams-8ae491c7-0394-4861-ba59-055e33f75498"
+                   target="_blank"
+                   rel="noopener noreferrer"
+                   class="font-medium text-brand-text underline-offset-4 hover:underline">Create webhooks with Workflows for Microsoft Teams</a>.
+            </c-slot>
+        </c-card>
 
-                <form method="post" class="space-y-6">
-                    {% csrf_token %}
-
-                    <!-- Webhook URL -->
-                    <div>
-                        <label for="webhook_url" class="block text-sm font-medium text-gray-700">Workflow Webhook URL</label>
-                        <div class="mt-1">
-                            {% comment %}
-                            Never render the stored webhook URL back into the page: it is a
-                            bearer secret (anyone with it can post to the channel), so even
-                            in the field it would sit in the DOM/source. Re-enter it to update.
-                            {% endcomment %}
-                            <input type="url"
-                                   name="webhook_url"
-                                   id="webhook_url"
-                                   autocomplete="off"
-                                   class="shadow-sm focus:ring-[#6264A7] focus:border-[#6264A7] block w-full sm:text-sm border-gray-300 rounded-md"
-                                   placeholder="https://prod-XX.westus.logic.azure.com:443/workflows/..."
-                                   required>
-                        </div>
-                        <p class="mt-2 text-sm text-gray-500">
-                            Create this in Teams with the <strong>Workflows</strong> app (steps below){% if existing_integration %} — re-enter it to update the connection{% endif %}.
-                        </p>
-                    </div>
-
-                    <!-- Submit Button -->
-                    <div class="flex justify-end">
-                        <button type="submit"
-                                class="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-[#6264A7] hover:bg-[#4e5199] transition-all duration-200">
-                            <i class="ti ti-plug-connected mr-2"></i>
-                            {% if existing_integration %}
-                                Update Connection
-                            {% else %}
-                                Connect Microsoft Teams
-                            {% endif %}
-                        </button>
-                    </div>
-                </form>
-            </div>
-
-            <!-- Setup Instructions -->
-            <div class="bg-white shadow-lg rounded-xl border border-gray-100 p-8">
-                <h3 class="text-lg font-semibold text-gray-900 mb-4">
-                    <i class="ti ti-list-check mr-2 text-[#6264A7]"></i>
-                    Setup Instructions
-                </h3>
-
-                <div class="space-y-6">
-                    <!-- Step 1 -->
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#6264A7]/10 text-[#6264A7] font-medium text-sm">1</div>
-                        </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Open the Workflows app in Teams</h4>
-                            <p class="text-sm text-gray-500">
-                                In Microsoft Teams, search for and open the <strong>Workflows</strong> app
-                                (this replaces the retiring "Incoming Webhook" connector).
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- Step 2 -->
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#6264A7]/10 text-[#6264A7] font-medium text-sm">2</div>
-                        </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Create the webhook workflow</h4>
-                            <p class="text-sm text-gray-500">
-                                Choose the template <strong>"Post to a channel when a webhook request is received"</strong>,
-                                then pick the team and channel where notifications should appear.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- Step 3 -->
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#6264A7]/10 text-[#6264A7] font-medium text-sm">3</div>
-                        </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Copy the webhook URL</h4>
-                            <p class="text-sm text-gray-500">
-                                After saving, the workflow shows an HTTP POST URL. Copy it and paste it
-                                into the field above, then click Connect.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- Step 4 -->
-                    <div class="flex items-start">
-                        <div class="flex-shrink-0">
-                            <div class="flex items-center justify-center h-8 w-8 rounded-full bg-[#6264A7]/10 text-[#6264A7] font-medium text-sm">4</div>
-                        </div>
-                        <div class="ml-3">
-                            <h4 class="text-sm font-medium text-gray-900">Test it</h4>
-                            <p class="text-sm text-gray-500">
-                                Use the "Test" button on the integrations page to send a sample card to your channel.
-                            </p>
-                        </div>
-                    </div>
-                </div>
-
-                <p class="mt-6 text-sm text-gray-500">
-                    Full guide:
-                    <a href="https://support.microsoft.com/en-us/office/create-incoming-webhooks-with-workflows-for-microsoft-teams-8ae491c7-0394-4861-ba59-055e33f75498"
-                       target="_blank"
-                       rel="noopener noreferrer"
-                       class="text-[#6264A7] hover:underline">Create webhooks with Workflows for Microsoft Teams</a>.
-                </p>
-            </div>
-
-            <!-- Benefits -->
-            <div class="mt-8 bg-gradient-to-r from-[#6264A7]/5 to-[#6264A7]/10 rounded-xl p-6 border border-[#6264A7]/20">
-                <h3 class="text-lg font-semibold text-[#6264A7] mb-4">
-                    <i class="ti ti-star mr-2"></i>
-                    What you'll get with Microsoft Teams integration:
-                </h3>
-                <ul class="space-y-2 text-gray-700">
-                    <li class="flex items-center">
-                        <i class="ti ti-check text-[#6264A7] mr-2"></i>
-                        Real-time payment and subscription notifications
-                    </li>
-                    <li class="flex items-center">
-                        <i class="ti ti-check text-[#6264A7] mr-2"></i>
-                        Rich Adaptive Cards with customer and company context
-                    </li>
-                    <li class="flex items-center">
-                        <i class="ti ti-check text-[#6264A7] mr-2"></i>
-                        Quick action buttons to view details in Stripe/Shopify
-                    </li>
-                    <li class="flex items-center">
-                        <i class="ti ti-check text-[#6264A7] mr-2"></i>
-                        Works alongside Slack and Telegram — get notified everywhere
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </div>
+        <c-card title="What arrives in Teams" icon="sparkles">
+            <ul class="flex flex-col gap-2">
+                <c-plan-card.feature>
+                    Payments and subscription changes as they happen
+                </c-plan-card.feature>
+                <c-plan-card.feature>
+                    Adaptive Cards carrying customer and company context
+                </c-plan-card.feature>
+                <c-plan-card.feature>
+                    Buttons through to the order or payment in Stripe or Shopify
+                </c-plan-card.feature>
+                <c-plan-card.feature>
+                    Works alongside Slack and Telegram
+                </c-plan-card.feature>
+            </ul>
+        </c-card>
+    </c-page>
 {% endblock content %}

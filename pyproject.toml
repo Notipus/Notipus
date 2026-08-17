@@ -21,6 +21,7 @@ dependencies = [
     "cryptography>=50.0.0",
     "psycopg2-binary>=2.9.12,<3.0.0",
     "tzdata>=2026.3",
+    "django-cotton>=2.7.2",
 ]
 
 [dependency-groups]
@@ -132,9 +133,19 @@ ignore_missing_imports = true
 
 [tool.djlint]
 profile = "django"
+# Page templates are .html.j2; Cotton components under templates/cotton/ must be
+# .html because Cotton resolves <c-name> to cotton/name.html. CI lints both by
+# passing --extension explicitly for each.
 extension = "html.j2"
 indent = 4
 max_line_length = 120
 preserve_blank_lines = true
 format_css = true
 format_js = true
+# H026 flags class="" as a removable empty attribute. On a Cotton <c-vars> tag it
+# is not markup at all — it declares a prop's default, and that default has to be
+# empty so the prop shadows whatever the surrounding page has in scope.
+ignore = "H026"
+# Django's own admin templates, which follow admin conventions (entity
+# references in breadcrumbs) rather than this project's.
+extend_exclude = "app/core/templates/admin"

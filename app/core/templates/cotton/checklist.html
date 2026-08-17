@@ -1,0 +1,11 @@
+{% comment %}
+Checklist — an ordered set of steps, done or not yet done.
+
+Used for onboarding guidance and for the setup progress on the dashboard. It is
+an <ol> because the order carries information: these steps happen in sequence.
+
+Items are the slot; see <c-checklist.item>.
+{% endcomment %}
+<c-vars class="" />
+<ol class="flex flex-col gap-3 {{ class }}" {{ attrs }}>{{ slot }}
+</ol>

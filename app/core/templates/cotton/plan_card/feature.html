@@ -1,0 +1,11 @@
+{% comment %}
+One included feature in a <c-plan-card>. The label is the slot.
+{% endcomment %}
+<c-vars class="" />
+
+<li class="flex items-start gap-2 text-body text-content-muted {{ class }}"
+    {{ attrs }}>
+    <i class="ti ti-check mt-0.5 flex-shrink-0 text-success-text"
+       aria-hidden="true"></i>
+    <span>{{ slot }}</span>
+</li>

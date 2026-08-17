@@ -5,676 +5,313 @@
 {% endblock title %}
 
 {% block content %}
-    <div class="min-h-screen bg-gradient-to-br from-gray-50 via-white to-blue-50/30 py-8 px-4 sm:px-6 lg:px-8">
-        <div class="max-w-6xl mx-auto">
-            <!-- Header -->
-            <div class="mb-8">
-                <div class="flex items-center mb-4">
-                    <a href="{% url 'core:dashboard' %}"
-                       class="mr-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200">
-                        <i class="ti ti-arrow-left text-xl"></i>
-                    </a>
-                    <div>
-                        <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 flex items-center gap-3">
-                            <span class="p-2 bg-primary-100 rounded-xl">
-                                <i class="ti ti-plug-connected text-primary-600 text-xl"></i>
-                            </span>
-                            Integrations
-                        </h1>
-                        <p class="mt-1 text-gray-500">Connect your tools and automate your workflow</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Flash messages render once, in base.html.j2 -->
-            <!-- Integration Sections Grid -->
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-
-                <!-- Event Sources Section -->
-                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                    <div class="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-blue-50/80 to-indigo-50/50">
-                        <div class="flex items-center gap-3">
-                            <div class="h-10 w-10 bg-blue-100 rounded-xl flex items-center justify-center">
-                                <i class="ti ti-cloud-download text-blue-600 text-xl"></i>
-                            </div>
-                            <div>
-                                <h2 class="text-lg font-semibold text-gray-900">Event Sources</h2>
-                                <p class="text-sm text-gray-500">Services that send webhooks to Notipus</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="divide-y divide-gray-100">
-                        {% for integration in event_sources %}
-                            <div class="px-6 py-5 hover:bg-gray-50/50 transition-colors">
-                                <div class="flex flex-wrap items-start justify-between gap-4">
-                                    <div class="flex items-start gap-4">
-                                        <!-- Integration Icon -->
-                                        <div class="flex-shrink-0">
-                                            {% if integration.id == 'shopify' %}
-                                                <!-- Shopify Brand Icon -->
-                                                <div class="w-12 h-12 bg-[#95BF47]/10 rounded-xl flex items-center justify-center">
-                                                    <svg class="w-7 h-7" viewBox="0 0 24 24" fill="none">
-                                                        <path d="M15.34 5.68c-.01-.07-.07-.11-.12-.12-.05 0-1.05-.08-1.05-.08s-.7-.7-.87-.87c-.17-.17-.51-.12-.64-.08-.02 0-.26.08-.66.21-.39-1.13-1.08-2.16-2.3-2.16h-.11c-.35-.45-.78-.65-1.14-.65-2.82 0-4.17 3.53-4.59 5.32-.67.21-1.14.35-1.2.37-.37.12-.38.13-.43.48-.04.27-1.02 7.86-1.02 7.86l7.63 1.43 4.15-1.03s-1.58-10.75-1.59-10.82v-.02l-.06.36zM11.17 3.8c-.32.1-.67.21-1.04.32v-.23c0-.68-.09-1.23-.24-1.67.6.08.99.76 1.28 1.58zm-2.08-1.4c.16.4.26.97.26 1.75v.11l-2.14.66c.41-1.58 1.18-2.35 1.88-2.52zm-.79-.54c.12 0 .25.04.37.12-.9.42-1.86 1.48-2.26 3.6l-1.69.52c.47-1.59 1.58-4.24 3.58-4.24z" fill="#95BF47" />
-                                                        <path d="M15.22 5.56c-.05 0-1.05-.08-1.05-.08s-.7-.7-.87-.87c-.06-.07-.15-.1-.24-.11l-.57 11.66 4.15-1.03s-1.58-10.75-1.59-10.82c-.01-.07-.07-.11-.12-.12l.29 1.37z" fill="#5E8E3E" />
-                                                        <path d="M10.04 8.27l-.5 1.85s-.55-.25-1.21-.21c-.97.06-1.1.67-1.08.82.06.94 2.53 1.15 2.67 3.36.11 1.74-.92 2.93-2.41 3.02-1.79.11-2.77-.94-2.77-.94l.38-1.61s.99.75 1.78.7c.52-.03.7-.46.69-.76-.08-1.23-2.09-1.16-2.22-3.18-.11-1.7 1.01-3.42 3.47-3.58.95-.06 1.43.18 1.43.18l-.23.35z" fill="#fff" />
-                                                    </svg>
-                                                </div>
-                                            {% elif integration.id == 'chargify' %}
-                                                <!-- Chargify/Maxio Icon -->
-                                                <div class="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center">
-                                                    <i class="ti ti-currency-dollar text-purple-600 text-2xl"></i>
-                                                </div>
-                                            {% elif integration.id == 'stripe_customer' %}
-                                                <!-- Stripe Brand Icon -->
-                                                <div class="w-12 h-12 bg-[#635bff]/10 rounded-xl flex items-center justify-center">
-                                                    <svg class="w-7 h-7" viewBox="0 0 24 24" fill="#635bff">
-                                                        <path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.591-7.305z" />
-                                                    </svg>
-                                                </div>
-                                            {% else %}
-                                                <div class="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center">
-                                                    <i class="ti ti-link text-gray-500 text-2xl"></i>
-                                                </div>
-                                            {% endif %}
-                                        </div>
-
-                                        <!-- Integration Details -->
-                                        <div class="flex-1 min-w-0">
-                                            <div class="flex items-center gap-2 flex-wrap mb-1">
-                                                <h3 class="text-base font-semibold text-gray-900">{{ integration.name }}</h3>
-                                                {% if integration.connected %}
-                                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                                        <i class="ti ti-circle-check text-xs"></i>
-                                                        Connected
-                                                    </span>
-                                                    {% if integration.webhook_verified_at is defined %}
-                                                        {% if integration.webhook_verified_at %}
-                                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                                                                <i class="ti ti-antenna-bars-5 text-xs"></i>
-                                                                Receiving events
-                                                            </span>
-                                                        {% else %}
-                                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700"
-                                                                  title="Waiting for the first webhook event to arrive. Send a test event from your provider to verify the connection.">
-                                                                <i class="ti ti-clock text-xs"></i>
-                                                                Awaiting first event
-                                                            </span>
-                                                        {% endif %}
-                                                    {% endif %}
-                                                {% endif %}
-                                            </div>
-                                            <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-blue-50 text-blue-700 mb-2">
-                                                {{ integration.category }}
-                                            </span>
-                                            <p class="text-sm text-gray-500">{{ integration.description }}</p>
-                                        </div>
-                                    </div>
-
-                                    <!-- Action Button -->
-                                    <div class="flex-shrink-0">
+    {% comment %}Flash messages render once, in base.html.j2.{% endcomment %}
+    <c-page width="default"
+            back="{% url 'core:dashboard' %}"
+            back_label="Dashboard"
+            title="Integrations"
+            subtitle="Where your events come from, and where the notifications go.">
+        <div class="grid gap-stack lg:grid-cols-2">
+            <c-card title="Event sources"
+                    description="Services that send webhooks to Notipus"
+                    icon="cloud-download"
+                    tone="info"
+                    flush>
+                <ul class="divide-y divide-border">
+                    {% for integration in event_sources %}
+                        {% if integration.id == "shopify" %}
+                            <c-integration-row :integration="integration" provider="shopify">
+                                <c-slot name="actions">
+                                    {% if integration.connected %}
+                                        <form method="post"
+                                              action="{% url 'core:disconnect_shopify' %}"
+                                              onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Disconnect Shopify?', message: 'Order notifications stop and the webhook subscriptions are removed from your store.', variant: 'warning', confirmText: 'Disconnect', cancelText: 'Keep connected'})">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="unlink">
+                                                Disconnect
+                                            </c-button>
+                                        </form>
+                                    {% else %}
+                                        <c-button href="{% url 'core:integrate_shopify' %}"
+                                                  size="sm"
+                                                  icon="plug-connected">Connect</c-button>
+                                    {% endif %}
+                                </c-slot>
+                            </c-integration-row>
+                        {% elif integration.id == "chargify" %}
+                            <c-integration-row :integration="integration" provider="chargify">
+                                <c-slot name="actions">
+                                    <c-button href="{% url 'core:integrate_chargify' %}"
+                                              size="sm"
+                                              variant="{% if integration.connected %}ghost{% else %}primary{% endif %}"
+                                              icon="{% if integration.connected %}settings{% else %}plug-connected{% endif %}">
                                         {% if integration.connected %}
-                                            {% if integration.id == "stripe_customer" %}
-                                                <div class="flex flex-col items-end gap-2">
-                                                    <a href="{% url 'core:integrate_stripe' %}"
-                                                       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                        <i class="ti ti-settings"></i>
-                                                        Configure
-                                                    </a>
-                                                    <form method="post"
-                                                          action="{% url 'core:disconnect_stripe' %}"
-                                                          class="inline"
-                                                          id="disconnect-stripe-form">
-                                                        {% csrf_token %}
-                                                        <button type="button"
-                                                                onclick="confirmDisconnectStripe()"
-                                                                class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors">
-                                                            <i class="ti ti-unlink"></i>
-                                                            Disconnect
-                                                        </button>
-                                                    </form>
-                                                </div>
-                                            {% elif integration.id == "shopify" %}
-                                                <form method="post"
-                                                      action="{% url 'core:disconnect_shopify' %}"
-                                                      class="inline"
-                                                      id="disconnect-shopify-form">
-                                                    {% csrf_token %}
-                                                    <button type="button"
-                                                            onclick="confirmDisconnectShopify()"
-                                                            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors">
-                                                        <i class="ti ti-unlink"></i>
-                                                        Disconnect
-                                                    </button>
-                                                </form>
-                                            {% elif integration.id == "chargify" %}
-                                                <a href="{% url 'core:integrate_chargify' %}"
-                                                   class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                    <i class="ti ti-settings"></i>
-                                                    Configure
-                                                </a>
-                                            {% else %}
-                                                <button type="button"
-                                                        class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                    <i class="ti ti-settings"></i>
-                                                    Manage
-                                                </button>
-                                            {% endif %}
+                                            Configure
                                         {% else %}
-                                            {% if integration.id == "shopify" %}
-                                                <a href="{% url 'core:integrate_shopify' %}" class="btn-primary gap-1.5">
-                                                    <i class="ti ti-plug-connected"></i>
-                                                    Connect
-                                                </a>
-                                            {% elif integration.id == "chargify" %}
-                                                <a href="{% url 'core:integrate_chargify' %}"
-                                                   class="btn-primary gap-1.5">
-                                                    <i class="ti ti-plug-connected"></i>
-                                                    Connect
-                                                </a>
-                                            {% elif integration.id == "stripe_customer" %}
-                                                <a href="{% url 'core:integrate_stripe' %}" class="btn-primary gap-1.5">
-                                                    <i class="ti ti-plug-connected"></i>
-                                                    Connect
-                                                </a>
-                                            {% else %}
-                                                <button type="button"
-                                                        disabled
-                                                        class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
-                                                    Coming Soon
-                                                </button>
-                                            {% endif %}
+                                            Connect
                                         {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-                        {% endfor %}
-                    </div>
-                </div>
-
-                <!-- Notification Channels Section -->
-                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                    <div class="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-green-50/80 to-emerald-50/50">
-                        <div class="flex items-center gap-3">
-                            <div class="h-10 w-10 bg-green-100 rounded-xl flex items-center justify-center">
-                                <i class="ti ti-send text-green-600 text-xl"></i>
-                            </div>
-                            <div>
-                                <h2 class="text-lg font-semibold text-gray-900">Notification Channels</h2>
-                                <p class="text-sm text-gray-500">Where to send alerts from Notipus</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="divide-y divide-gray-100">
-                        {% for integration in notification_channels %}
-                            <div class="px-6 py-5 hover:bg-gray-50/50 transition-colors">
-                                <div class="flex flex-wrap items-start justify-between gap-4">
-                                    <div class="flex items-start gap-4">
-                                        <!-- Integration Icon -->
-                                        <div class="flex-shrink-0">
-                                            {% if integration.id == 'slack_notifications' %}
-                                                <!-- Slack Brand Icon -->
-                                                <div class="w-12 h-12 bg-[#4A154B]/10 rounded-xl flex items-center justify-center">
-                                                    <svg class="w-7 h-7" viewBox="0 0 24 24">
-                                                        <path fill="#E01E5A" d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" />
-                                                        <path fill="#36C5F0" d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" />
-                                                        <path fill="#2EB67D" d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" />
-                                                        <path fill="#ECB22E" d="M15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z" />
-                                                    </svg>
-                                                </div>
-                                            {% elif integration.id == 'telegram_notifications' %}
-                                                <!-- Telegram Brand Icon -->
-                                                <div class="w-12 h-12 bg-[#0088cc]/10 rounded-xl flex items-center justify-center">
-                                                    <svg class="w-7 h-7" viewBox="0 0 24 24" fill="#0088cc">
-                                                        <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
-                                                    </svg>
-                                                </div>
-                                            {% else %}
-                                                <div class="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center">
-                                                    <i class="ti ti-message text-gray-500 text-2xl"></i>
-                                                </div>
-                                            {% endif %}
-                                        </div>
-
-                                        <!-- Integration Details -->
-                                        <div class="flex-1 min-w-0">
-                                            <div class="flex items-center gap-2 mb-1">
-                                                <h3 class="text-base font-semibold text-gray-900">{{ integration.name }}</h3>
-                                                {% if integration.connected %}
-                                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                                        <i class="ti ti-circle-check text-xs"></i>
-                                                        Connected
-                                                    </span>
-                                                {% endif %}
-                                            </div>
-                                            <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-green-50 text-green-700 mb-2">
-                                                {{ integration.category }}
-                                            </span>
-                                            <p class="text-sm text-gray-500">{{ integration.description }}</p>
-                                        </div>
-                                    </div>
-
-                                    <!-- Action Buttons -->
-                                    <div class="flex-shrink-0 flex flex-col items-end gap-2">
+                                    </c-button>
+                                </c-slot>
+                            </c-integration-row>
+                        {% elif integration.id == "stripe_customer" %}
+                            <c-integration-row :integration="integration" provider="stripe">
+                                <c-slot name="actions">
+                                    <c-button href="{% url 'core:integrate_stripe' %}"
+                                              size="sm"
+                                              variant="{% if integration.connected %}ghost{% else %}primary{% endif %}"
+                                              icon="{% if integration.connected %}settings{% else %}plug-connected{% endif %}">
                                         {% if integration.connected %}
-                                            {% if integration.id == "slack_notifications" %}
-                                                <!-- Top row: Configure and Send Test -->
-                                                <div class="flex items-center gap-2">
-                                                    <button type="button"
-                                                            onclick="openSlackConfigModal()"
-                                                            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                        <i class="ti ti-settings"></i>
-                                                        Configure
-                                                    </button>
-                                                    <form method="post" action="{% url 'core:test_slack' %}" class="inline">
-                                                        {% csrf_token %}
-                                                        <button type="submit"
-                                                                class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                            <i class="ti ti-send"></i>
-                                                            Test
-                                                        </button>
-                                                    </form>
-                                                </div>
-                                                <!-- Bottom row: Disconnect -->
-                                                <form method="post"
-                                                      action="{% url 'core:disconnect_slack' %}"
-                                                      class="inline"
-                                                      id="disconnect-slack-form">
-                                                    {% csrf_token %}
-                                                    <button type="button"
-                                                            onclick="confirmDisconnectSlack()"
-                                                            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors">
-                                                        <i class="ti ti-unlink"></i>
-                                                        Disconnect
-                                                    </button>
-                                                </form>
-                                            {% elif integration.id == "telegram_notifications" %}
-                                                <!-- Top row: Configure and Send Test -->
-                                                <div class="flex items-center gap-2">
-                                                    <a href="{% url 'core:telegram_connect' %}"
-                                                       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                        <i class="ti ti-settings"></i>
-                                                        Configure
-                                                    </a>
-                                                    <form method="post" action="{% url 'core:test_telegram' %}" class="inline">
-                                                        {% csrf_token %}
-                                                        <button type="submit"
-                                                                class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                            <i class="ti ti-send"></i>
-                                                            Test
-                                                        </button>
-                                                    </form>
-                                                </div>
-                                                <!-- Bottom row: Disconnect -->
-                                                <form method="post"
-                                                      action="{% url 'core:disconnect_telegram' %}"
-                                                      class="inline"
-                                                      id="disconnect-telegram-form">
-                                                    {% csrf_token %}
-                                                    <button type="button"
-                                                            onclick="confirmDisconnectTelegram()"
-                                                            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors">
-                                                        <i class="ti ti-unlink"></i>
-                                                        Disconnect
-                                                    </button>
-                                                </form>
-                                            {% elif integration.id == "teams_notifications" %}
-                                                <!-- Top row: Configure and Send Test -->
-                                                <div class="flex items-center gap-2">
-                                                    <a href="{% url 'core:teams_connect' %}"
-                                                       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                        <i class="ti ti-settings"></i>
-                                                        Configure
-                                                    </a>
-                                                    <form method="post" action="{% url 'core:test_teams' %}" class="inline">
-                                                        {% csrf_token %}
-                                                        <button type="submit"
-                                                                class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                            <i class="ti ti-send"></i>
-                                                            Test
-                                                        </button>
-                                                    </form>
-                                                </div>
-                                                <!-- Bottom row: Disconnect -->
-                                                <form method="post"
-                                                      action="{% url 'core:disconnect_teams' %}"
-                                                      class="inline"
-                                                      id="disconnect-teams-form">
-                                                    {% csrf_token %}
-                                                    <button type="button"
-                                                            onclick="confirmDisconnectTeams()"
-                                                            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors">
-                                                        <i class="ti ti-unlink"></i>
-                                                        Disconnect
-                                                    </button>
-                                                </form>
-                                            {% else %}
-                                                <button type="button"
-                                                        class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                    <i class="ti ti-settings"></i>
-                                                    Manage
-                                                </button>
-                                            {% endif %}
+                                            Configure
                                         {% else %}
-                                            {% if integration.id == "slack_notifications" %}
-                                                <a href="{% url 'core:integrate_slack' %}" class="btn-primary gap-1.5">
-                                                    <i class="ti ti-plug-connected"></i>
-                                                    Connect
-                                                </a>
-                                            {% elif integration.id == "telegram_notifications" %}
-                                                <a href="{% url 'core:telegram_connect' %}"
-                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#0088cc] hover:bg-[#0077b5] rounded-lg transition-colors shadow-sm">
-                                                    <i class="ti ti-plug-connected"></i>
-                                                    Connect
-                                                </a>
-                                            {% elif integration.id == "teams_notifications" %}
-                                                <a href="{% url 'core:teams_connect' %}"
-                                                   class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-[#6264A7] hover:bg-[#52549b] rounded-lg transition-colors shadow-sm">
-                                                    <i class="ti ti-plug-connected"></i>
-                                                    Connect
-                                                </a>
-                                            {% else %}
-                                                <button type="button"
-                                                        disabled
-                                                        class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
-                                                    Coming Soon
-                                                </button>
-                                            {% endif %}
+                                            Connect
                                         {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-                        {% endfor %}
+                                    </c-button>
+                                    {% if integration.connected %}
+                                        <form method="post"
+                                              action="{% url 'core:disconnect_stripe' %}"
+                                              onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Disconnect Stripe?', message: 'Payment notifications stop. Remember to remove the webhook from your Stripe dashboard too.', variant: 'warning', confirmText: 'Disconnect', cancelText: 'Keep connected'})">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="unlink">
+                                                Disconnect
+                                            </c-button>
+                                        </form>
+                                    {% endif %}
+                                </c-slot>
+                            </c-integration-row>
+                        {% else %}
+                            <c-integration-row :integration="integration" provider="{{ integration.id }}">
+                                <c-slot name="actions">
+                                    <c-badge>
+                                        Coming soon
+                                    </c-badge>
+                                </c-slot>
+                            </c-integration-row>
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+            </c-card>
 
-                        <!-- Coming Soon Placeholder -->
-                        <div class="px-6 py-5 bg-gray-50/50">
-                            <div class="text-center">
-                                <div class="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center mx-auto mb-3">
-                                    <i class="ti ti-dots text-gray-400 text-xl"></i>
-                                </div>
-                                <h3 class="text-sm font-medium text-gray-700 mb-1">More channels coming soon</h3>
-                                <p class="text-xs text-gray-500">Discord, Email, and more</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Enrichment Services Section -->
-            {% if enrichment_services %}
-                <div class="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-8">
-                    <div class="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-orange-50/80 to-amber-50/50">
-                        <div class="flex items-center gap-3">
-                            <div class="h-10 w-10 bg-orange-100 rounded-xl flex items-center justify-center">
-                                <i class="ti ti-sparkles text-orange-600 text-xl"></i>
-                            </div>
-                            <div>
-                                <h2 class="text-lg font-semibold text-gray-900">Enrichment Services</h2>
-                                <p class="text-sm text-gray-500">Enhance customer data with additional context</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="divide-y divide-gray-100">
-                        {% for integration in enrichment_services %}
-                            <div class="px-6 py-5 hover:bg-gray-50/50 transition-colors">
-                                <div class="flex flex-wrap items-start justify-between gap-4">
-                                    <div class="flex items-start gap-4">
-                                        <!-- Integration Icon -->
-                                        <div class="flex-shrink-0">
-                                            {% if integration.id == 'hunter' %}
-                                                <!-- Hunter.io Icon -->
-                                                <div class="w-12 h-12 bg-[#ff5722]/10 rounded-xl flex items-center justify-center">
-                                                    <i class="ti ti-mail-search text-[#ff5722] text-2xl"></i>
-                                                </div>
-                                            {% else %}
-                                                <div class="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center">
-                                                    <i class="ti ti-sparkles text-gray-500 text-2xl"></i>
-                                                </div>
-                                            {% endif %}
-                                        </div>
-
-                                        <!-- Integration Details -->
-                                        <div class="flex-1 min-w-0">
-                                            <div class="flex items-center gap-2 mb-1">
-                                                <h3 class="text-base font-semibold text-gray-900">{{ integration.name }}</h3>
-                                                {% if integration.connected %}
-                                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                                        <i class="ti ti-circle-check text-xs"></i>
-                                                        Connected
-                                                    </span>
-                                                {% endif %}
-                                            </div>
-                                            <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-orange-50 text-orange-700 mb-2">
-                                                {{ integration.category }}
-                                            </span>
-                                            <p class="text-sm text-gray-500">{{ integration.description }}</p>
-                                        </div>
-                                    </div>
-
-                                    <!-- Action Button -->
-                                    <div class="flex-shrink-0">
-                                        {% if integration.connected %}
-                                            {% if integration.id == "hunter" %}
-                                                <div class="flex flex-col items-end gap-2">
-                                                    <a href="{% url 'core:integrate_hunter' %}"
-                                                       class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                        <i class="ti ti-settings"></i>
-                                                        Configure
-                                                    </a>
-                                                    <form method="post"
-                                                          action="{% url 'core:disconnect_hunter' %}"
-                                                          class="inline"
-                                                          id="disconnect-hunter-form">
-                                                        {% csrf_token %}
-                                                        <button type="button"
-                                                                onclick="confirmDisconnectHunter()"
-                                                                class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors">
-                                                            <i class="ti ti-unlink"></i>
-                                                            Disconnect
-                                                        </button>
-                                                    </form>
-                                                </div>
-                                            {% else %}
-                                                <button type="button"
-                                                        class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors">
-                                                    <i class="ti ti-settings"></i>
-                                                    Manage
-                                                </button>
-                                            {% endif %}
-                                        {% else %}
-                                            {% if integration.id == "hunter" %}
-                                                <a href="{% url 'core:integrate_hunter' %}" class="btn-primary gap-1.5">
-                                                    <i class="ti ti-plug-connected"></i>
-                                                    Connect
-                                                </a>
-                                            {% else %}
-                                                <button type="button"
-                                                        disabled
-                                                        class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
-                                                    Coming Soon
-                                                </button>
-                                            {% endif %}
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-                        {% endfor %}
-                    </div>
-                </div>
-            {% endif %}
-
-            <!-- Help Section -->
-            <div class="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl border border-blue-100 p-6">
-                <div class="flex items-start gap-4">
-                    <div class="p-2 bg-blue-100 rounded-xl">
-                        <i class="ti ti-help-circle text-blue-600 text-xl"></i>
-                    </div>
-                    <div class="flex-1">
-                        <h3 class="text-sm font-semibold text-blue-900 mb-2">How Integrations Work</h3>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-blue-800">
-                            <div>
-                                <p class="font-medium mb-1 flex items-center gap-1.5">
-                                    <i class="ti ti-cloud-download text-blue-600"></i>
-                                    Event Sources
-                                </p>
-                                <ul class="text-xs space-y-1 ml-5 text-blue-700">
-                                    <li>Configure webhooks in your external services</li>
-                                    <li>Point them to Notipus webhook URLs</li>
-                                    <li>We process and route the events</li>
-                                </ul>
-                            </div>
-                            <div>
-                                <p class="font-medium mb-1 flex items-center gap-1.5">
-                                    <i class="ti ti-send text-blue-600"></i>
-                                    Notification Channels
-                                </p>
-                                <ul class="text-xs space-y-1 ml-5 text-blue-700">
-                                    <li>Connect your team communication tools</li>
-                                    <li>Set up notification preferences</li>
-                                    <li>Receive alerts in real-time</li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <c-card title="Notification channels"
+                    description="Where alerts are delivered"
+                    icon="send"
+                    tone="success"
+                    flush>
+                <ul class="divide-y divide-border">
+                    {% for integration in notification_channels %}
+                        {% if integration.id == "slack_notifications" %}
+                            <c-integration-row :integration="integration" provider="slack">
+                                <c-slot name="actions">
+                                    {% if integration.connected %}
+                                        <c-button variant="ghost"
+                                                  size="sm"
+                                                  icon="settings"
+                                                  onclick="openSlackConfigModal()">
+                                            Configure
+                                        </c-button>
+                                        <form method="post" action="{% url 'core:test_slack' %}">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="send">
+                                                Send test
+                                            </c-button>
+                                        </form>
+                                        <form method="post"
+                                              action="{% url 'core:disconnect_slack' %}"
+                                              onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Disconnect Slack?', message: 'Notifications stop arriving. You can reconnect at any time.', variant: 'warning', confirmText: 'Disconnect', cancelText: 'Keep connected'})">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="unlink">
+                                                Disconnect
+                                            </c-button>
+                                        </form>
+                                    {% else %}
+                                        <c-button href="{% url 'core:integrate_slack' %}"
+                                                  size="sm"
+                                                  icon="plug-connected">Connect</c-button>
+                                    {% endif %}
+                                </c-slot>
+                            </c-integration-row>
+                        {% elif integration.id == "telegram_notifications" %}
+                            <c-integration-row :integration="integration" provider="telegram">
+                                <c-slot name="actions">
+                                    {% if integration.connected %}
+                                        <c-button href="{% url 'core:telegram_connect' %}"
+                                                  variant="ghost"
+                                                  size="sm"
+                                                  icon="settings">Configure</c-button>
+                                        <form method="post" action="{% url 'core:test_telegram' %}">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="send">
+                                                Send test
+                                            </c-button>
+                                        </form>
+                                        <form method="post"
+                                              action="{% url 'core:disconnect_telegram' %}"
+                                              onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Disconnect Telegram?', message: 'Notifications stop arriving in Telegram. You can reconnect at any time.', variant: 'warning', confirmText: 'Disconnect', cancelText: 'Keep connected'})">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="unlink">
+                                                Disconnect
+                                            </c-button>
+                                        </form>
+                                    {% else %}
+                                        <c-button href="{% url 'core:telegram_connect' %}"
+                                                  size="sm"
+                                                  icon="plug-connected">Connect</c-button>
+                                    {% endif %}
+                                </c-slot>
+                            </c-integration-row>
+                        {% elif integration.id == "teams_notifications" %}
+                            <c-integration-row :integration="integration" provider="teams">
+                                <c-slot name="actions">
+                                    {% if integration.connected %}
+                                        <c-button href="{% url 'core:teams_connect' %}"
+                                                  variant="ghost"
+                                                  size="sm"
+                                                  icon="settings">Configure</c-button>
+                                        <form method="post" action="{% url 'core:test_teams' %}">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="send">
+                                                Send test
+                                            </c-button>
+                                        </form>
+                                        <form method="post"
+                                              action="{% url 'core:disconnect_teams' %}"
+                                              onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Disconnect Microsoft Teams?', message: 'Notifications stop arriving in Teams. You can reconnect at any time.', variant: 'warning', confirmText: 'Disconnect', cancelText: 'Keep connected'})">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="unlink">
+                                                Disconnect
+                                            </c-button>
+                                        </form>
+                                    {% else %}
+                                        <c-button href="{% url 'core:teams_connect' %}" size="sm" icon="plug-connected">Connect</c-button>
+                                    {% endif %}
+                                </c-slot>
+                            </c-integration-row>
+                        {% else %}
+                            <c-integration-row :integration="integration" provider="{{ integration.id }}">
+                                <c-slot name="actions">
+                                    <c-badge>
+                                        Coming soon
+                                    </c-badge>
+                                </c-slot>
+                            </c-integration-row>
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+                <c-slot name="footer">
+                    Discord and email are next.
+                </c-slot>
+            </c-card>
         </div>
-    </div>
 
-    <!-- Slack Configuration Modal -->
-    <div id="slack-config-modal"
-         class="fixed inset-0 z-50 hidden"
-         aria-hidden="true">
-        <!-- Overlay -->
-        <div class="fixed inset-0 bg-gray-900/60 backdrop-blur-sm transition-opacity duration-200"
-             onclick="closeSlackConfigModal()"></div>
+        {% if enrichment_services %}
+            <c-card title="Enrichment"
+                    description="Extra context attached to each event before it reaches you"
+                    icon="sparkles"
+                    flush>
+                <ul class="divide-y divide-border">
+                    {% for integration in enrichment_services %}
+                        {% if integration.id == "hunter" %}
+                            <c-integration-row :integration="integration" provider="hunter">
+                                <c-slot name="actions">
+                                    <c-button href="{% url 'core:integrate_hunter' %}"
+                                              size="sm"
+                                              variant="{% if integration.connected %}ghost{% else %}primary{% endif %}"
+                                              icon="{% if integration.connected %}settings{% else %}plug-connected{% endif %}">
+                                        {% if integration.connected %}
+                                            Configure
+                                        {% else %}
+                                            Connect
+                                        {% endif %}
+                                    </c-button>
+                                    {% if integration.connected %}
+                                        <form method="post"
+                                              action="{% url 'core:disconnect_hunter' %}"
+                                              onsubmit="return NotipusUI.confirmSubmit(this, {title: 'Disconnect Hunter.io?', message: 'Customer emails stop being enriched with person data. You can reconnect at any time.', variant: 'warning', confirmText: 'Disconnect', cancelText: 'Keep connected'})">
+                                            {% csrf_token %}
+                                            <c-button type="submit" variant="ghost" size="sm" icon="unlink">
+                                                Disconnect
+                                            </c-button>
+                                        </form>
+                                    {% endif %}
+                                </c-slot>
+                            </c-integration-row>
+                        {% else %}
+                            <c-integration-row :integration="integration" provider="{{ integration.id }}">
+                                <c-slot name="actions">
+                                    <c-badge>
+                                        Coming soon
+                                    </c-badge>
+                                </c-slot>
+                            </c-integration-row>
+                        {% endif %}
+                    {% endfor %}
+                </ul>
+            </c-card>
+        {% endif %}
 
-        <!-- Modal Container -->
-        <div class="fixed inset-0 z-10 overflow-y-auto">
-            <div class="flex min-h-full items-end justify-center p-4 text-center sm:items-center sm:p-0">
-                <!-- Modal Panel -->
-                <div class="relative transform overflow-hidden rounded-2xl bg-white text-left shadow-xl transition-all duration-200 sm:my-8 sm:w-full sm:max-w-lg"
-                     role="dialog"
-                     aria-modal="true"
-                     aria-labelledby="slack-config-title">
-
-                    <!-- Modal Content -->
-                    <div class="bg-white px-6 pb-6 pt-6">
-                        <div class="flex items-start gap-4">
-                            <!-- Icon Container -->
-                            <div class="flex-shrink-0 h-10 w-10 bg-[#4A154B]/10 rounded-xl flex items-center justify-center">
-                                <i class="ti ti-settings text-[#4A154B] text-xl"></i>
-                            </div>
-
-                            <!-- Text Content -->
-                            <div class="flex-1">
-                                <h3 class="text-lg font-semibold text-gray-900" id="slack-config-title">Configure Slack Notifications</h3>
-                                <p class="mt-1 text-sm text-gray-500">Select the channel where you want to receive notifications.</p>
-
-                                <!-- Channel Selection -->
-                                <div class="mt-4">
-                                    <label for="slack-channel-select"
-                                           class="block text-sm font-medium text-gray-700 mb-2">Target Channel</label>
-                                    <div id="slack-channel-loading"
-                                         class="flex items-center text-sm text-gray-500">
-                                        <i class="ti ti-loader-2 animate-spin mr-2 text-[#4A154B]"></i>
-                                        Loading channels...
-                                    </div>
-                                    <select id="slack-channel-select"
-                                            class="hidden mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-[#4A154B] focus:ring-[#4A154B] sm:text-sm">
-                                        <!-- Options will be populated by JavaScript -->
-                                    </select>
-                                    <div id="slack-channel-error" class="hidden mt-2 text-sm text-red-600"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Modal Actions -->
-                    <div class="bg-gray-50 px-6 py-4 flex flex-row-reverse gap-3">
-                        <button type="button"
-                                id="slack-config-save"
-                                onclick="saveSlackConfig()"
-                                disabled
-                                class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white rounded-lg bg-[#4A154B] hover:bg-[#3e1240] transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                            <i class="ti ti-check"></i>
-                            Save Changes
-                        </button>
-                        <button type="button"
-                                onclick="closeSlackConfigModal()"
-                                class="inline-flex items-center px-4 py-2.5 text-sm font-semibold text-gray-700 rounded-lg bg-white ring-1 ring-inset ring-gray-300 hover:bg-gray-50 transition-colors">
-                            Cancel
-                        </button>
-                    </div>
+        <c-card title="How this fits together" icon="help-circle" tone="info">
+            <div class="grid gap-5 md:grid-cols-2">
+                <div>
+                    <h3 class="flex items-center gap-2 text-body font-semibold text-content">
+                        <i class="ti ti-cloud-download text-info-text" aria-hidden="true"></i>
+                        Event sources
+                    </h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        You point a provider's webhook at a Notipus URL. We verify the signature, work out what
+                        happened, and enrich it with what we know about the customer.
+                    </p>
+                </div>
+                <div>
+                    <h3 class="flex items-center gap-2 text-body font-semibold text-content">
+                        <i class="ti ti-send text-success-text" aria-hidden="true"></i>
+                        Notification channels
+                    </h3>
+                    <p class="mt-1 text-body text-content-muted">
+                        You pick a channel and which events are worth interrupting someone for. Delivery happens within
+                        seconds of the event.
+                    </p>
                 </div>
             </div>
-        </div>
-    </div>
+        </c-card>
+    </c-page>
 
+    <c-dialog id="slack-config-modal"
+              title="Choose a Slack channel"
+              description="Notifications for this workspace are posted here."
+              icon="brand-slack">
+        <c-field label="Channel" for="slack-channel-select">
+            <p id="slack-channel-loading"
+               class="flex items-center gap-2 text-body text-content-muted">
+                <i class="ti ti-loader-2 animate-spin" aria-hidden="true"></i>
+                Loading your channels…
+            </p>
+            {% comment %}Options are filled in by openSlackConfigModal below.{% endcomment %}
+            <c-select id="slack-channel-select" bare class="hidden" />
+            <p id="slack-channel-error"
+               class="mt-1.5 hidden text-body text-danger-text"
+               role="alert"></p>
+        </c-field>
+        <c-slot name="actions">
+            <c-button id="slack-config-save"
+                      icon="check"
+                      onclick="saveSlackConfig()"
+                      disabled>
+                Save channel
+            </c-button>
+            <c-button variant="secondary" onclick="closeSlackConfigModal()">
+                Cancel
+            </c-button>
+        </c-slot>
+    </c-dialog>
+{% endblock content %}
+
+{% block extra_scripts %}
     <script>
-        async function confirmDisconnectSlack() {
-            const confirmed = await NotipusUI.confirmDisconnect(
-                'Slack',
-                'You will stop receiving notifications. You can reconnect at any time.'
-            );
-            if (confirmed) {
-                document.getElementById('disconnect-slack-form').submit();
-            }
+        function closeSlackConfigModal() {
+            const modal = document.getElementById('slack-config-modal');
+            modal.classList.add('hidden');
+            modal.setAttribute('aria-hidden', 'true');
         }
 
-        async function confirmDisconnectStripe() {
-            const confirmed = await NotipusUI.confirmDisconnect(
-                'Stripe',
-                'You will stop receiving payment notifications. Remember to remove the webhook from your Stripe Dashboard.'
-            );
-            if (confirmed) {
-                document.getElementById('disconnect-stripe-form').submit();
-            }
-        }
-
-        async function confirmDisconnectShopify() {
-            const confirmed = await NotipusUI.confirmDisconnect(
-                'Shopify',
-                'You will stop receiving order notifications. The webhook subscriptions will be removed from your Shopify store.'
-            );
-            if (confirmed) {
-                document.getElementById('disconnect-shopify-form').submit();
-            }
-        }
-
-        async function confirmDisconnectTelegram() {
-            const confirmed = await NotipusUI.confirmDisconnect(
-                'Telegram',
-                'You will stop receiving notifications in Telegram. You can reconnect at any time.'
-            );
-            if (confirmed) {
-                document.getElementById('disconnect-telegram-form').submit();
-            }
-        }
-
-        async function confirmDisconnectTeams() {
-            const confirmed = await NotipusUI.confirmDisconnect(
-                'Microsoft Teams',
-                'You will stop receiving notifications in Microsoft Teams. You can reconnect at any time.'
-            );
-            if (confirmed) {
-                document.getElementById('disconnect-teams-form').submit();
-            }
-        }
-
-        async function confirmDisconnectHunter() {
-            const confirmed = await NotipusUI.confirmDisconnect(
-                'Hunter.io',
-                'Customer emails will no longer be enriched with person data. You can reconnect at any time.'
-            );
-            if (confirmed) {
-                document.getElementById('disconnect-hunter-form').submit();
-            }
-        }
-
-        // Slack Configuration Modal Functions
         async function openSlackConfigModal() {
             const modal = document.getElementById('slack-config-modal');
             const loading = document.getElementById('slack-channel-loading');
@@ -682,26 +319,22 @@
             const errorEl = document.getElementById('slack-channel-error');
             const saveBtn = document.getElementById('slack-config-save');
 
-            // Reset state
             loading.classList.remove('hidden');
             select.classList.add('hidden');
             errorEl.classList.add('hidden');
             saveBtn.disabled = true;
 
-            // Show modal
             modal.classList.remove('hidden');
             modal.setAttribute('aria-hidden', 'false');
 
-            // Fetch channels
             try {
                 const response = await fetch('{% url "core:get_slack_channels" %}');
                 const data = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(data.error || 'Failed to fetch channels');
+                    throw new Error(data.error || 'We could not load your channels.');
                 }
 
-                // Populate select
                 select.innerHTML = '';
                 data.channels.forEach(channel => {
                     const option = document.createElement('option');
@@ -713,11 +346,9 @@
                     select.appendChild(option);
                 });
 
-                // Show select, hide loading
                 loading.classList.add('hidden');
                 select.classList.remove('hidden');
                 saveBtn.disabled = false;
-
             } catch (error) {
                 loading.classList.add('hidden');
                 errorEl.textContent = error.message;
@@ -725,20 +356,15 @@
             }
         }
 
-        function closeSlackConfigModal() {
-            const modal = document.getElementById('slack-config-modal');
-            modal.classList.add('hidden');
-            modal.setAttribute('aria-hidden', 'true');
-        }
-
         async function saveSlackConfig() {
             const select = document.getElementById('slack-channel-select');
             const saveBtn = document.getElementById('slack-config-save');
             const errorEl = document.getElementById('slack-channel-error');
             const channel = select.value;
+            const originalHtml = saveBtn.innerHTML;
 
             saveBtn.disabled = true;
-            saveBtn.innerHTML = '<i class="ti ti-loader-2 animate-spin"></i> Saving...';
+            saveBtn.innerHTML = '<i class="ti ti-loader-2 animate-spin" aria-hidden="true"></i> Saving…';
             errorEl.classList.add('hidden');
 
             try {
@@ -756,22 +382,19 @@
                 const data = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(data.error || 'Failed to save configuration');
+                    throw new Error(data.error || 'We could not save that channel.');
                 }
 
-                // Success - close modal and show toast
                 closeSlackConfigModal();
-                NotipusUI.toast(`Notifications will now be sent to ${channel}`, 'success');
-
+                NotipusUI.toast(`Notifications now go to ${channel}`, 'success');
             } catch (error) {
                 errorEl.textContent = error.message;
                 errorEl.classList.remove('hidden');
                 saveBtn.disabled = false;
-                saveBtn.innerHTML = '<i class="ti ti-check"></i> Save Changes';
+                saveBtn.innerHTML = originalHtml;
             }
         }
 
-        // Close modal on Escape key
         document.addEventListener('keydown', function(event) {
             if (event.key === 'Escape') {
                 const modal = document.getElementById('slack-config-modal');
@@ -781,4 +404,4 @@
             }
         });
     </script>
-{% endblock content %}
+{% endblock extra_scripts %}

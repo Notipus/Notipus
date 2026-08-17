@@ -1,0 +1,31 @@
+{% comment %}
+Code block — a webhook URL, a signing secret, a snippet: something to be copied.
+
+Dark on purpose. These are the one thing on the page meant to be handled rather
+than read, and the inversion says so without a label.
+
+Props:
+  label  caption above the block
+  value  the content, for a single value such as a URL
+  copy   show a copy button   (default: on)
+
+Prefer `value` over the slot for anything that must be copied exactly: the block
+preserves whitespace, and djlint reindents slot content, which would put stray
+newlines inside a webhook URL. The slot is for genuinely multi-line snippets.
+{% endcomment %}
+<c-vars label="" value="" copy="true" class="" />
+
+<div class="min-w-0 {{ class }}" {{ attrs }}>
+    {% if label %}<p class="mb-1.5 text-body font-medium text-content">{{ label }}</p>{% endif %}
+    <div class="flex items-start justify-between gap-3 rounded-control bg-surface-inverse px-3 py-2.5">
+        <code class="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-all font-mono text-caption text-content-inverse">{% if value is not None and value != "" %}{{ value }}{% else %}{{ slot }}{% endif %}</code>
+        {% if copy %}
+            <button type="button"
+                    class="flex-shrink-0 rounded-control p-1 text-content-inverse/70 transition-colors hover:bg-white/10 hover:text-content-inverse focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-surface-inverse"
+                    onclick="NotipusUI.copyToClipboard(this.previousElementSibling.textContent.trim())">
+                <span class="sr-only">Copy {{ label|default:"code" }}</span>
+                <i class="ti ti-copy" aria-hidden="true"></i>
+            </button>
+        {% endif %}
+    </div>
+</div>
