@@ -139,6 +139,19 @@ jobs:
             --config "${RUNNER_TEMP}/opengrep-rules/html/security" \
             .
 
+      # opengrep marks a nosemgrep'd finding with `"suppressions": [{"kind":
+      # "inSource"}]` and reports it anyway. GitHub does not act on that field
+      # — it files every one as an open alert — so the Security tab would show
+      # the whole annotated set as unresolved while the gate above is green.
+      # Dropping them here is what makes the two agree: an alert exists if and
+      # only if the gate would fail on it.
+      - name: Drop suppressed findings from the SARIF
+        if: always()
+        run: |
+          jq '.runs[].results |= map(select((.suppressions // []) | length == 0))' \
+            opengrep.sarif > opengrep.filtered.sarif
+          mv opengrep.filtered.sarif opengrep.sarif
+
       # Uploaded even when the scan fails, so findings land in the Security tab
       # instead of only the log. Fork PRs get a read-only token and cannot
       # upload, hence continue-on-error.
