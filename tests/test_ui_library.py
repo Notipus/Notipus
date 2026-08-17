@@ -126,6 +126,82 @@ class TestButtonWidthRegression:
         )
 
 
+def crushed_columns(html: str) -> list[str]:
+    """Find growing columns that stop their wrapping parent from ever wrapping.
+
+    `flex-1` is `flex: 1 1 0%`, so the item's hypothetical size is zero and a
+    `flex-wrap` parent always believes the line fits. The actions beside it keep
+    their full width and the column is squeezed to whatever is left — which on a
+    narrow viewport is a word per line. An explicit `basis-*` restores the width
+    the wrap algorithm needs to see.
+
+    Args:
+        html: Rendered markup to inspect.
+
+    Returns:
+        The class attribute of each offending element.
+    """
+    from html.parser import HTMLParser
+
+    class Finder(HTMLParser):
+        """Walks the tree tracking whether the open ancestor wraps."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.stack: list[bool] = []
+            self.offenders: list[str] = []
+
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            classes = dict(attrs).get("class") or ""
+            names = classes.split()
+            if self.stack and self.stack[-1]:
+                grows = "flex-1" in names or "grow" in names
+                sized = any(name.startswith("basis-") for name in names)
+                if grows and not sized:
+                    self.offenders.append(classes)
+            if tag not in ("br", "hr", "img", "input", "meta", "link", "path"):
+                self.stack.append("flex" in names and "flex-wrap" in names)
+
+        def handle_endtag(self, tag: str) -> None:
+            if self.stack:
+                self.stack.pop()
+
+    finder = Finder()
+    finder.feed(html)
+    return finder.offenders
+
+
+@pytest.mark.django_db
+class TestWrappingRowRegression:
+    """A wrapping row wraps instead of crushing its own text.
+
+    <c-integration-row> shipped as `flex-wrap` around a bare `flex-1` column, so
+    on a narrow viewport the Slack row kept Configure / Send test / Disconnect on
+    the name's line and reflowed the description one word per line.
+    """
+
+    def test_ui_library_has_no_crushed_columns(self, client: Client) -> None:
+        """No component on /ui/ grows a zero-basis column inside a wrapping row."""
+        offenders = crushed_columns(client.get("/ui/").content.decode())
+
+        assert offenders == [], (
+            f"flex-1 inside flex-wrap never wraps; add a basis-* to: {offenders}"
+        )
+
+    def test_integration_row_has_no_crushed_columns(self) -> None:
+        """The row that showed the bug is checked directly: /ui/ omits it."""
+        html = render_component(
+            '<c-integration-row :integration="integration" provider="slack">'
+            '<c-slot name="actions"><c-button size="sm">Configure</c-button>'
+            "</c-slot></c-integration-row>",
+            {"integration": {"name": "Slack", "connected": True, "description": "x"}},
+        )
+
+        assert crushed_columns(html) == []
+
+
 def render_component(markup: str, context: dict[str, object]) -> str:
     """Render component markup through the Cotton loader.
 

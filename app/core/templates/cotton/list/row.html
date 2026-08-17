@@ -16,7 +16,12 @@ Slots:
 
 <li class="flex flex-wrap items-center justify-between gap-3 px-gutter py-4 {{ class }}"
     {{ attrs }}>
-    <div class="flex min-w-0 flex-1 items-center gap-3">
+    {% comment %}
+    basis-72, not a bare flex-1: `flex: 1 1 0%` is a zero-width item as far as
+    the wrap algorithm is concerned, so the row would never wrap and the title
+    would truncate to nothing while the actions kept their full width.
+    {% endcomment %}
+    <div class="flex min-w-0 flex-1 basis-72 items-center gap-3">
         {% comment %}
         The icon tile matches <c-avatar>'s default size, because rows in one list
         mix the two — a member has an avatar, a pending invitation has an icon —
@@ -34,6 +39,6 @@ Slots:
         </div>
     </div>
     {% if actions %}
-        <div class="flex flex-shrink-0 flex-wrap items-center gap-3">{{ actions }}</div>
+        <div class="flex flex-wrap items-center gap-3">{{ actions }}</div>
     {% endif %}
 </li>

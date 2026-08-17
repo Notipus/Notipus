@@ -11,13 +11,19 @@ Slots:
 Connection state is stated in words as well as colour, and the "awaiting first
 event" state is spelled out rather than hidden in a tooltip, because it is the
 single most common reason a new workspace thinks Notipus is broken.
+
+The text column carries `basis-72` on purpose. A bare `flex-1` is `flex: 1 1 0%`,
+so the row's `flex-wrap` never fires — the browser sees a zero-width item that
+always "fits", keeps the actions on the same line, and crushes the name and
+description into a one-word-per-line column. An 18rem basis makes the row wrap
+the actions onto their own line before that can happen.
 {% endcomment %}
 <c-vars integration="" provider="" class="" />
 
 <li class="px-gutter py-5 transition-colors hover:bg-surface-muted {{ class }}"
     {{ attrs }}>
     <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="flex min-w-0 flex-1 items-start gap-4">
+        <div class="flex min-w-0 flex-1 basis-72 items-start gap-4">
             <c-provider-logo :provider="provider" />
             <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
@@ -47,6 +53,6 @@ single most common reason a new workspace thinks Notipus is broken.
                 {% endif %}
             </div>
         </div>
-        <div class="flex flex-shrink-0 flex-wrap items-center gap-2">{{ actions }}</div>
+        <div class="flex flex-wrap items-center gap-2">{{ actions }}</div>
     </div>
 </li>
