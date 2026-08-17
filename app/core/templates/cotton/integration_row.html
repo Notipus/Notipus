@@ -11,13 +11,32 @@ Slots:
 Connection state is stated in words as well as colour, and the "awaiting first
 event" state is spelled out rather than hidden in a tooltip, because it is the
 single most common reason a new workspace thinks Notipus is broken.
+
+The row stacks in a narrow container and goes side by side in a wide one, and
+every row in a list flips at the same point — actions are never inline on one
+row and below on the next.
+
+Two things this deliberately is not:
+
+`flex-wrap`, because wrapping is decided per row from its own content, so a
+one-button row kept its action inline while the row under it dropped three
+buttons onto a second line. Worse, a `flex-wrap` row whose text column is a bare
+`flex-1` reads as zero-width to the wrap algorithm, so it never wraps at all and
+crushes the text to a word per line — what this component did at ~500px.
+
+A viewport breakpoint (`sm:`), because the container is what actually constrains
+the row. The integrations page puts cards in a two-column grid, so at a 1280px
+viewport these rows live in a 530px card; keyed to the viewport they would go
+side by side and crush the Slack row's text to 153px. `@2xl` is ~672px of
+container, which leaves the widest action group (Configure / Send test /
+Disconnect) about 240px of text beside it.
 {% endcomment %}
 <c-vars integration="" provider="" class="" />
 
-<li class="px-gutter py-5 transition-colors hover:bg-surface-muted {{ class }}"
+<li class="@container px-gutter py-5 transition-colors hover:bg-surface-muted {{ class }}"
     {{ attrs }}>
-    <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="flex min-w-0 flex-1 items-start gap-4">
+    <div class="flex flex-col gap-3 @2xl:flex-row @2xl:items-start @2xl:justify-between @2xl:gap-4">
+        <div class="flex min-w-0 items-start gap-4 @2xl:flex-1">
             <c-provider-logo :provider="provider" />
             <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-2">
@@ -47,6 +66,6 @@ single most common reason a new workspace thinks Notipus is broken.
                 {% endif %}
             </div>
         </div>
-        <div class="flex flex-shrink-0 flex-wrap items-center gap-2">{{ actions }}</div>
+        <div class="flex flex-wrap items-center gap-2">{{ actions }}</div>
     </div>
 </li>
