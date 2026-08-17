@@ -8,6 +8,13 @@ Props:
 
   <c-checkbox name="events" value="order.paid" label="Order paid"
               help="Fires when a customer completes checkout." checked />
+
+`value` is tested for presence rather than truthiness: a checkbox whose value is
+0 would otherwise lose its value attribute and submit the browser default of
+"on". The unset default is the empty string.
+
+Keep notes like this one out of the element's attribute list — djlint reformats
+a comment placed there onto one word per line.
 {% endcomment %}
 <c-vars name=""
         id=""
@@ -22,7 +29,7 @@ Props:
     <input type="checkbox"
            name="{{ name }}"
            id="{{ id|default:name }}"
-           {% if value %}value="{{ value }}"{% endif %}
+           {% if value is not None and value != "" %}value="{{ value }}"{% endif %}
            class="mt-0.5 h-4 w-4 flex-shrink-0 rounded border-border-control text-action accent-action focus:outline-none focus:ring-2 focus:ring-focus focus:ring-offset-1"
            {% if checked %}checked{% endif %}
            {% if required %}required{% endif %}

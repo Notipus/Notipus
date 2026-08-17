@@ -144,6 +144,23 @@ Multi-line notes MUST use comment/endcomment, or they render on the page.
 Avoid angle brackets inside comments in component files — djlint reformats
 anything that looks like markup, even in a comment, and will break the line up.
 
+Never put a `{% comment %}` block **inside an element's attribute list**. djlint
+reflows it to one word per line. Explain the attribute in the component's
+doc comment at the top of the file instead.
+
+## Test props for presence, not truthiness
+
+Cotton binds `:value="count"` as an int, and the unset default is `""`, so a
+plain `{% if value %}` silently drops a legitimate `0`:
+
+```django
+{% if value %}value="{{ value }}"{% endif %}                        {# drops 0 #}
+{% if value is not None and value != "" %}value="{{ value }}"{% endif %}  {# right #}
+```
+
+This bit `<c-input>`, `<c-checkbox>`, `<c-code-block>` and `<c-definition.row>`
+at once. `tests/test_ui_library.py::TestZeroValueRegression` covers them.
+
 ## Never render secrets back into inputs
 
 Do not echo a stored secret (API key, bot token, webhook secret) into an

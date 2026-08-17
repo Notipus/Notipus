@@ -124,3 +124,81 @@ class TestButtonWidthRegression:
             "Only the two <c-plan-card> examples pass block; a different count "
             "means the prop is being satisfied by something in the page context."
         )
+
+
+def render_component(markup: str, context: dict[str, object]) -> str:
+    """Render component markup through the Cotton loader.
+
+    Cotton compiles <c-*> tags when a template is *loaded*, so markup passed
+    straight to Template() is never compiled. Writing it into the template
+    directory and loading it by name is what exercises the real path.
+
+    Args:
+        markup: Template source using <c-*> tags.
+        context: Values made available to the template.
+
+    Returns:
+        The rendered HTML.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from django.conf import settings
+    from django.template.loader import render_to_string
+
+    templates = Path(settings.BASE_DIR) / "core" / "templates"
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".html", dir=templates, delete=True
+    ) as handle:
+        handle.write(markup)
+        handle.flush()
+        return render_to_string(Path(handle.name).name, context)
+
+
+@pytest.mark.django_db
+class TestZeroValueRegression:
+    """A value of 0 survives the components that render values.
+
+    Cotton binds :value="count" as an int, and each of these components used to
+    gate its output on truthiness, so a legitimate 0 was dropped: an input
+    rendered empty, a checkbox silently submitted the browser default of "on",
+    and a definition row or code block rendered nothing at all. The unset default
+    is "", so the test has to be presence rather than truthiness.
+    """
+
+    def test_input_keeps_a_zero_value(self) -> None:
+        """An input given 0 renders value="0" rather than an empty field."""
+        html = render_component(
+            '<c-input name="count" :value="amount" />', {"amount": 0}
+        )
+
+        assert 'value="0"' in html
+
+    def test_input_omits_an_unset_value(self) -> None:
+        """An unset value still renders no value attribute at all."""
+        html = render_component('<c-input name="count" />', {})
+
+        assert "value=" not in html
+
+    def test_checkbox_keeps_a_zero_value(self) -> None:
+        """A checkbox valued 0 keeps it instead of submitting "on"."""
+        html = render_component(
+            '<c-checkbox name="tier" :value="tier" label="Free" />', {"tier": 0}
+        )
+
+        assert 'value="0"' in html
+
+    def test_definition_row_keeps_a_zero_value(self) -> None:
+        """A definition row valued 0 renders it rather than the empty slot."""
+        html = render_component(
+            '<c-definition.row label="Failed deliveries" :value="failures" />',
+            {"failures": 0},
+        )
+
+        assert "0" in html.split("<dd")[1]
+
+    def test_code_block_keeps_a_zero_value(self) -> None:
+        """A code block valued 0 renders it rather than the empty slot."""
+        html = render_component('<c-code-block :value="port" />', {"port": 0})
+
+        assert "0" in html.split("<code")[1]

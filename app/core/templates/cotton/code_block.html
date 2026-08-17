@@ -18,7 +18,7 @@ newlines inside a webhook URL. The slot is for genuinely multi-line snippets.
 <div class="min-w-0 {{ class }}" {{ attrs }}>
     {% if label %}<p class="mb-1.5 text-body font-medium text-content">{{ label }}</p>{% endif %}
     <div class="flex items-start justify-between gap-3 rounded-control bg-surface-inverse px-3 py-2.5">
-        <code class="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-all font-mono text-caption text-content-inverse">{% if value %}{{ value }}{% else %}{{ slot }}{% endif %}</code>
+        <code class="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-all font-mono text-caption text-content-inverse">{% if value is not None and value != "" %}{{ value }}{% else %}{{ slot }}{% endif %}</code>
         {% if copy %}
             <button type="button"
                     class="flex-shrink-0 rounded-control p-1 text-content-inverse/70 transition-colors hover:bg-white/10 hover:text-content-inverse focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-surface-inverse"
