@@ -314,3 +314,83 @@ class TestIntegrationOverviewVerification:
         )
         assert stripe_source["connected"] is False
         assert stripe_source["webhook_verified_at"] is None
+
+
+@pytest.mark.django_db
+class TestEventStateIsOnlyClaimedWhereTracked:
+    """Only sources report an event state, because only sources have one.
+
+    Nothing sets webhook_verified_at on a destination, so a Slack row that had
+    delivered notifications for months still announced "No events yet".
+    """
+
+    def test_a_source_that_has_received_is_receiving(
+        self,
+        workspace: Workspace,
+        stripe_integration: Integration,
+    ) -> None:
+        """A verified source reports "receiving"."""
+        from core.services.dashboard import IntegrationService
+
+        stripe_integration.webhook_verified_at = datetime(
+            2025, 6, 15, 12, 0, tzinfo=timezone.utc
+        )
+        stripe_integration.save(update_fields=["webhook_verified_at"])
+
+        overview = IntegrationService().get_integration_overview(workspace)
+        source = next(
+            s for s in overview["event_sources"] if s["id"] == "stripe_customer"
+        )
+
+        assert source["event_state"] == "receiving"
+
+    def test_a_source_still_waiting_says_so(
+        self,
+        workspace: Workspace,
+        stripe_integration: Integration,
+    ) -> None:
+        """A connected source with no events yet reports "waiting"."""
+        from core.services.dashboard import IntegrationService
+
+        overview = IntegrationService().get_integration_overview(workspace)
+        source = next(
+            s for s in overview["event_sources"] if s["id"] == "stripe_customer"
+        )
+
+        assert source["event_state"] == "waiting"
+
+    def test_a_disconnected_source_claims_nothing(
+        self,
+        workspace: Workspace,
+    ) -> None:
+        """Nothing is claimed about an integration that is not connected."""
+        from core.services.dashboard import IntegrationService
+
+        overview = IntegrationService().get_integration_overview(workspace)
+        source = next(
+            s for s in overview["event_sources"] if s["id"] == "stripe_customer"
+        )
+
+        assert source["event_state"] is None
+
+    def test_destinations_claim_nothing(self, workspace: Workspace) -> None:
+        """Destinations never report an event state, connected or not.
+
+        This is the reported bug: webhook_verified_at is never written for a
+        destination, so any state derived from it is a guess presented as fact.
+        """
+        from core.services.dashboard import IntegrationService
+
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="slack_notifications",
+            oauth_credentials={"access_token": "xoxb-test"},
+            is_active=True,
+        )
+
+        overview = IntegrationService().get_integration_overview(workspace)
+
+        for destination in overview["notification_channels"]:
+            assert destination.get("event_state") is None, (
+                f"{destination['id']} reports an event state nothing ever sets"
+            )

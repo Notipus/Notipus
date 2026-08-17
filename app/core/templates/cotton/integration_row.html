@@ -12,6 +12,12 @@ Connection state is stated in words as well as colour, and the "awaiting first
 event" state is spelled out rather than hidden in a tooltip, because it is the
 single most common reason a new workspace thinks Notipus is broken.
 
+`event_state` is decided in Python (IntegrationService._event_state) and is None
+for anything whose event state we do not track, so this row never has to guess
+from a missing key. It used to, with `{% if x is defined %}` — Jinja, in a Django
+template — and got it exactly backwards: sources that were receiving events
+showed no badge, destinations claimed "No events yet" forever.
+
 The row stacks in a narrow container and goes side by side in a wide one, and
 every row in a list flips at the same point — actions are never inline on one
 row and below on the next.
@@ -45,21 +51,19 @@ Disconnect) about 240px of text beside it.
                         <c-badge tone="success" icon="circle-check">
                             Connected
                         </c-badge>
-                        {% if integration.webhook_verified_at is defined %}
-                            {% if integration.webhook_verified_at %}
-                                <c-badge tone="info" icon="antenna-bars-5">
-                                    Receiving events
-                                </c-badge>
-                            {% else %}
-                                <c-badge tone="warning" icon="clock">
-                                    No events yet
-                                </c-badge>
-                            {% endif %}
+                        {% if integration.event_state == "receiving" %}
+                            <c-badge tone="info" icon="antenna-bars-5">
+                                Receiving events
+                            </c-badge>
+                        {% elif integration.event_state == "waiting" %}
+                            <c-badge tone="warning" icon="clock">
+                                No events yet
+                            </c-badge>
                         {% endif %}
                     {% endif %}
                 </div>
                 <p class="mt-1 text-body text-content-muted">{{ integration.description }}</p>
-                {% if integration.connected and integration.webhook_verified_at is defined and not integration.webhook_verified_at %}
+                {% if integration.event_state == "waiting" %}
                     <p class="mt-1 text-caption text-content-subtle">
                         Send a test event from {{ integration.name }} to confirm the connection.
                     </p>

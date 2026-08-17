@@ -626,6 +626,31 @@ class IntegrationService:
     overview data.
     """
 
+    @staticmethod
+    def _event_state(integration: Integration | None) -> str | None:
+        """Say whether a source has ever delivered an event, if we know.
+
+        None means "we do not track this", which is the honest answer for
+        destinations and enrichment: nothing ever sets `webhook_verified_at` on
+        them, so they must not claim either state.
+
+        The row template used to decide this itself with `{% if x is defined %}`,
+        which is Jinja. These are Django templates, where `is` is an identity
+        test and `defined` is an undefined variable resolving to None — so the
+        guard silently meant `x is None`, the exact inverse of the intent. A
+        source that was receiving events showed no badge at all, and every
+        destination claimed "No events yet" forever.
+
+        Args:
+            integration: The connected integration, or None if not connected.
+
+        Returns:
+            "receiving", "waiting", or None when the state is not tracked.
+        """
+        if integration is None:
+            return None
+        return "receiving" if integration.webhook_verified_at else "waiting"
+
     def get_integration_overview(self, workspace: Workspace) -> dict[str, Any]:
         """Get integration overview data for the integrations page.
 
@@ -659,6 +684,7 @@ class IntegrationService:
                     if "shopify" in integration_lookup
                     else None
                 ),
+                "event_state": self._event_state(integration_lookup.get("shopify")),
                 "category": "E-commerce",
             },
             {
@@ -673,6 +699,7 @@ class IntegrationService:
                     if "chargify" in integration_lookup
                     else None
                 ),
+                "event_state": self._event_state(integration_lookup.get("chargify")),
                 "category": "Billing",
             },
             {
@@ -686,6 +713,9 @@ class IntegrationService:
                     integration_lookup["stripe_customer"].webhook_verified_at
                     if "stripe_customer" in integration_lookup
                     else None
+                ),
+                "event_state": self._event_state(
+                    integration_lookup.get("stripe_customer")
                 ),
                 "category": "Payments",
             },
