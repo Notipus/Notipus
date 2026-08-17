@@ -321,6 +321,7 @@ const NotipusUI = (function () {
     // Structure is static markup — the icon class comes from the TOAST_ICONS
     // constant above and the caller's message goes in as text below, so a
     // company or channel name containing markup can never become HTML.
+    // nosemgrep
     toastEl.innerHTML = `
       <div class="flex items-start gap-3 p-4">
         <i class="ti ${icon} ${color} mt-0.5 flex-shrink-0 text-heading" aria-hidden="true"></i>

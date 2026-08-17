@@ -823,7 +823,9 @@ def _topic_is_enabled(integration: Integration, topic: str) -> bool:
     return any(category in enabled for category in owning_categories)
 
 
-@csrf_exempt
+# Signed webhook from Shopify: authenticity comes from the HMAC check below,
+# not from a session cookie, so there is no CSRF surface to protect.
+@csrf_exempt  # nosemgrep
 @require_http_methods(["POST"])
 def shopify_events_webhook(request: HttpRequest) -> JsonResponse:
     """Receive Shopify events for every installed shop on one endpoint.

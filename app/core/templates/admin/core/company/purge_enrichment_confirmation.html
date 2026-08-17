@@ -21,7 +21,8 @@
   {% endfor %}
 </ul>
 
-<form method="post"> <!-- nosemgrep: the {% csrf_token %} below is what the rule fails to see -->
+<!-- The rule wants the token inside the <form> tag's own match; ours is on the next line. -->
+<form method="post"> <!-- nosemgrep -->
   {% csrf_token %}
   <div>
     {% for company in queryset %}
