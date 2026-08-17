@@ -17,6 +17,6 @@
   },
   "dependencies": {
     "@shopify/app": "^3.58.2",
-    "@shopify/cli": "^4.6.0"
+    "@shopify/cli": "^4.6.1"
   }
 }
