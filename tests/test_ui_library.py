@@ -297,6 +297,91 @@ class TestRowsAgreeOnActionPlacement:
             )
 
 
+@pytest.mark.django_db
+class TestIntegrationRowEventBadge:
+    """What the row actually says about events.
+
+    The service data was already right and already tested; the template threw it
+    away. `{% if x is defined %}` is Jinja, and these are Django templates, where
+    `is` is an identity test and `defined` is an undefined variable resolving to
+    None — so the guard meant `x is None`, the inverse of the intent. Every case
+    below came out wrong, and nothing rendered the row to notice.
+    """
+
+    def row(self, integration: dict[str, object]) -> str:
+        """Render an integration row for one context dict.
+
+        Args:
+            integration: The entry the integrations view would pass in.
+
+        Returns:
+            The rendered HTML.
+        """
+        return render_component(
+            '<c-integration-row :integration="integration" provider="slack" />',
+            {"integration": integration},
+        )
+
+    def test_a_receiving_source_says_so(self) -> None:
+        """A source with events shows "Receiving events", which never rendered."""
+        html = self.row(
+            {"name": "Shopify", "connected": True, "event_state": "receiving"}
+        )
+
+        assert "Receiving events" in html
+        assert "No events yet" not in html
+
+    def test_a_waiting_source_says_so(self) -> None:
+        """A connected source with no events keeps the nudge to send one."""
+        html = self.row(
+            {"name": "Shopify", "connected": True, "event_state": "waiting"}
+        )
+
+        assert "No events yet" in html
+        assert "Send a test event from Shopify" in html
+
+    def test_a_delivering_destination_says_so(self) -> None:
+        """A channel that has received a notification says it is delivering."""
+        html = self.row(
+            {"name": "Slack", "connected": True, "event_state": "delivering"}
+        )
+
+        assert "Delivering" in html
+        assert "Nothing delivered yet" not in html
+
+    def test_an_undelivered_destination_says_so(self) -> None:
+        """A channel nothing has reached yet asks for a test, in its own words."""
+        html = self.row(
+            {"name": "Slack", "connected": True, "event_state": "undelivered"}
+        )
+
+        assert "Nothing delivered yet" in html
+        assert "arrives in Slack" in html
+
+    def test_a_destination_never_borrows_the_source_wording(self) -> None:
+        """The reported bug: Slack announced "No events yet" for ever.
+
+        A channel does not see events, it receives deliveries, so neither the
+        source badge nor the source nudge may appear on one.
+        """
+        for state in ("delivering", "undelivered", None):
+            html = self.row({"name": "Slack", "connected": True, "event_state": state})
+
+            assert "No events yet" not in html
+            assert "Receiving events" not in html
+            assert "Send a test event from" not in html
+            assert "Connected" in html
+
+    def test_an_untracked_integration_claims_nothing(self) -> None:
+        """A missing key reads as "no claim", never as "nothing has happened"."""
+        html = self.row({"name": "Hunter.io", "connected": True})
+
+        assert "No events yet" not in html
+        assert "Nothing delivered yet" not in html
+        assert "Receiving events" not in html
+        assert "Delivering" not in html
+
+
 def render_component(markup: str, context: dict[str, object]) -> str:
     """Render component markup through the Cotton loader.
 

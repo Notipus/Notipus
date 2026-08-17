@@ -660,6 +660,13 @@ CONTRAST_RULES: tuple[ContrastRule, ...] = (
     ContrastRule(
         "border-control", "canvas", ContrastKind.NON_TEXT, where="input outline on page"
     ),
+    # Outlined buttons keep their edge while the row underneath them is hovered.
+    ContrastRule(
+        "border-control",
+        "surface-muted",
+        ContrastKind.NON_TEXT,
+        where="button outline on a hovered row",
+    ),
     ContrastRule(
         "focus", "surface", ContrastKind.NON_TEXT, where="focus ring on a card"
     ),

@@ -11,7 +11,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .exceptions import WebhookError, WebhookSignatureError
-from .services.destination_credentials import collect_destinations
+from .services.destination_credentials import collect_destinations, record_delivery
 from .services.event_consolidation import event_consolidation_service
 from .services.pending_event_queue import pending_event_queue
 from .services.rate_limiter import RateLimitException, rate_limiter
@@ -468,6 +468,7 @@ def _process_immediately(
         try:
             formatted = plugin.format(notification)
             plugin.send(formatted, credentials)
+            record_delivery(workspace, name)
         except Exception as e:
             logger.error(
                 f"Failed to deliver {name} notification for workspace "

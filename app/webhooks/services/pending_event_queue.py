@@ -35,7 +35,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
 
-from .destination_credentials import collect_destinations
+from .destination_credentials import collect_destinations, record_delivery
 from .redis_client import get_raw_redis_client
 
 logger = logging.getLogger(__name__)
@@ -927,6 +927,7 @@ class PendingEventQueue:
             try:
                 formatted = plugin.format(notification)
                 plugin.send(formatted, credentials)
+                record_delivery(workspace, name)
                 logger.info(
                     f"Sent {event_type} {name} notification for customer {customer_id}"
                 )

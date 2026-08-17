@@ -13,6 +13,45 @@ from core.models import Integration, Workspace
 
 logger = logging.getLogger(__name__)
 
+# Destination plugin name -> the Integration row it is configured by. Spelled
+# out rather than derived by appending "_notifications", so a plugin whose name
+# does not follow that shape fails a lookup here instead of silently never
+# recording its deliveries. Kept beside collect_destinations because anything
+# added there needs an entry here.
+DESTINATION_INTEGRATION_TYPES: dict[str, str] = {
+    "slack": "slack_notifications",
+    "telegram": "telegram_notifications",
+    "teams": "teams_notifications",
+}
+
+
+def record_delivery(workspace: Workspace | None, plugin_name: str) -> None:
+    """Note that a notification reached a destination, the first time it does.
+
+    Called from both delivery paths and from the "Send test" buttons, since a
+    test message arriving is exactly the proof this records. Never raises: a
+    delivery that happened is not undone by failing to write it down.
+
+    Args:
+        workspace: The workspace the notification was delivered for.
+        plugin_name: The destination plugin that accepted it (e.g. "slack").
+    """
+    if workspace is None:
+        return
+    integration_type = DESTINATION_INTEGRATION_TYPES.get(plugin_name)
+    if integration_type is None:
+        logger.warning(
+            f"No integration type mapped for destination plugin {plugin_name!r}; "
+            "its deliveries will not be recorded"
+        )
+        return
+    try:
+        Integration.record_first_delivery(workspace, integration_type)
+    except Exception:
+        logger.warning(
+            f"Could not record first delivery for {plugin_name}", exc_info=True
+        )
+
 
 def get_telegram_credentials(workspace: Workspace | None) -> dict[str, str] | None:
     """Return the Telegram bot credentials for a workspace, if configured.
