@@ -56,7 +56,15 @@ used, and they break loudly if a component's props change.
                         <p class="mt-1 max-w-3xl text-body text-content-muted">{{ group.description }}</p>
                         <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                             {% for token in group.tokens %}
-                                <div class="flex items-start gap-3 rounded-control border border-border p-3">
+                                {% comment %}
+                                min-w-0 so the grid track can shrink. A grid item
+                                defaults to min-width:auto, and the truncated
+                                value below is whitespace-nowrap, so the font
+                                stacks under Typefaces sized their cell to 765px
+                                inside a 500px viewport — clipped by the card's
+                                overflow-hidden rather than ever truncating.
+                                {% endcomment %}
+                                <div class="flex min-w-0 items-start gap-3 rounded-control border border-border p-3">
                                     {% comment %}block, not just h-9 w-9: an inline span ignores width.{% endcomment %}
                                     {% if group.is_color %}
                                         <span class="mt-0.5 block h-9 w-9 flex-shrink-0 rounded-control border border-border"
