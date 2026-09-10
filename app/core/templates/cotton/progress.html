@@ -20,6 +20,10 @@ Props:
      aria-valuemax="100"
      {% if label %}aria-label="{{ label }}"{% endif %}
      {{ attrs }}>
+    {% comment %}H021 off: the fill width is the value this component exists to
+    render, so it can only be an inline style.{% endcomment %}
+    {# djlint:off H021 #}
     <div class="h-full rounded-pill transition-all duration-500 {% if tone == 'success' %}bg-success-solid {% elif tone == 'warning' %}bg-warning-solid {% elif tone == 'danger' %}bg-danger-solid {% else %}bg-brand{% endif %}"
          style="width: {{ value|floatformat:0 }}%"></div>
+    {# djlint:on #}
 </div>
