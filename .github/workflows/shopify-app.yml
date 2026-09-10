@@ -63,8 +63,21 @@ jobs:
       # every merchant's webhooks at endpoints the deployed code does not
       # have yet. Dispatching it deliberately, once the app is out, keeps
       # that ordering in human hands.
+      # Skipped for Dependabot. Its runs read the Dependabot secret store
+      # rather than Actions secrets, so the Shopify token is empty and the CLI
+      # stops with "Authorization is required to continue" whatever the pull
+      # request changed - a permanent red check, not something a rebase fixes.
+      # Mirroring a deploy-capable token into Dependabot secrets would hand it
+      # to every dependency-update run, which is a poor trade for a check the
+      # push to master repeats a moment later with the real secret.
+      #
+      # To exercise a Dependabot pull request for real before merging it, push
+      # to its branch yourself: the run is then attributed to you and gets
+      # Actions secrets.
       - name: Validate configuration
-        if: github.event_name != 'workflow_dispatch'
+        if: >-
+          github.event_name != 'workflow_dispatch'
+          && github.actor != 'dependabot[bot]'
         run: npx --yes @shopify/cli@4 app config validate --no-color
         env:
           SHOPIFY_APP_AUTOMATION_TOKEN:
