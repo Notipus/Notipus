@@ -11,7 +11,7 @@
         <title>{% block title %}Notipus - Smart Webhook Notifications{% endblock title %}</title>
         <link rel="icon" type="image/png" href="{% static 'img/favicon.png' %}">
         <link rel="apple-touch-icon" href="{% static 'img/favicon.png' %}">
-        <link rel="stylesheet" type="text/css" href="{% static 'dist/main.css' %}">
+        <link rel="stylesheet" href="{% static 'dist/main.css' %}">
         {% if ga4_measurement_id %}
             {# Google Analytics 4, client-side. When GA4_CLIENT_SIDE is on, #}
             {# core.analytics stops sending page_view server-side so views #}
