@@ -181,7 +181,9 @@
                                             </c-button>
                                         </form>
                                     {% else %}
-                                        <c-button href="{% url 'core:teams_connect' %}" size="sm" icon="plug-connected">Connect</c-button>
+                                        <c-button href="{% url 'core:teams_connect' %}"
+                                                  size="sm"
+                                                  icon="plug-connected">Connect</c-button>
                                     {% endif %}
                                 </c-slot>
                             </c-integration-row>

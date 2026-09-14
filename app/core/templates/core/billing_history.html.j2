@@ -66,7 +66,9 @@
                             call a downloadInvoice() stub that only raised a toast.
                             {% endcomment %}
                             <c-table.cell align="right">
-                                <c-button href="{% url 'core:billing_portal' %}" variant="link" size="sm">Receipt</c-button>
+                                <c-button href="{% url 'core:billing_portal' %}"
+                                          variant="link"
+                                          size="sm">Receipt</c-button>
                             </c-table.cell>
                         </tr>
                     {% endfor %}
@@ -79,7 +81,8 @@
                                description="{% if workspace.subscription_status == 'trial' %}You're trialing the {{ workspace.subscription_plan|title }} plan. Your first invoice appears here when the trial ends.{% else %}Charges and receipts appear here once your first payment goes through.{% endif %}">
                     <c-slot name="actions">
                         {% if workspace.subscription_plan == "free" %}
-                            <c-button href="{% url 'core:upgrade_plan' %}" icon="trending-up">Choose a paid plan</c-button>
+                            <c-button href="{% url 'core:upgrade_plan' %}"
+                                      icon="trending-up">Choose a paid plan</c-button>
                         {% elif workspace.subscription_status == "trial" %}
                             <c-button href="{% url 'core:billing_portal' %}"
                                       variant="secondary"

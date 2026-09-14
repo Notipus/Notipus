@@ -55,7 +55,8 @@ which is the only thing that can carry the action out.
                                title="No payment method yet"
                                description="Add a card in the billing portal so your subscription keeps running when the trial ends.">
                     <c-slot name="actions">
-                        <c-button href="{% url 'core:billing_portal' %}" icon="external-link">Open billing portal</c-button>
+                        <c-button href="{% url 'core:billing_portal' %}"
+                                  icon="external-link">Open billing portal</c-button>
                     </c-slot>
                 </c-empty-state>
             </c-card>

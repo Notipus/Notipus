@@ -231,7 +231,9 @@ used, and they break loudly if a component's props change.
                         As a link
                     </c-button>
                     <c-slot name="source">{% verbatim %}<c-button variant="danger" icon="trash">Remove member</c-button>
-                        <c-button href="/billing/" variant="secondary" size="sm">Billing</c-button>{% endverbatim %}</c-slot>
+                        <c-button href="/billing/"
+                                  variant="secondary"
+                                  size="sm">Billing</c-button>{% endverbatim %}</c-slot>
             </c-spec>
 
             <c-spec name="c-badge" note="States a fact. Never clickable.">
@@ -256,7 +258,8 @@ used, and they break loudly if a component's props change.
                 <c-badge tone="success" dot>
                     With a dot
                 </c-badge>
-                <c-slot name="source">{% verbatim %}<c-badge tone="success" icon="circle-check">Connected</c-badge>{% endverbatim %}</c-slot>
+                <c-slot name="source">{% verbatim %}<c-badge tone="success"
+         icon="circle-check">Connected</c-badge>{% endverbatim %}</c-slot>
             </c-spec>
 
             <c-spec name="c-alert" note="What happened, and what to do next.">

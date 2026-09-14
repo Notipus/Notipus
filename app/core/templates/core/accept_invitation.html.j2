@@ -43,7 +43,8 @@
                         </c-button>
                     {% endif %}
                 {% else %}
-                    <c-button href="{% url 'account_login' %}?next={{ request.path }}" block>Sign in to accept</c-button>
+                    <c-button href="{% url 'account_login' %}?next={{ request.path }}"
+                              block>Sign in to accept</c-button>
                     <c-divider label="or" />
                     <c-button href="{% url 'account_signup' %}?next={{ request.path }}&email={{ invitation.email|urlencode }}"
                               variant="secondary"
