@@ -11,7 +11,7 @@ FROM oven/bun:latest@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab
 
 # Build stage: Chainguard's -dev variant includes a shell and apk for build
 # tooling.
-FROM cgr.dev/chainguard/python:latest-dev@sha256:c23539f80289046e2fa734d3f3fc418833fc22d064a50cc43fa9a6edc28c1615 AS builder
+FROM cgr.dev/chainguard/python:latest-dev@sha256:09265da08fb023a0d4e4155298dab3aa514bdd0746b79b11d4252ef806792127 AS builder
 
 USER root
 
@@ -68,7 +68,7 @@ RUN rm -rf /app/node_modules /app/src /app/package.json /app/bun.lock /app/postc
 
 # Runtime stage: distroless (no shell, no package manager), runs as nonroot.
 # Same Chainguard release as the builder stage above — keep in lockstep.
-FROM cgr.dev/chainguard/python:latest@sha256:1f37785e5cdb70151f36aaa15e1e3cef4571424dbefbf4b0d8a9222535cb13ff
+FROM cgr.dev/chainguard/python:latest@sha256:7e7c7716d8eebd4756a0237b8a1a3857344d45bc21b7a052a334ffafc2928119
 
 # Spelled out rather than left to the base image's default: the builder stage
 # above switches to root, and a reader (or a scanner) tracking USER through the
