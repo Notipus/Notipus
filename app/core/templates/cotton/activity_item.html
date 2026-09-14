@@ -59,11 +59,14 @@ Props:
 
                 {% if activity.customer_ltv or activity.customer_tenure or activity.customer_status_flags %}
                     <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                        {% if activity.customer_ltv %}<c-badge tone="info" icon="chart-line">LTV {{ activity.customer_ltv }}</c-badge>{% endif %}
+                        {% if activity.customer_ltv %}<c-badge tone="info"
+         icon="chart-line">LTV {{ activity.customer_ltv }}</c-badge>{% endif %}
                         {% if activity.customer_tenure %}<c-badge icon="calendar">{{ activity.customer_tenure }}</c-badge>{% endif %}
                         {% comment %}ti-star, not ti-star-filled: the webfont ships no -filled variants.{% endcomment %}
-                        {% if "vip" in activity.customer_status_flags %}<c-badge tone="brand" icon="star">VIP</c-badge>{% endif %}
-                        {% if "at_risk" in activity.customer_status_flags %}<c-badge tone="danger" icon="alert-triangle">At risk</c-badge>{% endif %}
+                        {% if "vip" in activity.customer_status_flags %}<c-badge tone="brand"
+         icon="star">VIP</c-badge>{% endif %}
+                        {% if "at_risk" in activity.customer_status_flags %}<c-badge tone="danger"
+         icon="alert-triangle">At risk</c-badge>{% endif %}
                     </div>
                 {% endif %}
 

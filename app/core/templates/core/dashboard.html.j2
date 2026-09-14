@@ -110,7 +110,9 @@
                         {{ rate_limit_info.limit|floatformat:0|intcomma }} events used
                         {% if rate_limit_info.reset_time %}with the reset still to come on {{ rate_limit_info.reset_time|date:"M j" }}{% endif %}.
                         <c-slot name="actions">
-                            <c-button href="{% url 'core:upgrade_plan' %}" size="sm" variant="secondary">See plans</c-button>
+                            <c-button href="{% url 'core:upgrade_plan' %}"
+                                      size="sm"
+                                      variant="secondary">See plans</c-button>
                         </c-slot>
                     </c-alert>
                 {% endif %}

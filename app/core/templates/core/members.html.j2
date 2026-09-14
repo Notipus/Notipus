@@ -84,10 +84,13 @@
                                                   bare
                                                   aria-label="Role for {{ member.user.email }}"
                                                   onchange="this.form.submit()">
-                                            <option value="user" {% if member.role == "user" %}selected{% endif %}>Member</option>
-                                            <option value="admin" {% if member.role == "admin" %}selected{% endif %}>Admin</option>
+                                            <option value="user"
+                                                    {% if member.role == "user" %}selected{% endif %}>Member</option>
+                                            <option value="admin"
+                                                    {% if member.role == "admin" %}selected{% endif %}>Admin</option>
                                             {% if current_member.role == "owner" %}
-                                                <option value="owner" {% if member.role == "owner" %}selected{% endif %}>Owner</option>
+                                                <option value="owner"
+                                                        {% if member.role == "owner" %}selected{% endif %}>Owner</option>
                                             {% endif %}
                                         </c-select>
                                     </form>
