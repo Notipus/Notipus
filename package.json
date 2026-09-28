@@ -9,7 +9,7 @@
     "dev": "bun run build:fonts && bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
   },
   "devDependencies": {
-    "@tabler/icons-webfont": "^3.46.0",
+    "@tabler/icons-webfont": "^3.48.0",
     "@tailwindcss/cli": "^4.3.3",
     "autoprefixer": "^10.6.1",
     "postcss": "^8.5.28",
@@ -17,6 +17,6 @@
   },
   "dependencies": {
     "@shopify/app": "^3.58.2",
-    "@shopify/cli": "^4.8.0"
+    "@shopify/cli": "^4.8.2"
   }
 }
