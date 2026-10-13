@@ -438,11 +438,11 @@ wheels = [
 
 [[package]]
 name = "disposable-email-domains"
-version = "0.0.271"
+version = "0.0.277"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0f/69/f0ccbc139768bea5ca76f267e5624f425dc0c366cf33568db29339bf21ac/disposable_email_domains-0.0.271.tar.gz", hash = "sha256:472234b267b7edaa3e4e5a9168831b09229b7351304b45de2b5058d840b0ce58", size = 111737, upload-time = "2026-09-30T10:16:10.561Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/43/1145806d47cfe98e21b22e5a468d3d92930b47e3e1d8a17e445922ad20af/disposable_email_domains-0.0.277.tar.gz", hash = "sha256:0b2c25a0146d3149166c004fbaa50302e25e763cefb7de9a4f9ea73b7c2ef2e4", size = 112069, upload-time = "2026-10-09T10:39:15.148Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/0b/4b62f6e054765d7799edf5831c0227a474d6d225c554efeee88335ec2703/disposable_email_domains-0.0.271-py3-none-any.whl", hash = "sha256:df24549004ea84df84fbd4f38ba12b2ea6a8e1fbc615c43e3442c79eb605d033", size = 57334, upload-time = "2026-09-30T10:16:09.242Z" },
+    { url = "https://files.pythonhosted.org/packages/76/4b/1365fcde089e7bfc9a79a4adcc371cd793a2e17704e943f3a3e4d303d5be/disposable_email_domains-0.0.277-py3-none-any.whl", hash = "sha256:c5a4f077ab7f46a53a317822efb1194409cffb055909a5eeb54eb35789149415", size = 57519, upload-time = "2026-10-09T10:39:13.266Z" },
 ]
 
 [[package]]
@@ -456,16 +456,16 @@ wheels = [
 
 [[package]]
 name = "django"
-version = "5.2.17"
+version = "5.2.18"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asgiref" },
     { name = "sqlparse" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/d8/43e9d000519adceb189620b6869ff88031e046df91c2e9da72f8f6918399/django-5.2.17.tar.gz", hash = "sha256:9d4d93be539a18ab80d058eb515900e10951e04c537c5a6b394fc49528d3251f", size = 10889740, upload-time = "2026-08-04T15:04:03.173Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/fe/79e692b430c7721bf4b812c328bfe687e73e3f28f56611a6a18a97e887cc/django-5.2.18.tar.gz", hash = "sha256:461c5dd06d2ea16bd5ca37d3f46e4def1d6b0fe7588c6f4e2119517bb0af8b2d", size = 10910238, upload-time = "2026-10-06T13:01:09.371Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/f8/ce120525ca78f12b07daf65786679c5d0b54a75285a8958d3ae55e39da35/django-5.2.17-py3-none-any.whl", hash = "sha256:f04fb3b36ee119e1af4fa1d397d5fd6cf12700f49321e84d4f4c642c5b1973db", size = 8315563, upload-time = "2026-08-04T15:03:59.1Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/01/6568ec52b26548ca1b83d33249f7274db3bf74698f42c0da42ec9db1a24a/django-5.2.18-py3-none-any.whl", hash = "sha256:92ed81d500be6408ecd704d7bd1366c534f30427bffcc63c5fefb129561aec7c", size = 8316071, upload-time = "2026-10-06T13:01:04.413Z" },
 ]
 
 [[package]]
@@ -1580,11 +1580,11 @@ wheels = [
 
 [[package]]
 name = "tzdata"
-version = "2026.4"
+version = "2026.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e4/31/3d74fa778a63b98b7374323befcc0be5ab3bd94afd4096a0124e7379152c/tzdata-2026.4.tar.gz", hash = "sha256:f1b8bd365d8d210c55353f4d7f8d6d8561c0ba50d704b700d195a9424bba0d79", size = 199350, upload-time = "2026-09-12T12:56:03.251Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/68/f1b440335057bfce71b6e50a9d09445aa2ecbd08359a337976627b8409e7/tzdata-2026.5.tar.gz", hash = "sha256:8cc73c0a0bfca7dbfa59235d60b2eff82231dee33f53d206db1acd9173cfc0a7", size = 200404, upload-time = "2026-10-03T09:23:14.143Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/bc/8737e8d54cf51106118039b83f485a4783112fab49ea9d044b234978a46e/tzdata-2026.4-py2.py3-none-any.whl", hash = "sha256:c2169a8b0a7a5e9674da5a135ccdfb2b3e671b333ed9fed17b41f73c34476e81", size = 347494, upload-time = "2026-09-12T12:56:01.67Z" },
+    { url = "https://files.pythonhosted.org/packages/94/21/1e5995a1c920cce14e4bffae20c665ec10e7ed03ab25e006cd741092b718/tzdata-2026.5-py2.py3-none-any.whl", hash = "sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac", size = 347996, upload-time = "2026-10-03T09:23:12.535Z" },
 ]
 
 [[package]]
