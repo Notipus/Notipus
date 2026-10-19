@@ -7,7 +7,7 @@
 
 # Tool images, declared as stages so Dependabot can bump their digests
 FROM ghcr.io/astral-sh/uv:latest@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 AS uv
-FROM oven/bun:latest@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS bun
+FROM oven/bun:latest@sha256:ec06c3b6cea04192ae6770c434f668ca41d343ad19fa6472216c7b48be39c598 AS bun
 
 # Build stage: Chainguard's -dev variant includes a shell and apk for build
 # tooling.
