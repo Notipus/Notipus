@@ -51,10 +51,11 @@ COPY postcss.config.js /app/
 COPY ./app/ .
 
 # Build frontend assets
+# tabler-icons.css (>= 3.50) references per-category woff2 subsets
+# (tabler-icons.core.woff2, tabler-icons.arrows-1.woff2, ...), so copy the
+# whole outline font family rather than individual files.
 RUN mkdir -p static/dist/fonts && \
-    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.woff2 static/dist/fonts/ && \
-    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.woff static/dist/fonts/ && \
-    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.ttf static/dist/fonts/ && \
+    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.* static/dist/fonts/ && \
     bun x tailwindcss -i /app/src/css/main.css -o static/dist/main.css --minify
 
 # Collect static files
