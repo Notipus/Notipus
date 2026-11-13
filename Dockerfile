@@ -50,11 +50,11 @@ COPY postcss.config.js /app/
 # Copy application code
 COPY ./app/ .
 
-# Build frontend assets
+# Build frontend assets. Copy every regular-weight tabler-icons font: since
+# 3.50 the stylesheet loads per-category subsets (tabler-icons.core.woff2, ...)
+# rather than a single tabler-icons.woff2.
 RUN mkdir -p static/dist/fonts && \
-    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.woff2 static/dist/fonts/ && \
-    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.woff static/dist/fonts/ && \
-    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.ttf static/dist/fonts/ && \
+    cp /app/node_modules/@tabler/icons-webfont/dist/fonts/tabler-icons.* static/dist/fonts/ && \
     bun x tailwindcss -i /app/src/css/main.css -o static/dist/main.css --minify
 
 # Collect static files
