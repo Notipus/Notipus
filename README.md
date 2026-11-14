@@ -710,6 +710,7 @@ This creates Stripe Products/Prices for your plans and updates the database with
 - `ALLOWED_HOSTS`: Comma-separated list of allowed hostnames
 - `DB_NAME`, `DB_USER`, `DB_HOST`, `DB_PORT`: Database connection parameters
 - `REDIS_URL`: Redis connection URL
+- `FORWARDED_ALLOW_IPS`: Comma-separated addresses/CIDRs of the reverse proxy whose `X-Forwarded-For`/`X-Forwarded-Proto` uvicorn trusts. Any other peer's forwarded headers are ignored, so it cannot choose its own client IP. The Docker image defaults to `*` (trust every peer), which is only safe while the proxy is the sole thing that can reach port 8080; `docker-compose.yml` sets `127.0.0.1`. On Fly.io, set it to the range the Fly proxy connects from with `fly secrets set FORWARDED_ALLOW_IPS=...` or an `[env]` entry in `fly.toml` — and check `REMOTE_ADDR` on a running machine first, because a list that leaves out the proxy makes every visitor share its address (and one per-IP rate-limit bucket). HTTPS detection does not depend on it: Django reads `X-Forwarded-Proto` itself via `SECURE_PROXY_SSL_HEADER`.
 
 ### Per-Tenant Configuration
 
