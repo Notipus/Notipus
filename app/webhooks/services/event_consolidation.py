@@ -324,6 +324,73 @@ class EventConsolidationService:
         dedup_key = f"event_dedup:{workspace_id}:{external_id}"
         return cache.get(dedup_key) is not None
 
+    # Marker value for a dedup key whose event is still being processed.
+    IN_PROGRESS_MARKER: ClassVar[str] = "in_progress"
+
+    # How long an in-progress claim survives a worker that died mid-way.
+    # Long enough to cover slow synchronous delivery, short enough that a
+    # provider retry after a crash is processed rather than suppressed.
+    CLAIM_TTL_SECONDS: ClassVar[int] = 300
+
+    def _dedup_key(self, workspace_id: str, external_id: str) -> str:
+        """Return the cache key for an exact-dedup marker.
+
+        Args:
+            workspace_id: The workspace UUID.
+            external_id: The provider event/dedup identifier.
+
+        Returns:
+            Cache key string.
+        """
+        return f"event_dedup:{workspace_id}:{external_id}"
+
+    def claim_event(self, workspace_id: str, external_id: str | None) -> str:
+        """Atomically claim a dedup key before processing an event.
+
+        Checking for a marker and recording it only after slow delivery
+        let two concurrent deliveries of one event both pass the check
+        and both notify. The claim is a ``cache.add`` (SET NX on Redis),
+        so exactly one caller wins; it is short-lived so a crashed worker
+        cannot suppress the provider's retry for long.
+
+        Args:
+            workspace_id: The workspace UUID.
+            external_id: The dedup identifier. Empty disables dedup.
+
+        Returns:
+            "claimed" when this caller owns the event (or dedup is
+            disabled), "in_progress" when another worker is processing
+            it, "done" when it was already processed.
+        """
+        if not external_id:
+            return "claimed"
+        key = self._dedup_key(workspace_id, external_id)
+        existing = cache.get(key)
+        if existing is None and cache.add(
+            key, self.IN_PROGRESS_MARKER, timeout=self.CLAIM_TTL_SECONDS
+        ):
+            return "claimed"
+        if existing is None:
+            existing = cache.get(key)
+        if existing == self.IN_PROGRESS_MARKER:
+            return "in_progress"
+        return "done"
+
+    def release_claim(self, workspace_id: str, external_id: str | None) -> None:
+        """Drop an in-progress claim so a provider retry is processed.
+
+        A completed marker is never removed.
+
+        Args:
+            workspace_id: The workspace UUID.
+            external_id: The dedup identifier.
+        """
+        if not external_id:
+            return
+        key = self._dedup_key(workspace_id, external_id)
+        if cache.get(key) == self.IN_PROGRESS_MARKER:
+            cache.delete(key)
+
 
 # Global instance for convenience
 event_consolidation_service = EventConsolidationService()

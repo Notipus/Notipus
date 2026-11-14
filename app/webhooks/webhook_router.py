@@ -235,23 +235,71 @@ def _handle_rate_limiting(
         return None, rate_limit_info  # No rate limiting
     except RateLimitException as e:
         logger.warning(f"Rate limit exceeded for workspace {workspace.uuid}: {str(e)}")
-        error_response = create_error_response(e, 429)
-        response = JsonResponse(error_response, status=429)
+        return _rate_limited_response(workspace, e), None
 
-        # Add rate limit headers
-        rate_limit_headers = rate_limiter.get_rate_limit_headers(
-            {
-                "limit": e.limit,
-                "current_usage": e.current_usage,
-                "remaining": 0,
-                "reset_time": e.reset_time,
-                "plan": workspace.subscription_plan,
-            }
+
+def _rate_limited_response(workspace: Workspace, e: RateLimitException) -> JsonResponse:
+    """Build the 429 response, with rate limit headers, for a rejection.
+
+    Args:
+        workspace: The rate-limited workspace.
+        e: The rate limit exception describing the breach.
+
+    Returns:
+        A 429 JsonResponse.
+    """
+    response = JsonResponse(create_error_response(e, 429), status=429)
+    rate_limit_headers = rate_limiter.get_rate_limit_headers(
+        {
+            "limit": e.limit,
+            "current_usage": e.current_usage,
+            "remaining": 0,
+            "reset_time": e.reset_time,
+            "plan": workspace.subscription_plan,
+        }
+    )
+    for header_name, header_value in rate_limit_headers.items():
+        response[header_name] = header_value
+    return response
+
+
+def _reject_if_hard_capped(workspace: Optional[Workspace]) -> Optional[JsonResponse]:
+    """Turn away a workspace already at its hard cap, without charging quota.
+
+    Quota is only charged once an event has been parsed and passed dedup
+    (see _process_webhook_data), but a workspace that is already capped
+    should not get its payloads logged, stored and parsed either. This
+    is a read-only version of the pre-checks in enforce_rate_limit.
+
+    Args:
+        workspace: The addressed workspace, or None for global endpoints.
+
+    Returns:
+        A 429 JsonResponse when the workspace cannot be served, None
+        otherwise (including when the limiter itself errors: the charging
+        call later decides).
+    """
+    if workspace is None:
+        return None
+    try:
+        allowed, info = rate_limiter.check_rate_limit(workspace)
+        if allowed:
+            return None
+        if info.get("reason") != "cache_unavailable":
+            hard_cap = rate_limiter.get_hard_limit(workspace)
+            if info["current_usage"] < hard_cap:
+                return None  # Inside the grace window
+        exc = RateLimitException(
+            "Rate limit exceeded",
+            limit=info["limit"],
+            current_usage=info["current_usage"],
+            reset_time=info["reset_time"],
         )
-        for header_name, header_value in rate_limit_headers.items():
-            response[header_name] = header_value
-
-        return response, None
+    except Exception:
+        logger.warning("Rate limit pre-check failed", exc_info=True)
+        return None
+    logger.info(f"Workspace {workspace.uuid} is at its hard cap; rejecting webhook")
+    return _rate_limited_response(workspace, exc)
 
 
 def _add_rate_limit_headers(
@@ -328,47 +376,90 @@ def _process_webhook_data(
     provider_name: str,
     workspace: Optional[Workspace] = None,
 ) -> JsonResponse:
-    """Process webhook data and return success response.
+    """Deduplicate, charge quota for, and dispatch a parsed event.
+
+    The dedup key is claimed atomically (``cache.add``) as "in progress"
+    before anything slow happens, so a concurrent redelivery of the same
+    event gets a 200 "duplicate in progress" instead of a second
+    notification. The claim is turned into a completed marker only after
+    the event has been queued or delivered; on failure it is released so
+    the provider's retry is processed rather than suppressed.
+
+    Monthly quota is charged here - after parsing and dedup, right before
+    processing - so test pings, ignored event types, duplicates and
+    retries after our own 5xx never count against the workspace.
 
     For events with an idempotency_key (Stripe), queues the event for
     delayed processing to allow related events to arrive first.
     Events without idempotency_key are processed immediately.
-
-    The delayed processing ensures we have complete data (like customer
-    email from invoice events) before sending notifications.
     """
     # Get customer data from webhook payload
     customer_data = provider.get_customer_data(event_data.get("customer_id", ""))
 
-    event_type = event_data.get("type", "")
     workspace_id = str(workspace.uuid) if workspace else "global"
-    idempotency_key = event_data.get("idempotency_key")
     dedup_key = _get_dedup_key(event_data)
 
-    # Check for exact duplicate (same provider event) - applies to all events
-    if event_consolidation_service.is_duplicate(workspace_id, dedup_key):
+    claim = event_consolidation_service.claim_event(workspace_id, dedup_key)
+    if claim != "claimed":
+        in_progress = claim == "in_progress"
         logger.info(
             f"Skipping duplicate event {dedup_key} for workspace {workspace_id}"
+            f"{' (in progress)' if in_progress else ''}"
         )
+        message = "duplicate in progress" if in_progress else "duplicate suppressed"
         return JsonResponse(
-            create_success_response(
-                f"{provider_name} webhook processed (duplicate suppressed)"
-            ),
+            create_success_response(f"{provider_name} webhook processed ({message})"),
             status=200,
         )
 
-    # NOTE: the dedup marker is recorded only AFTER the event has been
-    # successfully queued or dispatched. Recording it earlier would make a
-    # failed dispatch (which returns 5xx) suppress the provider's retry,
-    # permanently losing the event.
+    try:
+        rate_limit_response, rate_limit_info = _handle_rate_limiting(workspace)
+        if rate_limit_response:
+            event_consolidation_service.release_claim(workspace_id, dedup_key)
+            return rate_limit_response
+
+        response = _dispatch_event(
+            event_data, customer_data, provider_name, workspace, workspace_id
+        )
+    except BaseException:
+        # Let the provider's retry through instead of suppressing it.
+        event_consolidation_service.release_claim(workspace_id, dedup_key)
+        raise
+
+    # NOTE: the completed dedup marker is recorded only AFTER the event has
+    # been successfully queued or dispatched. Recording it earlier would
+    # make a failed dispatch (which returns 5xx) suppress the provider's
+    # retry, permanently losing the event.
+    _record_dedup_marker(event_data, workspace_id, dedup_key)
+    _add_rate_limit_headers(response, rate_limit_info)
+    return response
+
+
+def _dispatch_event(
+    event_data: Dict[str, Any],
+    customer_data: Dict[str, Any],
+    provider_name: str,
+    workspace: Optional[Workspace],
+    workspace_id: str,
+) -> JsonResponse:
+    """Queue or immediately deliver an event that passed dedup.
+
+    Args:
+        event_data: Parsed event data.
+        customer_data: Customer data from the payload.
+        provider_name: Router-level provider name.
+        workspace: The workspace, or None for global endpoints.
+        workspace_id: Workspace UUID string, or "global".
+
+    Returns:
+        The success response.
+    """
+    event_type = event_data.get("type", "")
+    idempotency_key = event_data.get("idempotency_key")
 
     # Providers with complete data in one webhook - process immediately
     if provider_name in _IMMEDIATE_PROCESSING_PROVIDERS:
-        response = _process_immediately(
-            event_data, customer_data, provider_name, workspace
-        )
-        _record_dedup_marker(event_data, workspace_id, dedup_key)
-        return response
+        return _process_immediately(event_data, customer_data, provider_name, workspace)
 
     # Queue Stripe for delayed processing (needs invoice + subscription aggregation)
     should_aggregate = event_type in _AGGREGATABLE_EVENT_TYPES
@@ -390,7 +481,6 @@ def _process_webhook_data(
         )
         # Queued events are owned by our system now (orphan recovery retries
         # failed sends), so it is safe to suppress provider retries.
-        _record_dedup_marker(event_data, workspace_id, dedup_key)
 
         # Log with truncated key for readability
         if len(aggregation_key) > 20:
@@ -405,9 +495,7 @@ def _process_webhook_data(
         )
 
     # Events WITHOUT idempotency_key that don't benefit from aggregation
-    response = _process_immediately(event_data, customer_data, provider_name, workspace)
-    _record_dedup_marker(event_data, workspace_id, dedup_key)
-    return response
+    return _process_immediately(event_data, customer_data, provider_name, workspace)
 
 
 def _process_immediately(
@@ -558,6 +646,10 @@ def _process_webhook(
     logging, and storage - so unauthenticated requests cannot consume
     workspace quota or persist attacker-controlled data.
 
+    Monthly quota is charged later, in _process_webhook_data, once the
+    event is parsed and has passed dedup. Here a workspace that is
+    already at its hard cap is only turned away, without being charged.
+
     Uses workspace-specific Slack integration for notifications.
     """
     try:
@@ -571,12 +663,12 @@ def _process_webhook(
         if access_denied is not None:
             return access_denied
 
-        # Enforce workspace rate limits on authenticated requests only.
-        # A single enforce_rate_limit call increments usage once and
-        # returns the info reused for response headers.
-        rate_limit_response, rate_limit_info = _handle_rate_limiting(workspace)
-        if rate_limit_response:
-            return rate_limit_response
+        # Turn away hard-capped workspaces before logging/parsing. This
+        # does not charge quota; that happens once the event is known to
+        # be processed (see _process_webhook_data).
+        capped = _reject_if_hard_capped(workspace)
+        if capped is not None:
+            return capped
 
         # Log/store raw webhook payload only for authenticated,
         # non-rate-limited requests
@@ -605,17 +697,13 @@ def _process_webhook(
                 f"{provider_name} webhook acknowledged without processing "
                 "(test ping or intentionally skipped event type)"
             )
-            response = JsonResponse(
+            return JsonResponse(
                 create_success_response("Webhook received (no notification required)"),
                 status=200,
             )
-            _add_rate_limit_headers(response, rate_limit_info)
-            return response
 
-        # Process webhook data with workspace for Slack notifications
-        response = _process_webhook_data(event_data, provider, provider_name, workspace)
-        _add_rate_limit_headers(response, rate_limit_info)
-        return response
+        # Dedup, charge quota and dispatch
+        return _process_webhook_data(event_data, provider, provider_name, workspace)
 
     except Exception as e:
         return _handle_webhook_exceptions(e, provider_name)
