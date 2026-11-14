@@ -106,6 +106,14 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         "checkouts/",
     )
 
+    # Topic prefix whose payload IS the customer resource: there is no
+    # nested ``customer`` object to read the person from.
+    CUSTOMER_TOPIC_PREFIX: ClassVar[str] = "customers/"
+
+    # Refund transaction statuses that mean money actually moved back.
+    # Shopify lists failed and pending attempts in the same array.
+    SUCCESSFUL_TRANSACTION_STATUSES: ClassVar[frozenset[str]] = frozenset({"success"})
+
     @classmethod
     def get_metadata(cls) -> PluginMetadata:
         """Return plugin metadata.
@@ -134,6 +142,7 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         """
         super().__init__(webhook_secret)
         self._current_webhook_data: dict[str, Any] | None = None
+        self._current_topic: str = ""
 
     def _validate_shopify_request(self, request: HttpRequest) -> str:
         """Validate Shopify webhook request and return topic.
@@ -381,8 +390,8 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         if "currency" in data:
             event_data["currency"] = data["currency"]
 
-        # For customer updates, include customer data
-        if topic == "customers/update":
+        # For customer topics the payload is the customer: include it
+        if topic.startswith(self.CUSTOMER_TOPIC_PREFIX):
             event_data["customer_data"] = {
                 "company": data.get("company", ""),
                 "email": data.get("email", ""),
@@ -575,6 +584,16 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         amount = Decimal(0)
         currency: str | None = None
         for txn in data.get("transactions") or []:
+            # Failed, pending and errored attempts are listed alongside the
+            # one that succeeded; only a successful transaction refunded
+            # money. A transaction without a status is counted, so older
+            # or trimmed payloads keep their previous total.
+            status = txn.get("status")
+            if (
+                status is not None
+                and str(status).lower() not in self.SUCCESSFUL_TRANSACTION_STATUSES
+            ):
+                continue
             raw = txn.get("amount")
             if raw is None:
                 continue
@@ -673,11 +692,61 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         # Parse JSON data
         data = self._parse_shopify_json(request)
 
-        # Store webhook data for later use
-        self._current_webhook_data = data
-
         # Shopify's contentless test ping carries no event to report.
         if self._is_test_webhook(topic, request):
+            self._current_webhook_data = data
+            self._current_topic = topic
+            return None
+
+        event = self.build_event_from_payload(
+            topic, data, is_test=self._is_test_event(request)
+        )
+        if event is None:
+            return None
+
+        # Dedup keys on the signed body, never the unsigned
+        # X-Shopify-Webhook-Id header: Shopify's HMAC covers only the
+        # body, so a captured body replayed with a fresh webhook-id
+        # header must map to the SAME dedup key. Redeliveries resend the
+        # identical body (identical hash), while distinct events differ
+        # in signed fields (resource id, updated_at, financial_status).
+        #
+        # Confirmed against a live store: orders/create and orders/paid
+        # for one order arrive byte-identical, which is why the router's
+        # key includes the event type.
+        event["content_hash"] = signed_content_hash(request)
+
+        return event
+
+    def build_event_from_payload(
+        self, topic: str, data: dict[str, Any], is_test: bool = False
+    ) -> dict[str, Any] | None:
+        """Build the normalized event for an already-parsed payload.
+
+        Shared by the live webhook path and by tooling that re-processes
+        stored bodies (replay_shopify_webhooks), so both read payloads
+        identically. The caller owns ``content_hash``: only it knows the
+        raw signed bytes.
+
+        Also primes ``get_customer_data`` with this payload.
+
+        Args:
+            topic: The Shopify webhook topic.
+            data: The decoded JSON body.
+            is_test: Whether Shopify flagged the event as test-mode.
+
+        Returns:
+            The event dictionary, or None for unsupported topics and the
+            test ping.
+
+        Raises:
+            InvalidDataError: If the payload is missing required fields.
+        """
+        # Store webhook data for later use
+        self._current_webhook_data = data
+        self._current_topic = topic
+
+        if topic == "test":
             return None
 
         # Map webhook topic to event type. Unknown topics are acknowledged
@@ -717,20 +786,8 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         # Flag test-gateway orders so a notification can say so. They are
         # real orders and are processed like any other; the merchant just
         # needs to know no money moved.
-        if self._is_test_event(request):
+        if is_test:
             event.setdefault("metadata", {})["is_test"] = True
-
-        # Dedup keys on the signed body, never the unsigned
-        # X-Shopify-Webhook-Id header: Shopify's HMAC covers only the
-        # body, so a captured body replayed with a fresh webhook-id
-        # header must map to the SAME dedup key. Redeliveries resend the
-        # identical body (identical hash), while distinct events differ
-        # in signed fields (resource id, updated_at, financial_status).
-        #
-        # Confirmed against a live store: orders/create and orders/paid
-        # for one order arrive byte-identical, which is why the router's
-        # key includes the event type.
-        event["content_hash"] = signed_content_hash(request)
 
         return event
 
@@ -750,10 +807,14 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             raise CustomerNotFoundError("No webhook data available")
 
         data = self._current_webhook_data
-        # ``customer`` may be explicitly null for guest checkouts
-        customer = data.get("customer") or {}
-        if not customer and isinstance(data.get("order"), dict):
-            customer = data["order"].get("customer") or {}
+        if self._current_topic.startswith(self.CUSTOMER_TOPIC_PREFIX):
+            # customers/* payloads are the customer resource itself
+            customer = data
+        else:
+            # ``customer`` may be explicitly null for guest checkouts
+            customer = data.get("customer") or {}
+            if not customer and isinstance(data.get("order"), dict):
+                customer = data["order"].get("customer") or {}
 
         customer_data: dict[str, Any] = {
             "company": customer.get("company", "Individual"),
@@ -844,5 +905,8 @@ class ShopifySourcePlugin(BaseSourcePlugin):
         )
 
         digest = hmac.new(secret, message, hashlib.sha256).digest()
-        calculated_hmac = base64.b64encode(digest).decode("utf-8")
-        return hmac.compare_digest(hmac_header, calculated_hmac)
+        calculated_hmac = base64.b64encode(digest)
+        # Compare bytes: compare_digest raises TypeError for a str holding
+        # non-ASCII characters, which would surface as a 500 instead of a
+        # rejected signature.
+        return hmac.compare_digest(hmac_header.encode("utf-8"), calculated_hmac)

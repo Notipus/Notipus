@@ -12,7 +12,14 @@ What Notipus holds, and how each part is handled:
   activity list. These carry customer names, emails and order detail,
   so they are scanned and deleted.
 * ``Person`` rows - per-workspace PII from email enrichment - deleted
-  for the workspace and email in question.
+  for the workspace and email in question. ``Person`` records no source.
+  On ``shop/redact`` a workspace whose only source integration is
+  Shopify has every ``Person`` row deleted, since they can only have
+  come from the shop. A workspace that also has (or had) a Stripe or
+  Chargify integration has only the people whose email appears in the
+  retained Shopify records deleted; anyone enriched from an older
+  Shopify order cannot be attributed to the shop and may remain, which
+  is logged as a warning.
 * ``Company`` rows are deliberately untouched: they hold public brand
   data fetched by domain, are shared across workspaces by design, and
   contain no personal data (see the model docstring).
@@ -24,13 +31,16 @@ from __future__ import annotations
 import json
 import logging
 from datetime import timedelta
+from functools import reduce
+from operator import or_
 from typing import Any
 
 from core.encrypted_cache import decrypt_cache_value
-from core.models import Person, Workspace
+from core.models import Integration, Person, Workspace
 from core.services.mail import send_email
 from core.services.recipients import admin_emails
 from django.core.cache import cache
+from django.db.models import Q
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -39,6 +49,9 @@ logger = logging.getLogger(__name__)
 # 7-day TTL, so a slightly wider window covers clock skew and any index
 # entry written just before midnight.
 SCAN_DAYS = 10
+
+# TTL used when rewriting an activity index after deleting from it.
+ACTIVITY_INDEX_TTL_SECONDS = 60 * 60 * 24 * 10
 
 
 def _activity_key(workspace_uuid: str, date_str: str) -> str:
@@ -295,7 +308,9 @@ def redact_customer(
                 survivors.append(webhook_key)
         if len(survivors) != len(webhook_keys):
             # Rewrite the index so deleted keys stop being referenced.
-            cache.set(activity_key, json.dumps(survivors), timeout=60 * 60 * 24 * 10)
+            cache.set(
+                activity_key, json.dumps(survivors), timeout=ACTIVITY_INDEX_TTL_SECONDS
+            )
 
     deleted_people = 0
     if email:
@@ -312,13 +327,102 @@ def redact_customer(
     return {"records": deleted_records, "people": deleted_people}
 
 
+def _record_emails(record: dict[str, Any]) -> set[str]:
+    """Collect the customer emails a stored record mentions.
+
+    Args:
+        record: A stored webhook record.
+
+    Returns:
+        Lower-cased email addresses.
+    """
+    candidates: list[Any] = [
+        record.get("customer_email"),
+        record.get("email"),
+        record.get("customer_id"),  # guest checkouts are keyed by email
+    ]
+    customer = record.get("customer")
+    if isinstance(customer, dict):
+        candidates.append(customer.get("email"))
+    return {
+        str(value).strip().lower()
+        for value in candidates
+        if isinstance(value, str) and "@" in value
+    }
+
+
+def _has_other_sources(workspace: Workspace) -> bool:
+    """Check whether a workspace has, or had, a non-Shopify source.
+
+    Inactive integrations count too: their enriched people may still be
+    in the workspace.
+
+    Args:
+        workspace: The workspace to check.
+
+    Returns:
+        True when a Stripe, Chargify or other non-Shopify source
+        integration exists for the workspace.
+    """
+    other_types = [
+        source for source in Integration.SOURCE_INTEGRATION_TYPES if source != "shopify"
+    ]
+    return bool(
+        workspace.integrations.filter(integration_type__in=other_types).exists()
+    )
+
+
+def _redact_shop_people(workspace: Workspace, shop_emails: set[str]) -> int:
+    """Delete the ``Person`` rows a shop/redact must erase.
+
+    Retained records expire after 7 days and are capped per day, so the
+    emails found in them cannot be relied on to cover every Shopify
+    customer. When Shopify is the only source the workspace ever had,
+    every ``Person`` row came from it and all are deleted. Otherwise the
+    rows cannot be attributed, so the matched ones are deleted and a
+    warning records that others may remain.
+
+    Args:
+        workspace: The workspace being erased.
+        shop_emails: Emails found in the shop's retained records.
+
+    Returns:
+        Number of ``Person`` rows deleted.
+    """
+    if not _has_other_sources(workspace):
+        deleted_all, _ = Person.objects.filter(workspace=workspace).delete()
+        return int(deleted_all)
+
+    deleted: int = 0
+    if shop_emails:
+        email_filter = reduce(
+            or_, (Q(email__iexact=email) for email in sorted(shop_emails))
+        )
+        matched, _ = Person.objects.filter(email_filter, workspace=workspace).delete()
+        deleted = int(matched)
+    logger.warning(
+        "Shopify shop/redact for workspace %s: the workspace also has a "
+        "non-Shopify source, so only %d enriched people found in retained "
+        "Shopify records were deleted; people enriched from older Shopify "
+        "orders may remain",
+        workspace.uuid,
+        deleted,
+    )
+    return deleted
+
+
 def redact_shop(workspace: Workspace) -> dict[str, int]:
     """Delete everything Notipus holds for a shop.
 
     Answers ``shop/redact``, which Shopify sends 48 hours after an
-    uninstall. Every stored record for the workspace goes, along with
-    its per-workspace enrichment rows, and the Shopify integration is
-    deactivated so nothing tries to reach the store again.
+    uninstall. Only Shopify-originated data goes: the workspace may also
+    receive Stripe or Chargify webhooks, and erasing a shop must not
+    erase those. Stored records with ``provider == "shopify"`` are
+    deleted. ``Person`` rows have no source: when Shopify is the
+    workspace's only source integration they are all deleted, otherwise
+    only people whose email appears in those Shopify records are (see
+    the module docstring for the limit this implies). The Shopify
+    integration is deactivated so nothing tries to reach the store again.
 
     Args:
         workspace: The workspace to erase.
@@ -327,13 +431,30 @@ def redact_shop(workspace: Workspace) -> dict[str, int]:
         Counts of what was deleted.
     """
     deleted_records = 0
+    shop_emails: set[str] = set()
     for activity_key, webhook_keys in _iter_activity(str(workspace.uuid)):
+        survivors: list[str] = []
         for webhook_key in webhook_keys:
+            record = _load_record(webhook_key)
+            if record is None:
+                # Expired or unreadable. An unreadable record may still
+                # hold the shop's PII, so delete it as well as the key.
+                cache.delete(webhook_key)
+                continue
+            if str(record.get("provider", "")).lower() != "shopify":
+                survivors.append(webhook_key)
+                continue
+            shop_emails |= _record_emails(record)
             cache.delete(webhook_key)
             deleted_records += 1
-        cache.delete(activity_key)
+        if survivors:
+            cache.set(
+                activity_key, json.dumps(survivors), timeout=ACTIVITY_INDEX_TTL_SECONDS
+            )
+        else:
+            cache.delete(activity_key)
 
-    deleted_people, _ = Person.objects.filter(workspace=workspace).delete()
+    deleted_people = _redact_shop_people(workspace, shop_emails)
 
     deactivated = workspace.integrations.filter(
         integration_type="shopify", is_active=True

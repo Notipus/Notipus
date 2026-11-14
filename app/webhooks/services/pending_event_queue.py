@@ -418,15 +418,16 @@ class PendingEventQueue:
                 f"{idempotency_key}"
             )
 
-            # Aggregate events into ONE notification
-            aggregated_event, aggregated_customer = self._aggregate_events(stored_items)
-
-            # Send notification - only delete events if successful
-            success = self._send_notification(
-                aggregated_event, aggregated_customer, provider_name, workspace
+            sent_items, failed_items = self._send_transactions(
+                stored_items, provider_name, workspace
             )
+            success = not failed_items
 
             attempts_key = f"pending_webhook_attempts:{workspace_id}:{idempotency_key}"
+            if not success and sent_items:
+                # Transactions that were delivered must not be resent with
+                # the ones that failed; only the failures stay queued.
+                self._remove_processed_items(key, sent_items)
             if success:
                 # Remove exactly the items that were sent; events appended
                 # by another worker mid-send stay queued for their own cycle.
@@ -448,7 +449,7 @@ class PendingEventQueue:
                     )
                     # Drop only what we tried to send; a mid-send append is
                     # a new group and gets a fresh attempt budget.
-                    remainder = self._remove_processed_items(key, stored_items)
+                    remainder = self._remove_processed_items(key, failed_items)
                     cache.delete(attempts_key)
                     if remainder:
                         self._schedule_processing(
@@ -462,6 +463,38 @@ class PendingEventQueue:
         finally:
             # Always release the lock
             self._release_lock(lock_key)
+
+    def _send_transactions(
+        self,
+        stored_items: list[dict[str, Any]],
+        provider_name: str,
+        workspace: Workspace | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Send one notification per transaction in a pending bucket.
+
+        The subscription and invoice events of one payment merge into one
+        notification; distinct invoices never do.
+
+        Args:
+            stored_items: Items in the pending bucket.
+            provider_name: Name of the provider.
+            workspace: Workspace model instance.
+
+        Returns:
+            Tuple of (items whose notification was delivered, items whose
+            notification failed).
+        """
+        sent_items: list[dict[str, Any]] = []
+        failed_items: list[dict[str, Any]] = []
+        for group in self._partition_transactions(stored_items):
+            aggregated_event, aggregated_customer = self._aggregate_events(group)
+            if self._send_notification(
+                aggregated_event, aggregated_customer, provider_name, workspace
+            ):
+                sent_items.extend(group)
+            else:
+                failed_items.extend(group)
+        return sent_items, failed_items
 
     def _remove_processed_items(
         self, key: str, processed_items: list[dict[str, Any]]
@@ -493,37 +526,54 @@ class PendingEventQueue:
         )
         if token is None:
             # The finalize budget outlasts the lock TTL, so this means
-            # sustained contention, not one crashed holder. Fall back to
-            # the pre-lock behavior of deleting the whole key rather than
-            # leaving the group to be resent forever by the recovery sweep.
+            # sustained contention, not one crashed holder. Still remove
+            # only the processed items, without the lock: deleting the
+            # whole key would silently drop transactions that failed and
+            # are waiting for a retry. The cost is that an append landing
+            # in this exact window can be overwritten.
             logger.warning(
                 f"Could not acquire append lock to finalize {key}; "
-                f"deleting the pending list outright"
+                f"removing processed items without the lock"
             )
-            cache.delete(key)
-            return []
+            return self._rewrite_without(key, processed_items)
         try:
-            current = self._read_pending_items(key)
-            if current is None:
-                # The list turned undecryptable mid-send (key rotation in
-                # exactly that window); _read_pending_items already purged
-                # it and logged at error level.
-                return []
-            remainder = list(current)
-            for item in processed_items:
-                try:
-                    remainder.remove(item)
-                except ValueError:
-                    # Already gone (e.g. the list was rewritten after a
-                    # TTL expiry); nothing to remove for this item.
-                    pass
-            if remainder:
-                cache.set(key, encrypt_cache_value(remainder), timeout=self.TTL_SECONDS)
-            else:
-                cache.delete(key)
-            return remainder
+            return self._rewrite_without(key, processed_items)
         finally:
             self._release_append_lock(key, token)
+
+    def _rewrite_without(
+        self, key: str, processed_items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Rewrite the pending list minus one occurrence per processed item.
+
+        Callers hold the append lock where they can get it.
+
+        Args:
+            key: Cache key of the pending list.
+            processed_items: Items to remove.
+
+        Returns:
+            Items still queued, empty when the list is fully drained.
+        """
+        current = self._read_pending_items(key)
+        if current is None:
+            # The list turned undecryptable mid-send (key rotation in
+            # exactly that window); _read_pending_items already purged
+            # it and logged at error level.
+            return []
+        remainder = list(current)
+        for item in processed_items:
+            try:
+                remainder.remove(item)
+            except ValueError:
+                # Already gone (e.g. the list was rewritten after a
+                # TTL expiry); nothing to remove for this item.
+                pass
+        if remainder:
+            cache.set(key, encrypt_cache_value(remainder), timeout=self.TTL_SECONDS)
+        else:
+            cache.delete(key)
+        return remainder
 
     def _read_pending_items(self, key: str) -> list[dict[str, Any]] | None:
         """Read and decrypt the pending list, purging poisoned entries.
@@ -625,6 +675,105 @@ class PendingEventQueue:
         "next_payment_attempt",
     )
 
+    # Event types whose object is an invoice: the external_id is the
+    # invoice id, and each distinct invoice is its own transaction.
+    INVOICE_EVENT_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "payment_success",
+            "invoice_paid",
+            "payment_failure",
+            "payment_action_required",
+        }
+    )
+
+    def _transaction_ids(
+        self, event_data: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        """Return the (invoice id, subscription id) an event belongs to.
+
+        Args:
+            event_data: Stored event data.
+
+        Returns:
+            Tuple of invoice id (None for non-invoice events) and
+            subscription id (None when the event carries none).
+        """
+        metadata = event_data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        subscription_id = metadata.get("subscription_id") or None
+        invoice_id = None
+        if event_data.get("type") in self.INVOICE_EVENT_TYPES:
+            invoice_id = metadata.get("invoice_id") or event_data.get("external_id")
+        return (
+            str(invoice_id) if invoice_id else None,
+            str(subscription_id) if subscription_id else None,
+        )
+
+    def _partition_transactions(
+        self, stored_items: list[dict[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
+        """Split a pending bucket into one group per transaction.
+
+        Events without a Stripe idempotency key are bucketed per customer
+        in a 60-second window so a subscription event can pick up the
+        email from its invoice. That window must not merge separate
+        payments: two renewals for one customer ($49 and $999) would
+        otherwise produce one notification for the higher-priority event.
+
+        - Every distinct invoice is its own transaction (invoice.paid and
+          invoice.payment_succeeded for one invoice still merge).
+        - A subscription event joins the invoice of the same
+          subscription, or forms its own group when there is none.
+        - Events carrying neither id join the first group, which keeps
+          the old behaviour for payloads that cannot be told apart.
+
+        Args:
+            stored_items: Items in the pending bucket, in arrival order.
+
+        Returns:
+            Groups of items, each in arrival order. Never empty for a
+            non-empty input.
+        """
+        groups: list[list[int]] = []
+        by_invoice: dict[str, int] = {}
+        by_subscription: dict[str, int] = {}
+        deferred: list[int] = []
+
+        for index, item in enumerate(stored_items):
+            invoice_id, subscription_id = self._transaction_ids(item["event_data"])
+            if not invoice_id:
+                deferred.append(index)
+                continue
+            if invoice_id not in by_invoice:
+                by_invoice[invoice_id] = len(groups)
+                groups.append([])
+            group_index = by_invoice[invoice_id]
+            groups[group_index].append(index)
+            if subscription_id:
+                by_subscription.setdefault(subscription_id, group_index)
+
+        unkeyed: list[int] = []
+        for index in deferred:
+            _, subscription_id = self._transaction_ids(
+                stored_items[index]["event_data"]
+            )
+            if not subscription_id:
+                unkeyed.append(index)
+                continue
+            if subscription_id not in by_subscription:
+                by_subscription[subscription_id] = len(groups)
+                groups.append([])
+            groups[by_subscription[subscription_id]].append(index)
+
+        if unkeyed:
+            if groups:
+                groups[0].extend(unkeyed)
+            else:
+                groups.append(unkeyed)
+
+        return [[stored_items[i] for i in sorted(group)] for group in groups]
+
     def _aggregate_events(
         self, stored_items: list[dict[str, Any]]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -680,10 +829,7 @@ class PendingEventQueue:
             # (invoice events have customer_email, subscription events don't)
             if customer_data.get("email") and not result_customer.get("email"):
                 result_customer["email"] = customer_data["email"]
-                logger.debug(
-                    f"Found customer email from {event_data.get('type')}: "
-                    f"{customer_data['email']}"
-                )
+                logger.debug(f"Found customer email from {event_data.get('type')}")
 
             # Also check event_data for customer_email (from raw webhook)
             if event_data.get("customer_email") and not result_customer.get("email"):
@@ -699,7 +845,7 @@ class PendingEventQueue:
 
         logger.info(
             f"Aggregated {len(stored_items)} events: type={result_event.get('type')}, "
-            f"email={result_customer.get('email') or 'MISSING'}"
+            f"email_present={bool(result_customer.get('email'))}"
         )
 
         self._warn_if_missing_email(result_event, result_customer, stored_items)
@@ -816,14 +962,15 @@ class PendingEventQueue:
             return
 
         event_types = [item["event_data"].get("type") for item in stored_items]
-        emails_found = [
-            item["customer_data"].get("email", "none") or "none"
-            for item in stored_items
+        # Presence only: the addresses themselves are customer PII and
+        # must not reach plaintext logs.
+        emails_present = [
+            bool(item["customer_data"].get("email")) for item in stored_items
         ]
         logger.warning(
             f"No customer email found for {event_type} after aggregating "
             f"{len(stored_items)} events. Event types: {event_types}, "
-            f"Emails checked: {emails_found}"
+            f"email_present per event: {emails_present}"
         )
 
     def _send_notification(

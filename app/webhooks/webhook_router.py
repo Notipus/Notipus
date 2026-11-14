@@ -45,26 +45,17 @@ def _log_webhook_payload(
     request: HttpRequest, provider_name: str, workspace_uuid: Optional[str] = None
 ) -> None:
     """
-    Log the raw webhook payload for analysis when LOG_WEBHOOKS is enabled.
+    Record the raw webhook payload for analysis when LOG_WEBHOOKS is enabled.
 
-    This logs the complete request body and relevant headers to help with
-    debugging and understanding webhook patterns from providers.
+    The log line carries only metadata (provider, path, safe headers, body
+    size). The body itself is customer PII (emails, names, addresses) and
+    goes only to the encrypted, TTL-bound Redis copy written by
+    webhook_storage_service - never into plaintext log records.
     """
     if not settings.LOG_WEBHOOKS:
         return
 
     try:
-        # Get the raw body
-        raw_body = request.body.decode("utf-8")
-
-        # Try to parse as JSON for prettier logging
-        try:
-            body_data = json.loads(raw_body)
-            body_str = json.dumps(body_data, indent=2, default=str)
-        except (json.JSONDecodeError, TypeError):
-            # Not JSON, log as-is (could be form data)
-            body_str = raw_body
-
         # Extract relevant headers (excluding sensitive auth headers)
         relevant_headers = {
             "Content-Type": request.headers.get("Content-Type"),
@@ -92,7 +83,7 @@ def _log_webhook_payload(
                 "webhook_provider": provider_name,
                 "workspace_uuid": workspace_uuid,
                 "headers": relevant_headers,
-                "body": body_str,
+                "body_size": len(request.body),
             },
         )
 
@@ -130,6 +121,35 @@ def create_error_response(error: Exception, status_code: int = 500) -> dict:
         "message": str(error),
         "code": status_code,
     }
+
+
+def _integration_not_found(provider_label: str, workspace_uuid: str) -> JsonResponse:
+    """Answer a webhook addressed to a workspace/integration that is gone.
+
+    Reporting 500 would have the provider retry for days and then
+    disable the endpoint; 404 says plainly that there is nothing here.
+
+    Args:
+        provider_label: Human-readable provider name for the message.
+        workspace_uuid: The workspace UUID from the URL, for logging.
+
+    Returns:
+        A 404 JsonResponse.
+    """
+    logger.warning(
+        "%s webhook for unknown workspace/integration %s",
+        provider_label,
+        workspace_uuid,
+    )
+    return JsonResponse(
+        {
+            "status": "error",
+            "error": "NotFound",
+            "message": f"No active {provider_label} integration for this workspace",
+            "code": 404,
+        },
+        status=404,
+    )
 
 
 def _check_workspace_access(workspace: Optional[Workspace]) -> Optional[JsonResponse]:
@@ -206,23 +226,71 @@ def _handle_rate_limiting(
         return None, rate_limit_info  # No rate limiting
     except RateLimitException as e:
         logger.warning(f"Rate limit exceeded for workspace {workspace.uuid}: {str(e)}")
-        error_response = create_error_response(e, 429)
-        response = JsonResponse(error_response, status=429)
+        return _rate_limited_response(workspace, e), None
 
-        # Add rate limit headers
-        rate_limit_headers = rate_limiter.get_rate_limit_headers(
-            {
-                "limit": e.limit,
-                "current_usage": e.current_usage,
-                "remaining": 0,
-                "reset_time": e.reset_time,
-                "plan": workspace.subscription_plan,
-            }
+
+def _rate_limited_response(workspace: Workspace, e: RateLimitException) -> JsonResponse:
+    """Build the 429 response, with rate limit headers, for a rejection.
+
+    Args:
+        workspace: The rate-limited workspace.
+        e: The rate limit exception describing the breach.
+
+    Returns:
+        A 429 JsonResponse.
+    """
+    response = JsonResponse(create_error_response(e, 429), status=429)
+    rate_limit_headers = rate_limiter.get_rate_limit_headers(
+        {
+            "limit": e.limit,
+            "current_usage": e.current_usage,
+            "remaining": 0,
+            "reset_time": e.reset_time,
+            "plan": workspace.subscription_plan,
+        }
+    )
+    for header_name, header_value in rate_limit_headers.items():
+        response[header_name] = header_value
+    return response
+
+
+def _reject_if_hard_capped(workspace: Optional[Workspace]) -> Optional[JsonResponse]:
+    """Turn away a workspace already at its hard cap, without charging quota.
+
+    Quota is only charged once an event has been parsed and passed dedup
+    (see _process_webhook_data), but a workspace that is already capped
+    should not get its payloads logged, stored and parsed either. This
+    is a read-only version of the pre-checks in enforce_rate_limit.
+
+    Args:
+        workspace: The addressed workspace, or None for global endpoints.
+
+    Returns:
+        A 429 JsonResponse when the workspace cannot be served, None
+        otherwise (including when the limiter itself errors: the charging
+        call later decides).
+    """
+    if workspace is None:
+        return None
+    try:
+        allowed, info = rate_limiter.check_rate_limit(workspace)
+        if allowed:
+            return None
+        if info.get("reason") != "cache_unavailable":
+            hard_cap = rate_limiter.get_hard_limit(workspace)
+            if info["current_usage"] < hard_cap:
+                return None  # Inside the grace window
+        exc = RateLimitException(
+            "Rate limit exceeded",
+            limit=info["limit"],
+            current_usage=info["current_usage"],
+            reset_time=info["reset_time"],
         )
-        for header_name, header_value in rate_limit_headers.items():
-            response[header_name] = header_value
-
-        return response, None
+    except Exception:
+        logger.warning("Rate limit pre-check failed", exc_info=True)
+        return None
+    logger.info(f"Workspace {workspace.uuid} is at its hard cap; rejecting webhook")
+    return _rate_limited_response(workspace, exc)
 
 
 def _add_rate_limit_headers(
@@ -233,6 +301,11 @@ def _add_rate_limit_headers(
         rate_limit_headers = rate_limiter.get_rate_limit_headers(rate_limit_info)
         for header_name, header_value in rate_limit_headers.items():
             response[header_name] = header_value
+
+
+# Retry-After for a redelivery that arrives while the first attempt is
+# still being processed.
+DUPLICATE_IN_PROGRESS_RETRY_AFTER_SECONDS = 30
 
 
 def _get_dedup_key(event_data: Dict[str, Any]) -> str:
@@ -299,25 +372,49 @@ def _process_webhook_data(
     provider_name: str,
     workspace: Optional[Workspace] = None,
 ) -> JsonResponse:
-    """Process webhook data and return success response.
+    """Deduplicate, charge quota for, and dispatch a parsed event.
+
+    The dedup key is claimed atomically (``cache.add``) as "in progress"
+    before anything slow happens, so a concurrent redelivery of the same
+    event gets a 409 with ``Retry-After`` instead of a second
+    notification (a 200 would let the provider drop the event if the
+    first attempt then failed). The claim is turned into a completed marker only after
+    the event has been queued or delivered; on failure it is released so
+    the provider's retry is processed rather than suppressed.
+
+    Monthly quota is charged here - after parsing and dedup, right before
+    processing - so test pings, ignored event types, duplicates and
+    retries after our own 5xx never count against the workspace.
 
     For events with an idempotency_key (Stripe), queues the event for
     delayed processing to allow related events to arrive first.
     Events without idempotency_key are processed immediately.
-
-    The delayed processing ensures we have complete data (like customer
-    email from invoice events) before sending notifications.
     """
     # Get customer data from webhook payload
     customer_data = provider.get_customer_data(event_data.get("customer_id", ""))
 
-    event_type = event_data.get("type", "")
     workspace_id = str(workspace.uuid) if workspace else "global"
-    idempotency_key = event_data.get("idempotency_key")
     dedup_key = _get_dedup_key(event_data)
 
-    # Check for exact duplicate (same provider event) - applies to all events
-    if event_consolidation_service.is_duplicate(workspace_id, dedup_key):
+    claim = event_consolidation_service.claim_event(workspace_id, dedup_key)
+    if claim == "in_progress":
+        # Not a 2xx: the first attempt may still fail, and a provider that
+        # was told "delivered" never retries. 409 + Retry-After makes it
+        # come back, and the retry gets a 200 once the claim is complete.
+        logger.info(
+            f"Deferring duplicate event {dedup_key} for workspace {workspace_id} "
+            "(in progress)"
+        )
+        response = JsonResponse(
+            {
+                "status": "conflict",
+                "message": f"{provider_name} webhook duplicate in progress",
+            },
+            status=409,
+        )
+        response["Retry-After"] = str(DUPLICATE_IN_PROGRESS_RETRY_AFTER_SECONDS)
+        return response
+    if claim != "claimed":
         logger.info(
             f"Skipping duplicate event {dedup_key} for workspace {workspace_id}"
         )
@@ -328,18 +425,54 @@ def _process_webhook_data(
             status=200,
         )
 
-    # NOTE: the dedup marker is recorded only AFTER the event has been
-    # successfully queued or dispatched. Recording it earlier would make a
-    # failed dispatch (which returns 5xx) suppress the provider's retry,
-    # permanently losing the event.
+    try:
+        rate_limit_response, rate_limit_info = _handle_rate_limiting(workspace)
+        if rate_limit_response:
+            event_consolidation_service.release_claim(workspace_id, dedup_key)
+            return rate_limit_response
+
+        response = _dispatch_event(
+            event_data, customer_data, provider_name, workspace, workspace_id
+        )
+    except BaseException:
+        # Let the provider's retry through instead of suppressing it.
+        event_consolidation_service.release_claim(workspace_id, dedup_key)
+        raise
+
+    # NOTE: the completed dedup marker is recorded only AFTER the event has
+    # been successfully queued or dispatched. Recording it earlier would
+    # make a failed dispatch (which returns 5xx) suppress the provider's
+    # retry, permanently losing the event.
+    _record_dedup_marker(event_data, workspace_id, dedup_key)
+    _add_rate_limit_headers(response, rate_limit_info)
+    return response
+
+
+def _dispatch_event(
+    event_data: Dict[str, Any],
+    customer_data: Dict[str, Any],
+    provider_name: str,
+    workspace: Optional[Workspace],
+    workspace_id: str,
+) -> JsonResponse:
+    """Queue or immediately deliver an event that passed dedup.
+
+    Args:
+        event_data: Parsed event data.
+        customer_data: Customer data from the payload.
+        provider_name: Router-level provider name.
+        workspace: The workspace, or None for global endpoints.
+        workspace_id: Workspace UUID string, or "global".
+
+    Returns:
+        The success response.
+    """
+    event_type = event_data.get("type", "")
+    idempotency_key = event_data.get("idempotency_key")
 
     # Providers with complete data in one webhook - process immediately
     if provider_name in _IMMEDIATE_PROCESSING_PROVIDERS:
-        response = _process_immediately(
-            event_data, customer_data, provider_name, workspace
-        )
-        _record_dedup_marker(event_data, workspace_id, dedup_key)
-        return response
+        return _process_immediately(event_data, customer_data, provider_name, workspace)
 
     # Queue Stripe for delayed processing (needs invoice + subscription aggregation)
     should_aggregate = event_type in _AGGREGATABLE_EVENT_TYPES
@@ -361,7 +494,6 @@ def _process_webhook_data(
         )
         # Queued events are owned by our system now (orphan recovery retries
         # failed sends), so it is safe to suppress provider retries.
-        _record_dedup_marker(event_data, workspace_id, dedup_key)
 
         # Log with truncated key for readability
         if len(aggregation_key) > 20:
@@ -376,9 +508,7 @@ def _process_webhook_data(
         )
 
     # Events WITHOUT idempotency_key that don't benefit from aggregation
-    response = _process_immediately(event_data, customer_data, provider_name, workspace)
-    _record_dedup_marker(event_data, workspace_id, dedup_key)
-    return response
+    return _process_immediately(event_data, customer_data, provider_name, workspace)
 
 
 def _process_immediately(
@@ -529,6 +659,10 @@ def _process_webhook(
     logging, and storage - so unauthenticated requests cannot consume
     workspace quota or persist attacker-controlled data.
 
+    Monthly quota is charged later, in _process_webhook_data, once the
+    event is parsed and has passed dedup. Here a workspace that is
+    already at its hard cap is only turned away, without being charged.
+
     Uses workspace-specific Slack integration for notifications.
     """
     try:
@@ -542,12 +676,12 @@ def _process_webhook(
         if access_denied is not None:
             return access_denied
 
-        # Enforce workspace rate limits on authenticated requests only.
-        # A single enforce_rate_limit call increments usage once and
-        # returns the info reused for response headers.
-        rate_limit_response, rate_limit_info = _handle_rate_limiting(workspace)
-        if rate_limit_response:
-            return rate_limit_response
+        # Turn away hard-capped workspaces before logging/parsing. This
+        # does not charge quota; that happens once the event is known to
+        # be processed (see _process_webhook_data).
+        capped = _reject_if_hard_capped(workspace)
+        if capped is not None:
+            return capped
 
         # Log/store raw webhook payload only for authenticated,
         # non-rate-limited requests
@@ -576,17 +710,13 @@ def _process_webhook(
                 f"{provider_name} webhook acknowledged without processing "
                 "(test ping or intentionally skipped event type)"
             )
-            response = JsonResponse(
+            return JsonResponse(
                 create_success_response("Webhook received (no notification required)"),
                 status=200,
             )
-            _add_rate_limit_headers(response, rate_limit_info)
-            return response
 
-        # Process webhook data with workspace for Slack notifications
-        response = _process_webhook_data(event_data, provider, provider_name, workspace)
-        _add_rate_limit_headers(response, rate_limit_info)
-        return response
+        # Dedup, charge quota and dispatch
+        return _process_webhook_data(event_data, provider, provider_name, workspace)
 
     except Exception as e:
         return _handle_webhook_exceptions(e, provider_name)
@@ -660,15 +790,19 @@ def customer_shopify_webhook(
             is_active=True,
         )
 
-        shop_mismatch = _reject_shop_mismatch(request, integration, organization_uuid)
+        # A merchant-registered webhook carries its own secret. An
+        # app-installed one has none, and is signed with the app's
+        # client secret like every other app-level delivery.
+        uses_app_secret = not integration.webhook_secret
+
+        shop_mismatch = _reject_shop_mismatch(
+            request, integration, organization_uuid, uses_app_secret
+        )
         if shop_mismatch is not None:
             return shop_mismatch
 
         from plugins.sources.shopify import ShopifySourcePlugin
 
-        # A merchant-registered webhook carries its own secret. An
-        # app-installed one has none, and is signed with the app's
-        # client secret like every other app-level delivery.
         provider = ShopifySourcePlugin(
             webhook_secret=integration.webhook_secret or settings.SHOPIFY_CLIENT_SECRET
         )
@@ -683,30 +817,35 @@ def customer_shopify_webhook(
         )
 
     except Http404:
-        # An address for a workspace or integration that no longer
-        # exists. Reporting 500 would have the provider retry for two
-        # days and then disable the endpoint; 404 says plainly that
-        # there is nothing here.
-        logger.warning(
-            "Shopify webhook for unknown workspace/integration %s", organization_uuid
-        )
-        return JsonResponse(
-            {
-                "status": "error",
-                "error": "NotFound",
-                "message": "No active Shopify integration for this workspace",
-                "code": 404,
-            },
-            status=404,
-        )
+        # An address for a workspace or integration that no longer exists.
+        return _integration_not_found("Shopify", organization_uuid)
     except Exception as e:
         logger.error(f"Error in customer Shopify webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
         return JsonResponse(error_response, status=500)
 
 
+def _shop_forbidden(error: str, message: str) -> JsonResponse:
+    """Build the 403 returned when an event cannot be bound to this shop.
+
+    Args:
+        error: Machine-readable error name.
+        message: Human-readable explanation.
+
+    Returns:
+        A 403 JsonResponse.
+    """
+    return JsonResponse(
+        {"status": "error", "error": error, "message": message, "code": 403},
+        status=403,
+    )
+
+
 def _reject_shop_mismatch(
-    request: HttpRequest, integration: Integration, workspace_uuid: str
+    request: HttpRequest,
+    integration: Integration,
+    workspace_uuid: str,
+    uses_app_secret: bool = False,
 ) -> JsonResponse | None:
     """Reject an event whose shop is not the one this workspace connected.
 
@@ -716,17 +855,61 @@ def _reject_shop_mismatch(
     workspace's address and be attributed to it - one tenant seeing
     another's orders.
 
+    How strict this is depends on the secret. A merchant-registered
+    webhook is signed with that merchant's own secret, which already
+    binds the body to this tenant, so the header is only cross-checked
+    when present. A delivery verified with the app's client secret is
+    not bound to any tenant - every installed store shares that secret -
+    so it must name its shop, the shop must be the connected one, and
+    where the signed body names a store too, that must agree as well.
+    Refusing the app-secret fallback outright would break stores whose
+    per-shop subscriptions were created against this address at OAuth
+    install time; those always have ``shop_domain`` recorded and Shopify
+    always sends the header, so they keep working.
+
     Args:
         request: The incoming request.
         integration: The addressed workspace's Shopify integration.
         workspace_uuid: The workspace UUID, for logging.
+        uses_app_secret: True when the request will be verified with the
+            app's client secret rather than a per-integration secret.
 
     Returns:
-        A 403 response on mismatch, None when the shop agrees or when
-        either side is unknown.
+        A 403 response when the shop cannot be bound to this workspace,
+        None otherwise.
     """
     header_shop = request.headers.get("X-Shopify-Shop-Domain")
     configured_shop = integration.integration_settings.get("shop_domain")
+
+    if uses_app_secret:
+        if not configured_shop:
+            logger.warning(
+                "Rejecting app-signed Shopify webhook for workspace %s: no "
+                "connected shop to bind it to",
+                workspace_uuid,
+            )
+            return _shop_forbidden(
+                "ShopUnbound", "No connected store to verify this webhook against"
+            )
+        if not header_shop:
+            logger.warning(
+                "Rejecting app-signed Shopify webhook for workspace %s: "
+                "missing X-Shopify-Shop-Domain",
+                workspace_uuid,
+            )
+            return _shop_forbidden("ShopMismatch", "Webhook does not name its store")
+        signed_shop = _signed_shop_domain(request)
+        if signed_shop and signed_shop != str(configured_shop).lower():
+            logger.warning(
+                "Rejecting Shopify webhook for workspace %s: signed body is "
+                "from %s, connected shop is %s",
+                workspace_uuid,
+                signed_shop,
+                configured_shop,
+            )
+            return _shop_forbidden(
+                "ShopMismatch", "Webhook shop does not match the connected store"
+            )
 
     if not header_shop or not configured_shop:
         # Nothing to compare: a merchant-registered webhook need not have
@@ -969,6 +1152,8 @@ def customer_chargify_webhook(
             log_provider_name="chargify",
         )
 
+    except (Workspace.DoesNotExist, Integration.DoesNotExist):
+        return _integration_not_found("Chargify/Maxio", organization_uuid)
     except Exception as e:
         logger.error(
             f"Error in customer Chargify/Maxio webhook: {str(e)}", exc_info=True
@@ -1007,7 +1192,10 @@ def customer_stripe_webhook(
 
         from plugins.sources.stripe import StripeSourcePlugin
 
-        provider = StripeSourcePlugin(webhook_secret=integration.webhook_secret)
+        provider = StripeSourcePlugin(
+            webhook_secret=integration.webhook_secret,
+            cache_scope=str(workspace.uuid),
+        )
 
         return _process_webhook(
             request,
@@ -1018,6 +1206,8 @@ def customer_stripe_webhook(
             log_provider_name="stripe",
         )
 
+    except Http404:
+        return _integration_not_found("Stripe", organization_uuid)
     except Exception as e:
         logger.error(f"Error in customer Stripe webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
@@ -1089,6 +1279,7 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
         provider = StripeSourcePlugin(
             webhook_secret=billing_integration.webhook_secret,
             process_billing_events=True,
+            cache_scope="billing",
         )
 
         return _process_webhook(

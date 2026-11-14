@@ -1783,7 +1783,7 @@ class TestProcessDeleteRace:
 
         A crashed append-lock holder blocks finalization until the lock
         expires; a budget shorter than the TTL would make finalization
-        reliably fall into the delete-outright fallback in that window.
+        reliably fall into the lock-less fallback in that window.
         """
         from webhooks.services.pending_event_queue import (
             APPEND_LOCK_FINALIZE_MAX_ATTEMPTS,
