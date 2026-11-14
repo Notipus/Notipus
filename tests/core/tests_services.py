@@ -457,8 +457,9 @@ class BillingServiceTest(TestCase):
         self.assertIn("active", mock_logger.info.call_args[0][0])
         mock_sync.assert_called_once_with("cus_test123")
 
+    @patch("webhooks.services.billing.BillingService.sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
-    def test_handle_subscription_updated_status_changes(self, mock_logger):
+    def test_handle_subscription_updated_status_changes(self, mock_logger, mock_sync):
         """Test subscription update with various status changes"""
         status_test_cases = [
             ("trialing", "trial"),

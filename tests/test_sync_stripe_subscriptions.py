@@ -312,7 +312,7 @@ class TestSyncWorkspaceFromStripe:
             assert workspace.trial_end_date is not None
 
     def test_handles_stripe_api_error(self, workspace: Workspace) -> None:
-        """Verify sync handles Stripe API errors gracefully."""
+        """Stripe API errors propagate so the webhook 5xxs and is retried."""
         import stripe
 
         with patch("webhooks.services.billing.StripeAPI") as mock_stripe_api_class:
@@ -322,8 +322,8 @@ class TestSyncWorkspaceFromStripe:
             )
             mock_stripe_api_class.return_value = mock_api
 
-            result = BillingService.sync_workspace_from_stripe("cus_test123")
-            assert result is False
+            with pytest.raises(stripe.StripeError):
+                BillingService.sync_workspace_from_stripe("cus_test123")
 
     def test_propagates_database_error(self, workspace: Workspace) -> None:
         """Verify unexpected errors propagate instead of being swallowed."""

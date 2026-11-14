@@ -242,3 +242,84 @@ class TestSyncPrimarySubscription:
         assert workspace.subscription_status == "active"
         assert workspace.subscription_plan == "basic"
         assert workspace.stripe_subscription_id == "sub_new"
+
+
+class TestStripeErrorsDuringSync:
+    """Stripe outages fail the webhook instead of reporting success."""
+
+    def test_sync_requests_raising_and_propagates(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """The sync asks for raise_on_error and lets StripeError escape."""
+        stripe_subs.side_effect = stripe.APIConnectionError("down")
+
+        with pytest.raises(stripe.StripeError):
+            BillingService.sync_workspace_from_stripe(CUSTOMER_ID)
+
+        assert stripe_subs.call_args.kwargs["raise_on_error"] is True
+
+    def test_stripe_outage_fails_handler(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """A handler whose sync hits a Stripe outage raises (webhook 5xx)."""
+        stripe_subs.side_effect = stripe.APIConnectionError("down")
+
+        with pytest.raises(stripe.StripeError):
+            BillingService.handle_subscription_updated(
+                {"id": "sub_primary", "customer": CUSTOMER_ID, "status": "active"}
+            )
+
+
+class TestCheckoutCompletedStatus:
+    """checkout.session.completed writes the status the session proves."""
+
+    def _complete(self, workspace: Workspace, **session: Any) -> None:
+        """Run the checkout handler with the sync stubbed out.
+
+        Args:
+            workspace: Workspace the session belongs to.
+            **session: Extra session fields.
+        """
+        payload = {
+            "customer": CUSTOMER_ID,
+            "metadata": {"workspace_id": str(workspace.id)},
+            **session,
+        }
+        with (
+            patch.object(BillingService, "sync_workspace_from_stripe"),
+            patch.object(BillingService, "_warn_on_duplicate_live_subscriptions"),
+        ):
+            BillingService.handle_checkout_completed(payload)
+
+    def test_trial_checkout_is_not_marked_active(self, workspace: Workspace) -> None:
+        """A no-payment trial checkout leaves status to the sync."""
+        Workspace.objects.filter(id=workspace.id).update(subscription_status="trial")
+
+        self._complete(
+            workspace, subscription="sub_primary", payment_status="no_payment_required"
+        )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "trial"
+        assert workspace.payment_method_added is True
+
+    def test_expanded_subscription_status_is_used(self, workspace: Workspace) -> None:
+        """An expanded subscription's real status is mapped and written."""
+        self._complete(
+            workspace,
+            subscription={"id": "sub_new", "status": "trialing"},
+            payment_status="paid",
+        )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "trial"
+        assert workspace.stripe_subscription_id == "sub_new"
+
+    def test_paid_checkout_is_active(self, workspace: Workspace) -> None:
+        """A paid session proves an active subscription."""
+        Workspace.objects.filter(id=workspace.id).update(subscription_status="trial")
+
+        self._complete(workspace, subscription="sub_primary", payment_status="paid")
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "active"

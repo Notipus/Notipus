@@ -20,7 +20,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, cast
 
-import stripe
 from core import analytics
 from core.models import Workspace
 from core.services.stripe import StripeAPI
@@ -367,10 +366,12 @@ class BillingService:
             True if sync was successful, False otherwise.
 
         Raises:
+            stripe.StripeError: Stripe API errors propagate so webhook
+                callers return 5xx and Stripe retries, instead of an
+                outage being logged as "no subscriptions" and treated as
+                a successful sync.
             Exception: Unexpected errors (e.g. database failures) propagate
-                so webhook callers return 5xx and Stripe retries. Only
-                Stripe API errors are swallowed (the sync is best-effort
-                refinement after the primary update already succeeded).
+                for the same reason.
         """
         workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
 
@@ -378,14 +379,13 @@ class BillingService:
             logger.warning(f"No workspace found for customer {customer_id} during sync")
             return False
 
-        try:
-            stripe_api = StripeAPI()
-            subscriptions = stripe_api.get_customer_subscriptions(
-                customer_id, status="all"
-            )
-        except stripe.StripeError as e:
-            logger.error(f"Error syncing workspace from Stripe: {e!s}")
-            return False
+        # raise_on_error: a Stripe outage must not read as "no
+        # subscriptions" and report success. The error propagates so the
+        # webhook returns 5xx and Stripe redelivers the event.
+        stripe_api = StripeAPI()
+        subscriptions = stripe_api.get_customer_subscriptions(
+            customer_id, status="all", raise_on_error=True
+        )
 
         if not subscriptions:
             logger.info(f"No subscriptions found for customer {customer_id}")
@@ -901,13 +901,15 @@ class BillingService:
         workspace_id = metadata.get("workspace_id") or metadata.get("organization_id")
         raw_plan_name = metadata.get("plan_name")
 
-        subscription_id = session.get("subscription")
+        subscription = session.get("subscription")
+        subscription_id = (
+            subscription.get("id") if isinstance(subscription, dict) else subscription
+        )
 
-        # Update workspace with new subscription status
-        update_data: dict[str, Any] = {
-            "subscription_status": "active",
-            "payment_method_added": True,
-        }
+        update_data: dict[str, Any] = {"payment_method_added": True}
+        session_status = BillingService._checkout_subscription_status(session)
+        if session_status:
+            update_data["subscription_status"] = session_status
 
         # Checkout metadata is client-influenced: normalize through the
         # STRIPE_PLANS choices and refuse anything unrecognized instead
@@ -979,6 +981,29 @@ class BillingService:
                     f"No workspace found for checkout session. "
                     f"Customer: {customer_id}, Workspace ID: {workspace_id}"
                 )
+
+    @staticmethod
+    def _checkout_subscription_status(session: dict[str, Any]) -> str | None:
+        """Derive the internal status a completed checkout proves, if any.
+
+        Uses the subscription's real status when the session carries an
+        expanded subscription; otherwise a paid session proves "active".
+        A trial checkout (payment_status "no_payment_required") proves
+        nothing on its own, so None is returned and the sync derives the
+        status from Stripe instead of granting "active".
+
+        Args:
+            session: Checkout session data from Stripe webhook.
+
+        Returns:
+            Internal status string, or None when the session doesn't say.
+        """
+        subscription = session.get("subscription")
+        if isinstance(subscription, dict) and subscription.get("status"):
+            return map_stripe_status(str(subscription["status"]))
+        if session.get("payment_status") == "paid":
+            return "active"
+        return None
 
     @staticmethod
     def _warn_on_duplicate_live_subscriptions(customer_id: str) -> None:

@@ -790,8 +790,12 @@ class TestBillingServiceWebhooks:
             },
         }
 
-        with patch.object(
-            BillingService, "_get_customer_id", return_value="cus_test123"
+        with (
+            patch.object(
+                BillingService, "_get_customer_id", return_value="cus_test123"
+            ),
+            patch.object(BillingService, "sync_workspace_from_stripe"),
+            patch.object(BillingService, "_warn_on_duplicate_live_subscriptions"),
         ):
             with patch("core.models.Workspace.objects.filter") as mock_filter:
                 mock_filter.return_value.update.return_value = 1
