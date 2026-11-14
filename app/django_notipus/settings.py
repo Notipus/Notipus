@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import sentry_sdk
 from django.utils.functional import SimpleLazyObject
+from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 
 if TYPE_CHECKING:
     from sentry_sdk._types import Event, Hint
@@ -52,6 +53,93 @@ _SENTRY_SENSITIVE_KEY_MARKERS = (
 )
 
 _SENTRY_REDACTED = "[Filtered]"
+
+# Extra key names (matched exactly, case-insensitively, at any depth) that
+# Sentry's EventScrubber must redact on top of its defaults. These are the
+# names our code uses for destination credentials, webhook URLs that embed
+# tokens (Telegram puts the bot token in the URL path), notification payloads
+# and end-customer contact data.
+_SENTRY_EXTRA_DENYLIST = [
+    "url",
+    "bot_token",
+    "webhook_url",
+    "payload",
+    "formatted",
+    "destinations",
+    "credentials",
+    "oauth_credentials",
+    "integration_settings",
+    "api_key",
+    "x-api-key",
+    "access_token",
+    "refresh_token",
+    "token",
+    "secret",
+    "signature",
+    "email",
+    "customer_email",
+    "phone",
+    "body",
+    "headers",
+]
+
+
+def _sentry_event_scrubber() -> EventScrubber:
+    """Build the recursive EventScrubber used for every Sentry event.
+
+    :returns: An ``EventScrubber`` that redacts Sentry's default denylist plus
+        :data:`_SENTRY_EXTRA_DENYLIST` at any nesting depth.
+    """
+    return EventScrubber(
+        denylist=DEFAULT_DENYLIST + _SENTRY_EXTRA_DENYLIST,
+        pii_denylist=list(DEFAULT_PII_DENYLIST),
+        recursive=True,
+    )
+
+
+def _sentry_strip_frame_vars(event: "Event") -> None:
+    """Remove local variables from every stack frame in ``event`` in place.
+
+    ``include_local_variables`` is disabled at init time; this is defence in
+    depth so frame locals (tokens, webhook URLs, payloads) never leave the app
+    even if that setting is changed or an integration attaches them anyway.
+
+    :param event: The Sentry event payload.
+    """
+    containers: list[Any] = []
+    for key in ("exception", "threads"):
+        section = event.get(key)
+        if isinstance(section, dict):
+            containers.extend(section.get("values") or [])
+    containers.append(event)
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        stacktrace = container.get("stacktrace")
+        if not isinstance(stacktrace, dict):
+            continue
+        for frame in stacktrace.get("frames") or []:
+            if isinstance(frame, dict):
+                frame.pop("vars", None)
+
+
+def _sentry_strip_breadcrumb_data(event: "Event") -> None:
+    """Remove the ``data`` payload from every breadcrumb in ``event`` in place.
+
+    HTTP breadcrumbs carry outbound URLs (which for Telegram embed the bot
+    token) and other breadcrumb data can carry arbitrary values; the
+    category/message/timestamp are kept for debugging.
+
+    :param event: The Sentry event payload.
+    """
+    breadcrumbs: Any = event.get("breadcrumbs")
+    if isinstance(breadcrumbs, dict):
+        breadcrumbs = breadcrumbs.get("values")
+    if not isinstance(breadcrumbs, list):
+        return
+    for crumb in breadcrumbs:
+        if isinstance(crumb, dict):
+            crumb.pop("data", None)
 
 
 def _sentry_is_sensitive_key(key: str) -> bool:
@@ -138,10 +226,17 @@ def _sentry_before_send(event: "Event", hint: "Hint") -> "Event | None":
       redacted key-by-key whenever the key name looks like a credential,
       secret, or signature (for webhook routes, headers are dropped wholesale).
 
+    * Stack-frame local variables and breadcrumb data are stripped from every
+      event (defence in depth on top of ``include_local_variables=False`` and
+      the recursive ``EventScrubber``).
+
     :param event: The Sentry event payload (mutated in place and returned).
     :param hint: Sentry-provided hint metadata (unused, kept for API contract).
     :returns: The scrubbed event, or ``None`` to drop it entirely.
     """
+    _sentry_strip_frame_vars(event)
+    _sentry_strip_breadcrumb_data(event)
+
     request = event.get("request")
     if not isinstance(request, dict):
         return event
@@ -199,6 +294,10 @@ sentry_sdk.init(
     # all tenants, so this must stay False. See _sentry_before_send below for
     # the belt-and-suspenders scrubbing applied to whatever remains.
     send_default_pii=False,
+    # Frame locals hold bot tokens, webhook URLs, payloads and destination
+    # credentials; never attach them to events.
+    include_local_variables=False,
+    event_scrubber=_sentry_event_scrubber(),
     before_send=_sentry_before_send,
 )
 
