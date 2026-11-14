@@ -16,7 +16,7 @@ import pytest
 from core.services.enrichment import DataBlender, DomainEnrichmentService
 from plugins import PluginRegistry, PluginType, register_plugin
 from plugins.base import PluginCapability, PluginMetadata
-from plugins.enrichment import BaseEnrichmentPlugin
+from plugins.enrichment import BaseEnrichmentPlugin, ProviderUnavailableError
 from plugins.enrichment.brandfetch import BrandfetchPlugin
 
 # ============================================================================
@@ -484,9 +484,9 @@ class TestBrandfetchPlugin:
         plugin = BrandfetchPlugin()
         plugin.configure({"api_key": "test-key"})
 
-        result = plugin.enrich_domain("example.com")
-
-        assert result == {}
+        # Transient: raised so the service doesn't cache it as "no data".
+        with pytest.raises(ProviderUnavailableError):
+            plugin.enrich_domain("example.com")
         mock_get.assert_called_once()
 
     @patch("plugins.enrichment.brandfetch.requests.get")
@@ -499,9 +499,8 @@ class TestBrandfetchPlugin:
         plugin = BrandfetchPlugin()
         plugin.configure({"api_key": "test-key"})
 
-        result = plugin.enrich_domain("slow-domain.com")
-
-        assert result == {}
+        with pytest.raises(ProviderUnavailableError):
+            plugin.enrich_domain("slow-domain.com")
 
 
 # ============================================================================

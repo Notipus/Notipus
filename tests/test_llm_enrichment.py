@@ -25,7 +25,7 @@ from django.core.management.base import CommandError
 from django.test import override_settings
 from plugins import PluginRegistry
 from plugins.base import PluginMetadata, PluginType
-from plugins.enrichment import BaseEnrichmentPlugin
+from plugins.enrichment import BaseEnrichmentPlugin, ProviderUnavailableError
 from plugins.enrichment.base_llm import (
     CLASSIFICATION_SCHEMA,
     BaseLLMEnrichmentPlugin,
@@ -276,11 +276,12 @@ class TestValidation:
         assert c["confidence"] == "low"
         assert c["keywords"] == ["a", "b", "c", "d", "e"]
 
-    def test_provider_exception_returns_empty(self) -> None:
-        """SDK errors are swallowed so webhook processing continues."""
+    def test_provider_exception_is_transient(self) -> None:
+        """SDK errors become ProviderUnavailableError (failover, not cached)."""
         fake = FakeLLM()
         fake.complete_json = MagicMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
-        assert fake.enrich_domain("example.com") == {}
+        with pytest.raises(ProviderUnavailableError):
+            fake.enrich_domain("example.com")
 
     def test_schema_is_strict(self) -> None:
         """Every property is required, as OpenAI strict mode demands."""

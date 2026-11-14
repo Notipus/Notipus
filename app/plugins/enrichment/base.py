@@ -14,6 +14,14 @@ from plugins.base import BasePlugin, PluginCapability, PluginMetadata
 logger = logging.getLogger(__name__)
 
 
+class ProviderUnavailableError(Exception):
+    """A provider could not answer right now (timeout, rate limit, outage).
+
+    Raised instead of returning an empty result so the enrichment service
+    does not cache a transient failure as "no data for this domain".
+    """
+
+
 class EnrichmentCapability(Enum):
     """Specific capabilities for enrichment plugins.
 

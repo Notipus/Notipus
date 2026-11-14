@@ -25,7 +25,11 @@ Usage:
         data = plugin.enrich_email("john@example.com", api_key="...")
 """
 
-from plugins.enrichment.base import BaseEnrichmentPlugin, EnrichmentCapability
+from plugins.enrichment.base import (
+    BaseEnrichmentPlugin,
+    EnrichmentCapability,
+    ProviderUnavailableError,
+)
 from plugins.enrichment.base_email import (
     BaseEmailEnrichmentPlugin,
     EmailEnrichmentCapability,
@@ -39,6 +43,7 @@ __all__ = [
     # Domain enrichment
     "BaseEnrichmentPlugin",
     "EnrichmentCapability",
+    "ProviderUnavailableError",
     # Email enrichment
     "BaseEmailEnrichmentPlugin",
     "EmailEnrichmentCapability",

@@ -154,11 +154,13 @@ class TestNotificationButtons:
         assert "/feedback/industry/" in down.url and down.url.endswith("/down/")
         assert down.url.startswith("http")
 
-    def test_no_buttons_once_corrected(self, company: Company) -> None:
+    def test_no_buttons_once_corrected(
+        self, company: Company, workspace: Workspace
+    ) -> None:
         """A human-corrected classification isn't offered for rating again."""
-        record_feedback(company, None, "down", ("Fintech", ""))
+        record_feedback(company, workspace, "down", ("Gaming", ""))
         company.refresh_from_db()
-        texts = [a.text for a in notification_for(company, None).actions]
+        texts = [a.text for a in notification_for(company, workspace).actions]
         assert not any("industry" in t.lower() for t in texts)
 
     def test_no_buttons_without_classification(self) -> None:
@@ -286,9 +288,9 @@ class TestFeedbackPage:
         url = reverse("core:industry_feedback", args=[make_token(company, None), "meh"])
         assert Client().get(url).status_code == 404
 
-    def test_page_is_noindex(self, company: Company) -> None:
+    def test_page_is_noindex(self, company: Company, workspace: Workspace) -> None:
         """Feedback pages are kept out of search engines."""
-        response = Client().get(feedback_path(company, None, "down"))
+        response = Client().get(feedback_path(company, workspace, "down"))
         assert response["X-Robots-Tag"] == "noindex"
 
 
@@ -301,9 +303,11 @@ class TestFeedbackPage:
 class TestFeedbackIsKept:
     """Human input is never overwritten by the LLM."""
 
-    def test_correction_survives_refresh(self, company: Company) -> None:
+    def test_correction_survives_refresh(
+        self, company: Company, workspace: Workspace
+    ) -> None:
         """refresh_enrichment regenerates everything except the correction."""
-        record_feedback(company, None, "down", ("Gaming", ""))
+        record_feedback(company, workspace, "down", ("Gaming", ""))
         service = build_service(
             [brandfetch_plugin({"name": "Acme"}), make_fake("openai")]
         )
@@ -316,27 +320,26 @@ class TestFeedbackIsKept:
         # The rest of the profile was regenerated.
         assert refreshed.brand_info["description"] == VALID_RESULT["description"]
 
-    def test_correction_survives_backfill(self, company: Company) -> None:
+    def test_correction_survives_backfill(
+        self, company: Company, workspace: Workspace
+    ) -> None:
         """classify_companies --force never overwrites a correction."""
-        record_feedback(company, None, "down", ("Gaming", ""))
+        record_feedback(company, workspace, "down", ("Gaming", ""))
         company.refresh_from_db()
         service = build_service([make_fake("openai")])
         assert service.classify_company(company, use_cache=False) is True
         company.refresh_from_db()
         assert company.brand_info["industry"] == "Gaming"
 
-    def test_vote_counts_carry_over(self) -> None:
+    def test_vote_counts_carry_over(
+        self, company: Company, workspace: Workspace
+    ) -> None:
         """Without a correction, counts move onto the new classification."""
-        old = {
-            "industry_classification": {
-                "industry": "A",
-                "feedback": {"up": 2, "down": 1},
-            }
-        }
-        new = {"industry": "B", "industry_classification": {"industry": "B"}}
-        result = carry_over_feedback(old, new)
-        assert result["industry"] == "B"
-        assert result["industry_classification"]["feedback"] == {"up": 2, "down": 1}
+        record_feedback(company, workspace, "up")
+        new = {"industry": "Gaming", "industry_classification": {"industry": "Gaming"}}
+        result = carry_over_feedback(company.pk, new)
+        assert result["industry"] == "Gaming"
+        assert result["industry_classification"]["feedback"] == {"up": 1, "down": 0}
 
     def test_disputed_command_reruns_only_disputed(
         self, company: Company, workspace: Workspace

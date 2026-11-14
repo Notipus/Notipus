@@ -698,14 +698,16 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
 
         # Company details line
         details: list[str] = []
+        # Industry text comes from an LLM or a human correction, so it is
+        # escaped like any other untrusted field.
         if company.industry_label:
-            details.append(company.industry_label)
+            details.append(safe_mrkdwn(company.industry_label))
         if company.segment_label:
-            details.append(company.segment_label)
+            details.append(safe_mrkdwn(company.segment_label))
         if company.year_founded:
-            details.append(f"Founded {company.year_founded}")
+            details.append(f"Founded {safe_mrkdwn(str(company.year_founded))}")
         if company.employee_count:
-            details.append(f"{company.employee_count} employees")
+            details.append(f"{safe_mrkdwn(str(company.employee_count))} employees")
         if details:
             text_parts.append(f"_{' • '.join(details)}_")
 

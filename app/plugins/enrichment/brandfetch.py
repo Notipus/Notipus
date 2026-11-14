@@ -10,7 +10,7 @@ from typing import Any, cast
 import requests
 from django.conf import settings
 from plugins.base import PluginCapability, PluginMetadata, PluginType
-from plugins.enrichment.base import BaseEnrichmentPlugin
+from plugins.enrichment.base import BaseEnrichmentPlugin, ProviderUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ class BrandfetchPlugin(BaseEnrichmentPlugin):
                 logger.warning(
                     f"Brandfetch rate limit exceeded. Retry after {retry_after} seconds"
                 )
-                return {}
+                raise ProviderUnavailableError("Brandfetch rate limited")
 
             response.raise_for_status()
             brand_data = response.json()
@@ -187,12 +187,12 @@ class BrandfetchPlugin(BaseEnrichmentPlugin):
                     "colors": brand_data.get("colors", []),
                 },
             }
-        except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout as e:
             logger.warning(f"Brandfetch API timeout for domain {domain}")
-            return {}
+            raise ProviderUnavailableError("Brandfetch timed out") from e
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching data from Brandfetch: {e!s}")
-            return {}
+            logger.error(f"Error fetching data from Brandfetch: {type(e).__name__}")
+            raise ProviderUnavailableError("Brandfetch request failed") from e
 
     @staticmethod
     def _industry_names(industries: Any) -> list[str]:
