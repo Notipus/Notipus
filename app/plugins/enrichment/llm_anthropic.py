@@ -60,7 +60,7 @@ class AnthropicLLMPlugin(BaseLLMEnrichmentPlugin):
         """Return a cached SDK client."""
         if self._client is None:
             self._client = anthropic.Anthropic(
-                api_key=self.api_key, timeout=self.timeout, max_retries=1
+                api_key=self.api_key, timeout=self.timeout, max_retries=0
             )
         return self._client
 

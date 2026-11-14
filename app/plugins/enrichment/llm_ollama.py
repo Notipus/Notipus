@@ -20,7 +20,7 @@ class OllamaLLMPlugin(BaseLLMEnrichmentPlugin):
     """Industry classification through a self-hosted Ollama server."""
 
     DEFAULT_MODEL = "llama3.2"
-    DEFAULT_TIMEOUT = 60
+    DEFAULT_TIMEOUT = 20
     REQUIRED_CONFIG = "base_url"
 
     @classmethod

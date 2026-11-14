@@ -956,7 +956,7 @@ PLUGINS: dict = {
             "config": {
                 "api_key": os.environ.get("OPENAI_API_KEY", ""),
                 "model": os.environ.get("OPENAI_ENRICHMENT_MODEL", ""),
-                "timeout": 20,
+                "timeout": 10,
             },
         },
         "anthropic": {
@@ -964,7 +964,7 @@ PLUGINS: dict = {
             "config": {
                 "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
                 "model": os.environ.get("ANTHROPIC_ENRICHMENT_MODEL", ""),
-                "timeout": 20,
+                "timeout": 10,
             },
         },
         "ollama": {
@@ -973,7 +973,7 @@ PLUGINS: dict = {
                 "base_url": os.environ.get("OLLAMA_BASE_URL", ""),
                 "api_key": os.environ.get("OLLAMA_API_KEY", ""),
                 "model": os.environ.get("OLLAMA_ENRICHMENT_MODEL", ""),
-                "timeout": 60,
+                "timeout": 20,
             },
         },
         # Future enrichment plugins:

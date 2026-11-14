@@ -12,6 +12,9 @@ from plugins.enrichment.base_llm import BaseLLMEnrichmentPlugin, parse_json_obje
 
 logger = logging.getLogger(__name__)
 
+# Models that accept the reasoning_effort parameter.
+_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
 
 class OpenAILLMPlugin(BaseLLMEnrichmentPlugin):
     """Industry classification through the OpenAI API."""
@@ -49,7 +52,7 @@ class OpenAILLMPlugin(BaseLLMEnrichmentPlugin):
                 api_key=self.api_key,
                 base_url=self.base_url,
                 timeout=self.timeout,
-                max_retries=1,
+                max_retries=0,
             )
         return self._client
 
@@ -61,17 +64,22 @@ class OpenAILLMPlugin(BaseLLMEnrichmentPlugin):
         schema_name: str,
     ) -> dict[str, Any] | None:
         """Request a strict JSON-schema object from OpenAI."""
-        response = self._get_client().chat.completions.create(
-            model=self.model,
-            messages=[
+        params: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            response_format={
+            "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": schema_name, "schema": schema, "strict": True},
             },
-        )
+        }
+        # Reasoning models default to medium effort, which is slow for a
+        # simple classification on the webhook path.
+        if self.model.startswith(_REASONING_MODEL_PREFIXES):
+            params["reasoning_effort"] = "low"
+        response = self._get_client().chat.completions.create(**params)
         if not response.choices:
             return None
         choice = response.choices[0]

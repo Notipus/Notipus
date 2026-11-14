@@ -311,7 +311,8 @@ class BaseLLMEnrichmentPlugin(BaseEnrichmentPlugin):
     ``"base_url"``.
     """
 
-    DEFAULT_TIMEOUT = 20
+    # Kept short: enrichment can run inside a webhook request.
+    DEFAULT_TIMEOUT = 10
     # Config key that must be set for the module to be available.
     REQUIRED_CONFIG = "api_key"
     SCHEMA_NAME = "company_profile"

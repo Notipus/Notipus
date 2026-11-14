@@ -327,3 +327,72 @@ class TestRoundRobinCache:
         service._classify_with_llm("acme.com", {})
 
         assert len(first.calls) + len(second.calls) == 1
+
+
+@pytest.mark.django_db
+class TestWebhookLatencyGuards:
+    """LLM enrichment can't stall every webhook during a provider outage."""
+
+    def test_failing_module_cools_down(self) -> None:
+        """After a transient failure the module is skipped for a while."""
+        llm = make_fake("openai")
+        calls = {"n": 0}
+
+        def boom(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+            calls["n"] += 1
+            raise TimeoutError("slow provider")
+
+        llm.complete_json = boom  # type: ignore[method-assign]
+        service = build_service([llm])
+
+        assert service._classify_with_llm("a.com", {}) == {}
+        assert service._classify_with_llm("b.com", {}) == {}
+        assert calls["n"] == 1
+
+    def test_cooldown_falls_over_to_next_module(self) -> None:
+        """While one module cools down, the other still answers."""
+        broken = make_fake("openai")
+        broken.complete_json = lambda *a, **k: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            TimeoutError("down")
+        )
+        working = make_fake("anthropic")
+        service = build_service([broken, working])
+
+        service._classify_with_llm("a.com", {})
+        result = service._classify_with_llm("b.com", {})
+
+        assert "anthropic" in result
+
+    def test_reasoning_effort_only_for_reasoning_models(self) -> None:
+        """gpt-5 models get low effort; other models don't get the field."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from plugins.enrichment.llm_openai import OpenAILLMPlugin
+
+        def run(model: str) -> dict[str, Any]:
+            plugin = OpenAILLMPlugin()
+            plugin.configure({"api_key": "k", "model": model})
+            client = MagicMock()
+            message = SimpleNamespace(content=json.dumps(VALID_RESULT), refusal=None)
+            client.chat.completions.create.return_value = SimpleNamespace(
+                choices=[SimpleNamespace(message=message, finish_reason="stop")]
+            )
+            plugin._client = client
+            plugin.enrich_domain("acme.com")
+            return dict(client.chat.completions.create.call_args.kwargs)
+
+        assert run("gpt-5-mini")["reasoning_effort"] == "low"
+        assert "reasoning_effort" not in run("gpt-4o-mini")
+
+    def test_feedback_page_sends_no_referrer(
+        self, company: Company, workspace: Workspace
+    ) -> None:
+        """The token-bearing feedback page opts out of Referer."""
+        url = reverse(
+            "core:industry_feedback", args=[make_token(company, workspace), "up"]
+        )
+        response = Client().get(url)
+        assert (
+            '<meta name="referrer" content="no-referrer">' in response.content.decode()
+        )

@@ -159,6 +159,11 @@ class DomainEnrichmentService:
     # Set by admin "refresh"/"purge" so the next enrichment of a domain
     # bypasses cached provider responses.
     REFRESH_REQUEST_PREFIX = "enrichment:refresh-requested:"
+    # After a transient failure (timeout, rate limit, outage) an LLM module
+    # is skipped for this long, so an outage costs one slow call per module
+    # per window instead of one per webhook.
+    LLM_COOLDOWN_PREFIX = "enrichment:llm-cooldown:"
+    LLM_COOLDOWN_SECONDS = 5 * 60
 
     # Cache key for the cross-process round-robin counter over LLM modules.
     LLM_ROUND_ROBIN_KEY = "enrichment:llm_round_robin"
@@ -493,17 +498,39 @@ class DomainEnrichmentService:
 
         for plugin in self._llm_rotation():
             plugin_name = plugin.get_plugin_name()
+            if self._in_cooldown(plugin_name):
+                logger.debug(f"LLM module '{plugin_name}' is cooling down; skipped")
+                continue
             try:
                 data = self._cached_enrich(
                     plugin, domain, context=context, use_cache=use_cache
                 )
             except Exception as e:
                 logger.warning(f"LLM module '{plugin_name}' failed for {domain}: {e}")
+                self._start_cooldown(plugin_name)
                 continue
             if data:
                 logger.debug(f"Classified {domain} with LLM module '{plugin_name}'")
                 return {plugin_name: data}
         return {}
+
+    def _in_cooldown(self, plugin_name: str) -> bool:
+        """Whether an LLM module recently failed and should be skipped."""
+        try:
+            return bool(cache.get(f"{self.LLM_COOLDOWN_PREFIX}{plugin_name}"))
+        except Exception:
+            return False
+
+    def _start_cooldown(self, plugin_name: str) -> None:
+        """Skip an LLM module for ``LLM_COOLDOWN_SECONDS`` after a failure."""
+        try:
+            cache.set(
+                f"{self.LLM_COOLDOWN_PREFIX}{plugin_name}",
+                True,
+                timeout=self.LLM_COOLDOWN_SECONDS,
+            )
+        except Exception as e:
+            logger.debug(f"Could not record LLM cooldown: {e}")
 
     @staticmethod
     def _llm_context(source_data: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
