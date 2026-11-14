@@ -50,6 +50,7 @@ class TestSlackConnectState:
         )
         workspace = Workspace.objects.create(name="Test Workspace")
         UserProfile.objects.create(user=user, workspace=workspace)
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         return user, workspace
 
     @override_settings(**SLACK_CONNECT_SETTINGS)
@@ -410,3 +411,74 @@ class TestConfigureSlackAdminGate:
         assert response.status_code == 302
         assert response.url == reverse("core:integrations")
         mock_post.assert_called_once()
+
+
+@pytest.mark.django_db
+class TestLegacySlackAuthCallbackLogin:
+    """The legacy login callback logs in for real and refuses squatted accounts."""
+
+    def _callback(self, client: Client, email: str) -> Any:
+        """Run the legacy login callback with mocked Slack APIs (login unpatched).
+
+        Args:
+            client: The Django test client.
+            email: Verified email Slack reports.
+
+        Returns:
+            The callback response.
+        """
+        session = client.session
+        session["slack_auth_oauth_state"] = "shared"
+        session.save()
+        user_info = {
+            "ok": True,
+            "sub": "U123",
+            "email": email,
+            "name": "Owner",
+            "email_verified": True,
+        }
+        with (
+            patch(
+                "core.views.auth._get_slack_token",
+                return_value={"ok": True, "access_token": "tok"},
+            ),
+            patch("core.views.auth._get_slack_user_info", return_value=user_info),
+        ):
+            return client.get(
+                reverse("core:slack_auth_callback"),
+                {"code": "abc", "state": "shared"},
+            )
+
+    def test_new_user_is_logged_in_without_500(self, client: Client) -> None:
+        """login() gets an explicit backend, so the callback no longer 500s."""
+        from allauth.account.models import EmailAddress
+
+        response = self._callback(client, "new@example.com")
+
+        assert response.status_code == 302
+        user = User.objects.get(email="new@example.com")
+        assert client.session["_auth_user_id"] == str(user.pk)
+        assert EmailAddress.objects.filter(user=user, verified=True).exists()
+
+    def test_unverified_existing_account_is_refused(self, client: Client) -> None:
+        """An account squatting the address without verifying it is not entered."""
+        User.objects.create_user(username="squatter", email="owner@example.com")
+
+        response = self._callback(client, "owner@example.com")
+
+        assert response.status_code == 400
+        assert "_auth_user_id" not in client.session
+
+    def test_verified_existing_account_logs_in(self, client: Client) -> None:
+        """An account that verified the address signs in via Slack."""
+        from allauth.account.models import EmailAddress
+
+        user = User.objects.create_user(username="owner", email="owner@example.com")
+        EmailAddress.objects.create(
+            user=user, email="owner@example.com", verified=True, primary=True
+        )
+
+        response = self._callback(client, "owner@example.com")
+
+        assert response.status_code == 302
+        assert client.session["_auth_user_id"] == str(user.pk)

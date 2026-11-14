@@ -25,7 +25,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
 
-from ...models import UserProfile, WorkspaceMember
+from ...models import WorkspaceMember
 
 # Import all integration views for re-export
 from .chargify import integrate_chargify
@@ -128,11 +128,8 @@ def integrations(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     if member:
         workspace = member.workspace
     else:
-        try:
-            user_profile = UserProfile.objects.get(user=request.user)
-            workspace = user_profile.workspace
-        except UserProfile.DoesNotExist:
-            return redirect("core:create_workspace")
+        # No UserProfile fallback: the profile link survives removal.
+        return redirect("core:create_workspace")
 
     integration_service = IntegrationService()
     context = integration_service.get_integration_overview(workspace)

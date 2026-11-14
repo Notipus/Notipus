@@ -25,7 +25,9 @@
                     dataLayer.push(arguments);
                 }
                 gtag('js', new Date());
-                gtag('config', '{{ ga4_measurement_id }}');
+                gtag('config', '{{ ga4_measurement_id }}', {
+                    page_location: '{{ ga4_page_location|escapejs }}'
+                });
             </script>
         {% endif %}
         {% block extra_head %}

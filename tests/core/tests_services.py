@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
-from core.models import Company, Integration, UserProfile, Workspace
+from core.models import Company, Integration, UserProfile, Workspace, WorkspaceMember
 from core.services.enrichment import DomainEnrichmentService
 from core.services.stripe import StripeAPI
 from django.test import TestCase
@@ -158,19 +158,15 @@ class DomainEnrichmentServiceTest(TestCase):
 
         self.assertFalse(self.service._has_enrichment(company))
 
-    def test_has_enrichment_false_when_stale(self) -> None:
-        """Test _has_enrichment returns False for enrichment past the TTL."""
-        ttl = self.service.CACHE_DURATION_DAYS
-        assert ttl is not None
-        # Generate the stale timestamp relative to now so the test is stable
-        # over time rather than depending on a fixed calendar date.
-        stale_at = (datetime.now(timezone.utc) - timedelta(days=ttl + 1)).isoformat()
+    def test_has_enrichment_true_for_old_data(self) -> None:
+        """Company enrichment is cached forever, so old data is still valid."""
+        old_at = (datetime.now(timezone.utc) - timedelta(days=3650)).isoformat()
         company = Company.objects.create(
-            domain="stale.com",
-            brand_info={"_blended_at": stale_at},
+            domain="old.com",
+            brand_info={"_blended_at": old_at},
         )
 
-        self.assertFalse(self.service._has_enrichment(company))
+        self.assertTrue(self.service._has_enrichment(company))
 
 
 class BillingServiceTest(TestCase):
@@ -613,6 +609,9 @@ class DashboardServiceTest(TestCase):
         self.user_profile = UserProfile.objects.create(
             user=self.user,
             workspace=self.workspace,
+        )
+        WorkspaceMember.objects.create(
+            user=self.user, workspace=self.workspace, role="owner"
         )
 
     @patch("core.services.dashboard.rate_limiter")

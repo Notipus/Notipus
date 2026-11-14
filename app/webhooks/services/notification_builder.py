@@ -9,7 +9,8 @@ import re
 from datetime import datetime
 from typing import Any
 
-from core.models import Company, Person
+from core.models import Company, Person, Workspace
+from core.services.classification_feedback import feedback_urls
 from webhooks.models.rich_notification import (
     ActionButton,
     CompanyInfo,
@@ -277,6 +278,7 @@ class NotificationBuilder:
         customer_data: dict[str, Any],
         company: Company | None = None,
         person: Person | None = None,
+        workspace: Workspace | None = None,
     ) -> RichNotification:
         """Build a RichNotification from event and customer data.
 
@@ -285,6 +287,8 @@ class NotificationBuilder:
             customer_data: Customer data dictionary.
             company: Optional enriched Company model.
             person: Optional enriched Person model (from Hunter.io).
+            workspace: Workspace receiving the notification; ties the
+                classification feedback links to it.
 
         Returns:
             RichNotification ready for formatting.
@@ -332,6 +336,8 @@ class NotificationBuilder:
 
         # Build action buttons
         actions = self._build_actions(event_data, customer_data, company)
+        if company is not None:
+            actions.extend(self._build_feedback_actions(company, workspace))
 
         return RichNotification(
             type=notification_type,
@@ -469,10 +475,21 @@ class NotificationBuilder:
                 linkedin_url = link.get("url")
                 break
 
+        classification = brand_info.get("industry_classification") or {}
+        if not isinstance(classification, dict):
+            classification = {}
+
+        industry = brand_info.get("industry")
+        if not isinstance(industry, str):
+            industry = None
+
         return CompanyInfo(
             name=brand_info.get("name") or company.name or company.domain,
             domain=company.domain,
-            industry=brand_info.get("industry"),
+            industry=industry,
+            sub_industry=classification.get("sub_industry") or None,
+            business_model=classification.get("business_model") or None,
+            target_market=classification.get("target_market") or None,
             year_founded=brand_info.get("year_founded"),
             employee_count=brand_info.get("employee_count"),
             description=brand_info.get("description"),
@@ -730,6 +747,36 @@ class NotificationBuilder:
             actions.append(dashboard_action)
 
         return actions
+
+    @staticmethod
+    def _build_feedback_actions(
+        company: Company, workspace: Workspace | None
+    ) -> list[ActionButton]:
+        """Build 👍 / 👎 links for rating the company's industry classification.
+
+        Args:
+            company: Enriched company.
+            workspace: Workspace receiving the notification.
+
+        Returns:
+            Two link buttons, or none when the company has no LLM
+            classification or it was already corrected by a person.
+        """
+        classification = (company.brand_info or {}).get("industry_classification")
+        if not isinstance(classification, dict) or classification.get("corrected"):
+            return []
+        try:
+            urls = feedback_urls(company, workspace)
+        except Exception as e:  # never let a link break a notification
+            logger.warning(f"Could not build feedback links: {e}")
+            return []
+        if not urls:
+            return []
+        up_url, down_url = urls
+        return [
+            ActionButton(text="👍 Industry right", url=up_url),
+            ActionButton(text="👎 Wrong industry", url=down_url),
+        ]
 
     def _build_provider_dashboard_action(
         self, event_data: dict[str, Any]

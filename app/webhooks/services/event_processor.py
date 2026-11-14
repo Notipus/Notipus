@@ -11,6 +11,7 @@ from core.models import Company, Person
 from core.services.email_enrichment import get_email_enrichment_service
 from core.services.enrichment import DomainEnrichmentService
 from core.utils.email_domain import extract_domain, is_enrichable_domain
+from core.utils.log_privacy import mask_email
 from plugins import PluginRegistry, PluginType
 from plugins.destinations.base import BaseDestinationPlugin
 
@@ -134,7 +135,7 @@ class EventProcessor:
 
         # Build target-agnostic notification
         notification = self.notification_builder.build(
-            enriched_event_data, customer_data, company, person
+            enriched_event_data, customer_data, company, person, workspace=workspace
         )
 
         # Store enriched record for dashboard display
@@ -190,7 +191,7 @@ class EventProcessor:
         person = self._enrich_person(customer_data, workspace)
 
         notification: RichNotification = self.notification_builder.build(
-            enriched_event_data, customer_data, company, person
+            enriched_event_data, customer_data, company, person, workspace=workspace
         )
 
         # Store enriched record for dashboard display
@@ -365,9 +366,15 @@ class EventProcessor:
                 customer_email, workspace
             )
             if person:
-                logger.info(f"Enriched person data for email: {customer_email}")
+                logger.info(
+                    "Enriched person data for email: %s", mask_email(customer_email)
+                )
             return person
         except Exception as e:
             # Don't fail webhook processing if enrichment fails
-            logger.warning(f"Failed to enrich person for {customer_email}: {e}")
+            logger.warning(
+                "Failed to enrich person for %s: %s",
+                mask_email(customer_email),
+                type(e).__name__,
+            )
             return None

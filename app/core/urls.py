@@ -2,6 +2,7 @@ from django.conf import settings
 from django.urls import path
 
 from . import views
+from .views.feedback import industry_feedback
 from .views.logos import CompanyLogoView
 
 app_name = "core"
@@ -16,6 +17,12 @@ urlpatterns = [
     ),
     # Company logos (served from database)
     path("logos/<str:domain>/", CompanyLogoView.as_view(), name="company-logo"),
+    # Industry classification feedback (signed links from notifications)
+    path(
+        "feedback/industry/<str:token>/<str:vote>/",
+        industry_feedback,
+        name="industry_feedback",
+    ),
     # Landing and dashboard
     path("", views.landing, name="landing"),
     path("dashboard/", views.dashboard, name="dashboard"),

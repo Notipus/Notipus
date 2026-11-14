@@ -166,7 +166,7 @@ class PluginRegistry:
                     package_path
                 ):
                     # Skip base and __init__ modules
-                    if module_name in ("base", "base_email", "__init__"):
+                    if module_name in ("base", "base_email", "base_llm", "__init__"):
                         continue
 
                     try:

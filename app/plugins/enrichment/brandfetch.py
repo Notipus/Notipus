@@ -10,9 +10,22 @@ from typing import Any, cast
 import requests
 from django.conf import settings
 from plugins.base import PluginCapability, PluginMetadata, PluginType
-from plugins.enrichment.base import BaseEnrichmentPlugin
+from plugins.enrichment.base import BaseEnrichmentPlugin, ProviderUnavailableError
 
 logger = logging.getLogger(__name__)
+
+# Brandfetch reports headcount as the lower bound of a band.
+_EMPLOYEE_BANDS: dict[int, str] = {
+    1: "1",
+    2: "2-10",
+    11: "11-50",
+    51: "51-200",
+    201: "201-500",
+    501: "501-1000",
+    1001: "1001-5000",
+    5001: "5001-10000",
+    10001: "10001+",
+}
 
 
 class BrandfetchPlugin(BaseEnrichmentPlugin):
@@ -137,7 +150,7 @@ class BrandfetchPlugin(BaseEnrichmentPlugin):
                 logger.warning(
                     f"Brandfetch rate limit exceeded. Retry after {retry_after} seconds"
                 )
-                return {}
+                raise ProviderUnavailableError("Brandfetch rate limited")
 
             response.raise_for_status()
             brand_data = response.json()
@@ -148,24 +161,88 @@ class BrandfetchPlugin(BaseEnrichmentPlugin):
             # Logos are included in the main brands response under the "logos" array
             # No separate /logos endpoint exists in the Brandfetch API v2
             logos_data = brand_data.get("logos", [])
+            company = brand_data.get("company") or {}
+            if not isinstance(company, dict):
+                company = {}
+            industries = self._industry_names(company.get("industries"))
+            employees = company.get("employees")
 
             return {
                 "name": brand_data.get("name"),
                 "logo_url": self._get_primary_logo(logos_data),
                 "brand_info": {
                     "description": brand_data.get("description"),
-                    "industry": brand_data.get("industry"),
-                    "year_founded": brand_data.get("yearFounded"),
+                    "long_description": brand_data.get("longDescription"),
+                    "industry": brand_data.get("industry")
+                    or (industries[0] if industries else None),
+                    "industries": industries,
+                    "year_founded": company.get("foundedYear")
+                    or brand_data.get("yearFounded"),
+                    "employee_count": _EMPLOYEE_BANDS.get(employees)
+                    if isinstance(employees, int)
+                    else None,
+                    "headquarters": self._format_location(company.get("location")),
+                    "company_kind": company.get("kind"),
                     "links": brand_data.get("links", []),
                     "colors": brand_data.get("colors", []),
                 },
             }
-        except requests.exceptions.Timeout:
+        except requests.exceptions.Timeout as e:
             logger.warning(f"Brandfetch API timeout for domain {domain}")
-            return {}
+            raise ProviderUnavailableError("Brandfetch timed out") from e
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching data from Brandfetch: {e!s}")
-            return {}
+            logger.error(f"Error fetching data from Brandfetch: {type(e).__name__}")
+            raise ProviderUnavailableError("Brandfetch request failed") from e
+
+    @staticmethod
+    def _industry_names(industries: Any) -> list[str]:
+        """Return industry names, best match first, as "Parent › Child".
+
+        Args:
+            industries: ``company.industries`` from the API (sorted by score).
+
+        Returns:
+            Industry labels; empty when none are present.
+        """
+        names: list[str] = []
+        if not isinstance(industries, list):
+            return names
+        for item in industries:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            parent = item.get("parent")
+            parent_name = parent.get("name") if isinstance(parent, dict) else None
+            label = (
+                f"{parent_name} › {item['name']}"
+                if parent_name and parent_name != item["name"]
+                else str(item["name"])
+            )
+            if label not in names:
+                names.append(label)
+        return names
+
+    @staticmethod
+    def _format_location(location: Any) -> str | None:
+        """Format ``company.location`` as "City, Country".
+
+        Args:
+            location: Location object from the API.
+
+        Returns:
+            Human-readable location, or None if unknown.
+        """
+        if not isinstance(location, dict):
+            return None
+        parts = [
+            location.get("city"),
+            location.get("state") or location.get("region"),
+            location.get("country"),
+        ]
+        seen: list[str] = []
+        for part in parts:
+            if isinstance(part, str) and part and part not in seen:
+                seen.append(part)
+        return ", ".join(seen) or None
 
     def _get_primary_logo(self, logos_data: list[dict[str, Any]]) -> str | None:
         """Retrieve the URL of the main logo.

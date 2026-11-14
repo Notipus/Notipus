@@ -8,6 +8,7 @@ import secrets
 from typing import Any, cast
 
 import requests
+from allauth.account.models import EmailAddress
 from django.conf import settings
 from django.contrib.auth import login
 from django.contrib.auth.models import User
@@ -16,11 +17,18 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect
 
 from .. import analytics
+from ..adapters import has_verified_email
 from ..constants import SLACK_TEAM_NAME_CLAIM, SLACK_TEAM_NAME_SESSION_KEY
 from ..models import UserProfile, Workspace
 from ..services.welcome_email import send_welcome_email
 
 logger = logging.getLogger(__name__)
+
+# login() needs an explicit backend because several AUTHENTICATION_BACKENDS
+# are configured; a bare call raises and the callback returned 500. Slack
+# identity is verified by this view, not by a backend, so attribute it to
+# ModelBackend like the passkey flow does.
+SLACK_LOGIN_BACKEND = "django.contrib.auth.backends.ModelBackend"
 
 # Default timeout for external API requests (seconds)
 SLACK_API_TIMEOUT = 30
@@ -200,31 +208,52 @@ def slack_auth_callback(request: HttpRequest) -> HttpResponse | HttpResponseRedi
         logger.warning(f"Slack login rejected: email not verified (sub={slack_id})")
         return HttpResponse("Email address is not verified", status=400)
 
-    user, created = _resolve_user(slack_id, email, name)
+    resolved = _resolve_user(slack_id, email, name)
+    if resolved is None:
+        return HttpResponse(
+            "An account with this email already exists but its address is "
+            "not verified. Sign in with your passkey and verify it first.",
+            status=400,
+        )
+    user, created = resolved
 
     # Log the user in
     analytics.set_login_method(request, "slack")
-    login(request, user)
+    login(request, user, backend=SLACK_LOGIN_BACKEND)
     if created:
         analytics.track_event(request, "sign_up", {"method": "slack"})
         send_welcome_email(user)
 
-    # Remember the Slack team name so onboarding can prefill the workspace
-    # name instead of asking the user to retype it. Set after login():
-    # logging in as a different user flushes the session. Normalize
-    # defensively - the claim is external input destined for
-    # Workspace.name.
+    # Set after login(): logging in as a different user flushes the session.
+    _remember_team_name(request, user_info)
+
+    return redirect("core:dashboard")
+
+
+def _remember_team_name(request: HttpRequest, user_info: dict[str, Any]) -> None:
+    """Store the Slack team name so onboarding can prefill the workspace name.
+
+    Normalized defensively: the claim is external input destined for
+    Workspace.name.
+
+    Args:
+        request: The logged-in request whose session receives the name.
+        user_info: Slack userInfo payload.
+    """
     team_name = user_info.get(SLACK_TEAM_NAME_CLAIM)
     if isinstance(team_name, str):
         team_name = team_name.strip()[:WORKSPACE_NAME_MAX_LENGTH]
         if team_name:
             request.session[SLACK_TEAM_NAME_SESSION_KEY] = team_name
 
-    return redirect("core:dashboard")
 
-
-def _resolve_user(slack_id: str, email: str, name: str) -> tuple[User, bool]:
+def _resolve_user(slack_id: str, email: str, name: str) -> tuple[User, bool] | None:
     """Find or create the user and reconcile their Slack profile link.
+
+    An existing account is only reused when it has proven ownership of the
+    address (a verified allauth ``EmailAddress``) or is already linked to
+    this Slack user. Otherwise anyone could pre-create an account with the
+    victim's address and be handed the victim's Slack login.
 
     Args:
         slack_id: The Slack user identifier (``sub`` claim).
@@ -232,7 +261,8 @@ def _resolve_user(slack_id: str, email: str, name: str) -> tuple[User, bool]:
         name: The user's display name.
 
     Returns:
-        Tuple of (resolved Django user, whether the user was created).
+        Tuple of (resolved Django user, whether the user was created), or
+        None when an existing account with this email cannot be trusted.
     """
     # Find or create user
     user, created = User.objects.get_or_create(
@@ -240,8 +270,20 @@ def _resolve_user(slack_id: str, email: str, name: str) -> tuple[User, bool]:
     )
 
     if created:
+        # Slack verified this address; record that so later sign-ins (and
+        # allauth's own Slack login) recognise the account as verified.
+        EmailAddress.objects.create(user=user, email=email, verified=True, primary=True)
         # Log the non-PII Slack sub instead of the email address.
         logger.info(f"Created new user (sub={slack_id})")
+    elif not (
+        has_verified_email(user, email)
+        or UserProfile.objects.filter(user=user, slack_user_id=slack_id).exists()
+    ):
+        logger.warning(
+            f"Slack login refused: account {user.pk} has an unverified email "
+            f"(sub={slack_id})"
+        )
+        return None
 
     # Try to find existing UserProfile
     try:
