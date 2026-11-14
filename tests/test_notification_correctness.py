@@ -52,3 +52,15 @@ class TestTelegramContactButton:
 
         assert "reply_markup" not in result
         assert "ann@example.com" in result["text"]
+
+
+class TestRetryNumbering:
+    """Headline and insight must number the same retry the same way."""
+
+    def test_headline_and_insight_agree(self) -> None:
+        """attempt_count=2 is retry #1 in both the headline and the insight."""
+        n = _build(_payment_failure_event(), {"email": "ann@example.com"})
+
+        assert n.headline == "$49.00 payment failed (retry #1)"
+        assert n.insight is not None
+        assert n.insight.text.startswith("Retry #1")

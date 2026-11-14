@@ -435,7 +435,9 @@ class InsightDetector:
 
         attempt_count = metadata.get("attempt_count")
         if attempt_count and attempt_count >= 2:
-            text += f" (attempt #{attempt_count})"
+            # Same convention as the headline: attempt_count includes the
+            # initial attempt, so attempt_count=2 is retry #1.
+            text += f" (retry #{attempt_count - 1})"
 
         next_retry = self._format_short_date(metadata.get("next_payment_attempt"))
         if next_retry:
@@ -756,7 +758,9 @@ class InsightDetector:
         if attempt_count is not None and attempt_count >= 1:
             next_date = self._format_short_date(metadata.get("next_payment_attempt"))
             if attempt_count >= 2:
-                text = f"Retry #{attempt_count}"
+                # Stripe's attempt_count includes the initial attempt, so
+                # attempt_count=2 is retry #1 (matches the headline).
+                text = f"Retry #{attempt_count - 1}"
                 if next_date:
                     text += f" · Next attempt {next_date}"
                 return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
