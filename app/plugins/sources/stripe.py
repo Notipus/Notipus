@@ -94,12 +94,21 @@ class StripeSourcePlugin(BaseSourcePlugin):
         )
 
     def __init__(
-        self, webhook_secret: str = "", process_billing_events: bool = False
+        self,
+        webhook_secret: str = "",
+        process_billing_events: bool = False,
+        cache_scope: str = "",
     ) -> None:
         """Initialize Stripe plugin with webhook secret.
 
         Args:
             webhook_secret: Stripe webhook signing secret.
+            cache_scope: Tenant scope for the customer-email cache, normally
+                the workspace UUID. Stripe customer ids are chosen by
+                whichever Stripe account sent the event, so an unscoped
+                key would let one tenant plant (or read) the email shown
+                for another tenant's customer. Without a scope the cache
+                is not used at all.
             process_billing_events: When True, dispatch parsed events to
                 BillingService, mutating Notipus workspace subscription
                 state. Only the global billing endpoint
@@ -111,6 +120,7 @@ class StripeSourcePlugin(BaseSourcePlugin):
         """
         super().__init__(webhook_secret)
         self.process_billing_events = process_billing_events
+        self.cache_scope = cache_scope
         # Store webhook data for customer lookup (we can't call Stripe API
         # because we don't have the customer's API key - only the webhook)
         self._current_webhook_data: dict[str, Any] | None = None
@@ -1328,6 +1338,20 @@ class StripeSourcePlugin(BaseSourcePlugin):
             return parts[0], ""
         return parts[0], parts[1]
 
+    def _customer_email_cache_key(self, customer_id: str) -> str | None:
+        """Return the tenant-scoped cache key for a customer's email.
+
+        Args:
+            customer_id: Stripe customer ID (e.g., cus_xxx).
+
+        Returns:
+            The cache key, or None when the plugin has no tenant scope or
+            there is no customer id (the cache is then bypassed).
+        """
+        if not self.cache_scope or not customer_id:
+            return None
+        return f"{CUSTOMER_EMAIL_CACHE_PREFIX}{self.cache_scope}:{customer_id}"
+
     def _cache_customer_email(self, customer_id: str, email: str) -> None:
         """Cache customer email for lookup by subscription events.
 
@@ -1343,10 +1367,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
             customer_id: Stripe customer ID (e.g., cus_xxx).
             email: Customer email address.
         """
-        if not customer_id or not email:
+        cache_key = self._customer_email_cache_key(customer_id)
+        if cache_key is None or not email:
             return
         try:
-            cache_key = f"{CUSTOMER_EMAIL_CACHE_PREFIX}{customer_id}"
             cache.set(cache_key, encrypt(email), timeout=CUSTOMER_EMAIL_CACHE_TTL)
             logger.debug(f"Cached customer email for {customer_id}")
         except Exception as e:
@@ -1366,10 +1390,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         Returns:
             Cached email address, or empty string if not found.
         """
-        if not customer_id:
+        cache_key = self._customer_email_cache_key(customer_id)
+        if cache_key is None:
             return ""
         try:
-            cache_key = f"{CUSTOMER_EMAIL_CACHE_PREFIX}{customer_id}"
             cached = cache.get(cache_key)
             if cached:
                 email = str(cached)

@@ -1067,8 +1067,8 @@ class TestWebhookCustomerDataExtraction:
 
     @pytest.fixture
     def stripe_plugin(self) -> StripeSourcePlugin:
-        """Create a Stripe plugin instance."""
-        return StripeSourcePlugin()
+        """Create a Stripe plugin scoped to a test workspace."""
+        return StripeSourcePlugin(cache_scope="ws-test")
 
     def test_get_customer_data_extracts_email_from_webhook(
         self, stripe_plugin: StripeSourcePlugin
@@ -1180,7 +1180,7 @@ class TestWebhookCustomerDataExtraction:
 
             mock_cache.set.assert_called_once()
             call_args = mock_cache.set.call_args
-            assert call_args[0][0] == "stripe_customer_email:cus_test123"
+            assert call_args[0][0] == "stripe_customer_email:ws-test:cus_test123"
             stored_value = call_args[0][1]
             assert stored_value != "test@example.com"
             assert looks_like_token(stored_value)
@@ -1208,7 +1208,9 @@ class TestWebhookCustomerDataExtraction:
             result = stripe_plugin._get_cached_customer_email("cus_test123")
 
             assert result == "cached@example.com"
-            mock_cache.get.assert_called_once_with("stripe_customer_email:cus_test123")
+            mock_cache.get.assert_called_once_with(
+                "stripe_customer_email:ws-test:cus_test123"
+            )
 
     def test_get_cached_customer_email_evicts_undecryptable_token(
         self, stripe_plugin: StripeSourcePlugin
@@ -1227,7 +1229,7 @@ class TestWebhookCustomerDataExtraction:
 
             assert result == ""
             mock_cache.delete.assert_called_once_with(
-                "stripe_customer_email:cus_test123"
+                "stripe_customer_email:ws-test:cus_test123"
             )
 
     def test_get_cached_customer_email_legacy_plaintext(
@@ -1263,7 +1265,9 @@ class TestWebhookCustomerDataExtraction:
             customer_data = stripe_plugin.get_customer_data("cus_test123")
 
             # Should have looked up cached email
-            mock_cache.get.assert_called_once_with("stripe_customer_email:cus_test123")
+            mock_cache.get.assert_called_once_with(
+                "stripe_customer_email:ws-test:cus_test123"
+            )
             assert customer_data["email"] == "cached@company.com"
 
     def test_get_customer_data_prefers_webhook_email_over_cache(

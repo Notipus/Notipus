@@ -1007,7 +1007,10 @@ def customer_stripe_webhook(
 
         from plugins.sources.stripe import StripeSourcePlugin
 
-        provider = StripeSourcePlugin(webhook_secret=integration.webhook_secret)
+        provider = StripeSourcePlugin(
+            webhook_secret=integration.webhook_secret,
+            cache_scope=str(workspace.uuid),
+        )
 
         return _process_webhook(
             request,
@@ -1089,6 +1092,7 @@ def billing_stripe_webhook(request: HttpRequest) -> JsonResponse:
         provider = StripeSourcePlugin(
             webhook_secret=billing_integration.webhook_secret,
             process_billing_events=True,
+            cache_scope="billing",
         )
 
         return _process_webhook(
