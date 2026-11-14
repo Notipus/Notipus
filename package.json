@@ -9,14 +9,14 @@
     "dev": "bun run build:fonts && bunx tailwindcss -i ./src/css/main.css -o ./app/static/dist/main.css --watch"
   },
   "devDependencies": {
-    "@tabler/icons-webfont": "^3.49.0",
-    "@tailwindcss/cli": "^4.3.3",
-    "autoprefixer": "^10.6.1",
-    "postcss": "^8.5.31",
-    "tailwindcss": "^4.3.3"
+    "@tabler/icons-webfont": "^3.50.0",
+    "@tailwindcss/cli": "^4.3.4",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
+    "tailwindcss": "^4.3.4"
   },
   "dependencies": {
     "@shopify/app": "^3.58.2",
-    "@shopify/cli": "^5.0.0"
+    "@shopify/cli": "^5.0.1"
   }
 }
