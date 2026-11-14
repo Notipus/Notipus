@@ -507,6 +507,12 @@ class TestShopRedactScope:
         """Stripe/Chargify records and unrelated people are kept."""
         from core.models import Person
 
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="stripe_customer",
+            oauth_credentials={},
+            is_active=True,
+        )
         shopify_key = f"webhook:{workspace.uuid}:order:shop"
         stripe_key = f"webhook:{workspace.uuid}:payment:stripe"
         store_record(
@@ -583,3 +589,108 @@ class TestShopRedactScope:
         )
 
         assert _find_workspaces(SHOP) == [active, workspace]
+
+
+def _shopify_order_event(order_id: int, customer_id: int) -> dict[str, Any]:
+    """Build the event the Shopify plugin hands to record storage.
+
+    Args:
+        order_id: Shopify order id.
+        customer_id: Shopify customer id.
+
+    Returns:
+        The parsed event dictionary.
+    """
+    return {
+        "type": "payment_success",
+        "provider": "shopify",
+        "external_id": str(order_id),
+        "customer_id": str(customer_id),
+        "amount": 25.0,
+        "currency": "USD",
+        "status": "paid",
+    }
+
+
+@pytest.mark.django_db
+class TestShopRedactPeople:
+    """shop/redact never leaves a Shopify-only workspace's people behind.
+
+    Production records come from DatabaseLookupService, and the
+    payment/order records it writes carry no customer email - so the
+    emails found in retained records cannot be the whole list of people
+    to erase.
+    """
+
+    def test_shopify_only_workspace_loses_every_person(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """People with no retained record, or no email in it, are deleted."""
+        from core.models import Person
+        from webhooks.services.database_lookup import DatabaseLookupService
+
+        storage = DatabaseLookupService()
+        event = _shopify_order_event(9001, 42)
+        assert storage.store_payment_record(event, str(workspace.uuid))
+        assert storage.store_order_record(
+            {**event, "order_number": "1001"}, str(workspace.uuid)
+        )
+        Person.objects.create(workspace=workspace, email="recent@example.com")
+        # Enriched from an order whose record has long expired.
+        Person.objects.create(workspace=workspace, email="old@example.com")
+        other = Workspace.objects.create(name="Unrelated")
+        Person.objects.create(workspace=other, email="old@example.com")
+
+        response = post(
+            client, "shopify_shop_redact", "shop/redact", {"shop_domain": SHOP}
+        )
+
+        assert response.status_code == 200
+        assert not Person.objects.filter(workspace=workspace).exists()
+        assert Person.objects.filter(workspace=other).count() == 1
+
+    def test_inactive_stripe_source_limits_and_warns(
+        self, client: Client, workspace: Workspace, caplog: Any
+    ) -> None:
+        """With another source, only matched people go and a warning is logged."""
+        from core.models import Person
+        from webhooks.models.rich_notification import (
+            CustomerInfo,
+            NotificationSeverity,
+            NotificationType,
+            RichNotification,
+        )
+        from webhooks.services.database_lookup import DatabaseLookupService
+
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="stripe_customer",
+            oauth_credentials={},
+            is_active=False,
+        )
+        notification = RichNotification(
+            type=NotificationType.PAYMENT_SUCCESS,
+            severity=NotificationSeverity.SUCCESS,
+            headline="$25.00 from a shopper",
+            headline_icon="money",
+            provider="shopify",
+            provider_display="Shopify",
+            customer=CustomerInfo(email="Shopper@Example.com"),
+        )
+        assert DatabaseLookupService().store_enriched_record(
+            _shopify_order_event(9002, 43), notification, str(workspace.uuid)
+        )
+        Person.objects.create(workspace=workspace, email="shopper@example.com")
+        Person.objects.create(workspace=workspace, email="payer@example.com")
+
+        with caplog.at_level("WARNING", logger="webhooks.services.shopify_compliance"):
+            response = post(
+                client, "shopify_shop_redact", "shop/redact", {"shop_domain": SHOP}
+            )
+
+        assert response.status_code == 200
+        remaining = set(
+            Person.objects.filter(workspace=workspace).values_list("email", flat=True)
+        )
+        assert remaining == {"payer@example.com"}
+        assert any("may remain" in r.getMessage() for r in caplog.records)
