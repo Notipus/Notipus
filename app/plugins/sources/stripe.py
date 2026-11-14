@@ -697,8 +697,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if event_type in subscription_events:
             self._add_subscription_metadata(metadata, event_type, data)
 
-        # Add invoice metadata for payment events
-        if event_type in ("payment_success", "payment_failure"):
+        # Add invoice metadata for payment events. invoice_paid needs it
+        # too: without subscription_id it cannot be grouped with the
+        # subscription event of the same transaction in the queue.
+        if event_type in ("payment_success", "payment_failure", "invoice_paid"):
             self._add_invoice_metadata(metadata, data)
 
     def _add_trial_metadata(

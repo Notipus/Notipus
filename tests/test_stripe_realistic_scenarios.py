@@ -1432,6 +1432,22 @@ class TestInvoiceMetadataExtraction:
         """Create a Stripe plugin instance."""
         return StripeSourcePlugin()
 
+    def test_invoice_paid_carries_subscription_id(
+        self, stripe_plugin: StripeSourcePlugin
+    ) -> None:
+        """invoice_paid gets invoice metadata so it groups with its subscription."""
+        event_data: dict[str, Any] = {"metadata": {}}
+        data: dict[str, Any] = {
+            "parent": {"subscription_details": {"subscription": "sub_paid"}},
+            "billing_reason": "subscription_create",
+            "number": "INV-0007",
+        }
+
+        stripe_plugin._add_event_metadata(event_data, "invoice_paid", data)
+
+        assert event_data["metadata"]["subscription_id"] == "sub_paid"
+        assert event_data["metadata"]["invoice_number"] == "INV-0007"
+
     def test_extracts_plan_name_from_line_items(
         self, stripe_plugin: StripeSourcePlugin
     ) -> None:
