@@ -134,3 +134,48 @@ def format_money(
     if symbol:
         return f"{sign}{symbol}{magnitude}"
     return f"{sign}{code} {magnitude}"
+
+
+# Rough, deliberately static "local units per 1 USD" factors, used only to
+# scale insight thresholds (large payment, VIP, at-risk, LTV milestones)
+# that are defined in USD. They are not exchange rates and must never be
+# used to convert money for display. Currencies within ~1.6x of the dollar
+# keep the nominal threshold so milestones stay round ("€5,000"); only
+# high-denomination currencies are scaled, to round factors so scaled
+# milestones are round too ("¥750,000"). Currencies not listed here have
+# no threshold at all: callers must skip the insight rather than compare
+# a ¥ or ₩ amount against a dollar threshold.
+APPROX_UNITS_PER_USD: dict[str, int] = {
+    "USD": 1,
+    "EUR": 1,
+    "GBP": 1,
+    "CAD": 1,
+    "AUD": 1,
+    "CHF": 1,
+    "JPY": 150,
+    "KRW": 1400,
+    "INR": 85,
+    "SEK": 10,
+    "NOK": 10,
+    "DKK": 7,
+    "BRL": 5,
+    "MXN": 20,
+}
+
+
+def usd_threshold_in(amount_usd: float, currency: str) -> float | None:
+    """Scale a USD-denominated threshold into ``currency``'s major units.
+
+    Args:
+        amount_usd: Threshold in US dollars (major units).
+        currency: ISO 4217 currency code (case-insensitive).
+
+    Returns:
+        The roughly equivalent threshold in ``currency``, or None when the
+        currency has no approximate factor (the caller should skip the
+        threshold-based insight).
+    """
+    factor = APPROX_UNITS_PER_USD.get((currency or "").upper())
+    if factor is None:
+        return None
+    return amount_usd * factor

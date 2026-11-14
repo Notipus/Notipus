@@ -6,7 +6,9 @@ and how destination plugins render them (Slack, Telegram).
 
 from typing import Any
 
+import pytest
 from plugins.destinations.telegram import TelegramDestinationPlugin
+from webhooks.services.insight_detector import InsightDetector
 from webhooks.services.notification_builder import NotificationBuilder
 
 
@@ -94,3 +96,81 @@ class TestNullCustomerNames:
         assert n.customer.name is None
         assert n.customer.email == ""
         assert n.customer.company_name == "cus_x"
+
+
+class TestCurrencyAwareThresholds:
+    """USD insight thresholds are scaled to the event currency."""
+
+    def test_small_yen_payment_not_large(self) -> None:
+        """A ¥1,500 payment (about $10) is not a "Large payment"."""
+        event = {"type": "payment_success", "amount": 1500.0, "currency": "JPY"}
+
+        assert InsightDetector()._detect_large_payment(event, {}) is None
+
+    def test_large_yen_payment_is_large(self) -> None:
+        """A ¥200,000 payment clears the scaled large-payment threshold."""
+        event = {"type": "payment_success", "amount": 200000.0, "currency": "jpy"}
+
+        insight = InsightDetector()._detect_large_payment(event, {})
+
+        assert insight is not None
+        assert insight.text == "Large payment received"
+
+    def test_usd_large_payment_unchanged(self) -> None:
+        """USD keeps the nominal $1,000 threshold."""
+        event = {"type": "payment_success", "amount": 1000.0, "currency": "USD"}
+
+        assert InsightDetector()._detect_large_payment(event, {}) is not None
+
+    def test_unknown_currency_skips_money_insights(self) -> None:
+        """Currencies without a factor get no large/VIP/LTV insight or flags."""
+        detector = InsightDetector()
+        event = {"type": "payment_success", "amount": 50000.0, "currency": "VND"}
+        customer = {"total_spent": 900000.0}
+
+        assert detector._detect_large_payment(event, customer) is None
+        assert detector._detect_vip_status(event, customer) is None
+        assert detector._detect_ltv_milestone(event, customer) is None
+        failure = {**event, "type": "payment_failure"}
+        assert detector.detect_risk_status(failure, customer) == []
+
+    def test_krw_ltv_not_vip_at_nominal_threshold(self) -> None:
+        """₩20,000 lifetime spend is neither VIP nor at risk."""
+        detector = InsightDetector()
+        event = {"type": "payment_failure", "amount": 5000.0, "currency": "KRW"}
+
+        assert detector.detect_risk_status(event, {"total_spent": 20000.0}) == []
+
+    def test_yen_milestone_uses_scaled_amount_and_formatting(self) -> None:
+        """The milestone text shows the scaled amount in yen formatting."""
+        event = {"type": "payment_success", "amount": 30000.0, "currency": "JPY"}
+
+        insight = InsightDetector()._detect_ltv_milestone(
+            event, {"total_spent": 160000.0}
+        )
+
+        assert insight is not None
+        assert insight.text == "Crossed ¥150,000 lifetime!"
+
+    def test_yen_vip_text(self) -> None:
+        """The VIP insight states the scaled threshold in yen."""
+        event = {"type": "payment_success", "amount": 30000.0, "currency": "JPY"}
+
+        insight = InsightDetector()._detect_vip_status(
+            event, {"total_spent": 2000000.0}
+        )
+
+        assert insight is not None
+        assert insight.text == "VIP customer (¥1,500,000+ LTV)"
+
+    @pytest.mark.parametrize("currency", ["USD", "EUR", "GBP"])
+    def test_parity_currencies_keep_nominal_milestones(self, currency: str) -> None:
+        """Near-dollar currencies keep round nominal milestones."""
+        event = {"type": "payment_success", "amount": 100.0, "currency": currency}
+
+        insight = InsightDetector()._detect_ltv_milestone(
+            event, {"total_spent": 1050.0}
+        )
+
+        assert insight is not None
+        assert "1,000 lifetime!" in insight.text
