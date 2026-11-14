@@ -5,7 +5,7 @@ default PII capture is disabled, so payment-payload PII and provider
 signature headers never leave the app via error reporting.
 """
 
-from typing import Any
+from typing import Any, Callable
 
 from django.conf import settings
 from django_notipus.settings import _sentry_before_send
@@ -172,3 +172,157 @@ def test_before_send_passes_events_without_request() -> None:
 def test_email_backend_configured() -> None:
     """The EMAIL_BACKEND setting is resolvable (console default under tests)."""
     assert settings.EMAIL_BACKEND
+
+
+def _capture_with_settings_init(
+    exercise: Callable[[], None],
+) -> list[dict[str, Any]]:
+    """Run ``exercise`` under the real settings Sentry config and fake transport.
+
+    The keyword arguments the settings module passes to ``sentry_sdk.init``
+    are captured by reloading it under a patch, then Sentry is initialised for
+    real with those same arguments (only the DSN and transport are swapped for
+    a dummy DSN and an in-memory transport), so the test exercises exactly the
+    production client options.
+
+    :param exercise: Callable that triggers Sentry events.
+    :returns: The JSON event payloads the transport would have sent.
+    """
+    import importlib
+    from unittest.mock import patch
+
+    import sentry_sdk
+    from django_notipus import settings as settings_module
+    from sentry_sdk.envelope import Envelope
+    from sentry_sdk.transport import Transport
+
+    captured: list[dict[str, Any]] = []
+
+    class _MemoryTransport(Transport):
+        """Transport that records event payloads instead of sending them."""
+
+        def capture_envelope(self, envelope: Envelope) -> None:
+            """Record every event item in ``envelope``."""
+            for item in envelope.items:
+                if item.type == "event" and item.payload.json is not None:
+                    captured.append(item.payload.json)
+
+    with patch("sentry_sdk.init") as mock_init:
+        importlib.reload(settings_module)
+    _, kwargs = mock_init.call_args
+    kwargs = {
+        **kwargs,
+        "dsn": "https://key@o0.ingest.sentry.io/1",
+        "transport": _MemoryTransport,
+    }
+    sentry_sdk.init(**kwargs)
+    try:
+        exercise()
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.init(dsn="")
+    return captured
+
+
+def test_sentry_events_do_not_carry_frame_locals_or_tokens() -> None:
+    """Credentials held in frame locals and breadcrumbs never reach Sentry.
+
+    Reproduces a destination failing while its frame holds a bot token, a
+    token-bearing URL, a webhook URL, a payload and the end customer's email.
+    """
+    import json
+
+    import sentry_sdk
+
+    # Secrets are assembled at runtime: Sentry attaches source context lines,
+    # so literal secrets in this file would show up in the event regardless.
+    bot_secret = "-".join(("SECRET", "BOT", "TOKEN"))
+    crumb_secret = "-".join(("BREADCRUMB", "TOKEN"))
+    hook_secret = "-".join(("SECRET", "HOOK"))
+    customer_email = "@".join(("buyer", "example.com"))
+
+    def _deliver(credentials: dict[str, Any]) -> None:
+        """Fail like a destination send whose locals hold secrets."""
+        bot_token = credentials["bot_token"]
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        webhook_url = credentials["webhook_url"]
+        payload = {"text": "hi", "email": customer_email}
+        destinations = [{"credentials": credentials}]
+        assert url and webhook_url and payload and destinations
+        raise RuntimeError("delivery failed")
+
+    def _exercise() -> None:
+        """Add a token-bearing breadcrumb and capture a failing delivery."""
+        sentry_sdk.add_breadcrumb(
+            category="httplib",
+            data={"url": f"https://api.telegram.org/bot123456:{crumb_secret}/x"},
+        )
+        try:
+            _deliver(
+                {
+                    "bot_token": f"123456:{bot_secret}",
+                    "webhook_url": f"https://hooks.example.com/{hook_secret}",
+                }
+            )
+        except RuntimeError:
+            sentry_sdk.capture_exception()
+
+    events = _capture_with_settings_init(_exercise)
+
+    assert len(events) == 1
+    serialized = json.dumps(events)
+    for secret in (bot_secret, crumb_secret, hook_secret, customer_email):
+        assert secret not in serialized
+    # The stack trace itself is still reported, just without locals.
+    frames = events[0]["exception"]["values"][0]["stacktrace"]["frames"]
+    assert any(frame.get("function") == "_deliver" for frame in frames)
+    assert all("vars" not in frame for frame in frames)
+
+
+def test_settings_enables_recursive_scrubber_with_extended_denylist() -> None:
+    """Sentry init disables frame locals and uses an extended scrubber."""
+    import importlib
+    from unittest.mock import patch
+
+    from django_notipus import settings as settings_module
+
+    with patch("sentry_sdk.init") as mock_init:
+        importlib.reload(settings_module)
+
+    _, kwargs = mock_init.call_args
+    assert kwargs["include_local_variables"] is False
+    scrubber = kwargs["event_scrubber"]
+    assert scrubber.recursive is True
+    for key in ("url", "bot_token", "webhook_url", "payload", "email", "api_key"):
+        assert key in scrubber.denylist
+
+
+def test_before_send_strips_frame_vars_and_breadcrumb_data() -> None:
+    """before_send removes frame vars and breadcrumb data as defence in depth."""
+    event: dict[str, Any] = {
+        "exception": {
+            "values": [
+                {
+                    "stacktrace": {
+                        "frames": [{"function": "send", "vars": {"x": "SECRET"}}]
+                    }
+                }
+            ]
+        },
+        "threads": {
+            "values": [
+                {"stacktrace": {"frames": [{"function": "t", "vars": {"y": "S"}}]}}
+            ]
+        },
+        "breadcrumbs": {
+            "values": [{"category": "httplib", "data": {"url": "https://x/SECRET"}}]
+        },
+    }
+
+    result = _sentry_before_send(event, {})
+
+    assert result is not None
+    frame = result["exception"]["values"][0]["stacktrace"]["frames"][0]
+    assert frame == {"function": "send"}
+    assert "vars" not in result["threads"]["values"][0]["stacktrace"]["frames"][0]
+    assert result["breadcrumbs"]["values"][0] == {"category": "httplib"}
