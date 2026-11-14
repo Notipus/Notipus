@@ -5,11 +5,13 @@ and how destination plugins render them (Slack, Telegram).
 """
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from plugins.destinations.slack import SlackDestinationPlugin
 from plugins.destinations.telegram import TelegramDestinationPlugin
+from plugins.sources.chargify import ChargifySourcePlugin
+from plugins.sources.stripe import StripeSourcePlugin
 from webhooks.models.rich_notification import (
     NotificationSeverity,
     NotificationType,
@@ -20,6 +22,7 @@ from webhooks.services.database_lookup import DatabaseLookupService
 from webhooks.services.event_processor import EventProcessor
 from webhooks.services.insight_detector import InsightDetector
 from webhooks.services.notification_builder import NotificationBuilder
+from webhooks.services.utils import interval_suffix
 
 
 def _build(event: dict[str, Any], customer: dict[str, Any]) -> Any:
@@ -374,3 +377,139 @@ class TestDashboardStoresAllLifecycleEvents:
         processor.db_lookup.store_enriched_record.assert_called_once()
         lookup = DatabaseLookupService()
         assert lookup._get_event_display_type(event_type) == display_type
+
+
+class TestBillingIntervalCount:
+    """Billing periods use unit x count, and ARR uses the real length."""
+
+    @pytest.mark.parametrize(
+        ("interval", "count", "expected"),
+        [
+            ("month", 1, "monthly"),
+            ("month", None, "monthly"),
+            ("month", 3, "quarterly"),
+            ("month", 6, "6 months"),
+            ("month", 12, "annual"),
+            ("year", 1, "annual"),
+            ("week", 2, "2 weeks"),
+        ],
+    )
+    def test_stripe_structured_fields(
+        self, interval: str, count: int | None, expected: str
+    ) -> None:
+        """Stripe line items combine interval with interval_count."""
+        recurring: dict[str, Any] = {"interval": interval}
+        if count is not None:
+            recurring["interval_count"] = count
+        plugin = StripeSourcePlugin()
+
+        price_item = {"price": {"recurring": recurring}}
+        plan_item = {"plan": {"interval": interval, "interval_count": count}}
+
+        assert plugin._billing_period_from_structured_fields(price_item) == expected
+        assert plugin._billing_period_from_structured_fields(plan_item) == expected
+
+    def test_stripe_subscription_metadata_quarterly(self) -> None:
+        """A subscription on a month x 3 plan is quarterly."""
+        metadata: dict[str, Any] = {}
+        StripeSourcePlugin()._add_subscription_metadata(
+            metadata,
+            "subscription_created",
+            {"id": "sub_1", "plan": {"interval": "month", "interval_count": 3}},
+        )
+
+        assert metadata["billing_period"] == "quarterly"
+
+    @pytest.mark.parametrize(
+        ("unit", "interval", "expected"),
+        [
+            ("month", "1", "monthly"),
+            ("month", "3", "quarterly"),
+            ("month", "6", "6 months"),
+            ("month", "12", "annual"),
+            (None, "1", "monthly"),
+            ("day", "7", "7 days"),
+        ],
+    )
+    def test_chargify_interval_unit(
+        self, unit: str | None, interval: str, expected: str
+    ) -> None:
+        """Chargify's numeric interval is combined with interval_unit."""
+        data = {
+            "payload[subscription][customer][id]": "1",
+            "payload[transaction][amount_in_cents]": "30000",
+            "payload[subscription][product][interval]": interval,
+        }
+        if unit:
+            data["payload[subscription][product][interval_unit]"] = unit
+        plugin = ChargifySourcePlugin(webhook_secret="s")
+
+        with patch.object(plugin, "get_customer_data", return_value={}):
+            success = plugin._parse_payment_success(data)
+            failure = plugin._parse_payment_failure(data)
+
+        assert success["metadata"]["billing_period"] == expected
+        assert failure["metadata"]["billing_period"] == expected
+
+    def test_chargify_missing_interval_defaults_monthly(self) -> None:
+        """No interval fields keeps the historical monthly default."""
+        assert ChargifySourcePlugin._billing_period({}) == "monthly"
+
+    @pytest.mark.parametrize(
+        ("period", "expected"),
+        [
+            ("monthly", "$300.00/mo = $3,600 ARR"),
+            ("annual", "$300.00/yr ARR"),
+            ("quarterly", "$300.00/qtr = $1,200 ARR"),
+            ("6 months", "$300.00/6mo = $600 ARR"),
+            ("2 years", "$300.00/2yr = $150 ARR"),
+            ("weekly", "$300.00"),
+        ],
+    )
+    def test_arr_uses_real_period(self, period: str, expected: str) -> None:
+        """ARR annualizes by the period length; plain periods unchanged."""
+        payment = PaymentInfo(amount=300.0, currency="USD", interval=period)
+
+        assert payment.format_amount_with_arr() == expected
+
+    @pytest.mark.parametrize(
+        ("period", "expected"),
+        [
+            ("monthly", "/mo"),
+            ("annual", "/yr"),
+            ("quarterly", "/qtr"),
+            ("6 months", "/6mo"),
+            (None, "/mo"),
+            ("nonsense", "/mo"),
+        ],
+    )
+    def test_interval_suffix(self, period: str | None, expected: str) -> None:
+        """Headline suffixes cover counted periods; defaults unchanged."""
+        assert interval_suffix(period) == expected
+
+    def test_chargify_badge_not_numeric(self) -> None:
+        """A quarterly Chargify payment badge reads "Recurring (Quarterly)"."""
+        n = _build(
+            {
+                "type": "payment_success",
+                "provider": "chargify",
+                "amount": 300.0,
+                "currency": "USD",
+                "metadata": {
+                    "subscription_id": "1",
+                    "billing_period": ChargifySourcePlugin._billing_period(
+                        {
+                            "payload[subscription][product][interval]": "3",
+                            "payload[subscription][product][interval_unit]": "month",
+                        }
+                    ),
+                },
+            },
+            {"email": "ann@example.com"},
+        )
+
+        text = _slack_text(SlackDestinationPlugin().format(n))
+
+        assert "Recurring (Quarterly)" in text
+        assert n.payment is not None
+        assert n.payment.get_arr() == 1200.0

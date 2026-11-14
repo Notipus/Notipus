@@ -6,6 +6,8 @@ to avoid code duplication.
 
 from typing import Any, cast
 
+from webhooks.utils.billing_period import period_suffix
+
 # Billing period to headline interval suffix mapping. Unknown or missing
 # periods fall back to "/mo" explicitly (most subscriptions are monthly).
 INTERVAL_SUFFIX_MAP: dict[str, str] = {
@@ -32,9 +34,13 @@ def interval_suffix(billing_period: Any) -> str:
             (e.g. "monthly", "annual"), or None.
 
     Returns:
-        Interval suffix such as "/mo" or "/yr", defaulting to "/mo".
+        Interval suffix such as "/mo", "/yr" or "/6mo" (for a
+        "6 months" period), defaulting to "/mo".
     """
-    return INTERVAL_SUFFIX_MAP.get(str(billing_period or "").lower(), "/mo")
+    key = str(billing_period or "").lower()
+    if key in INTERVAL_SUFFIX_MAP:
+        return INTERVAL_SUFFIX_MAP[key]
+    return period_suffix(key) or "/mo"
 
 
 def get_display_name(customer_data: dict[str, Any]) -> str:
