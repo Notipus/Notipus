@@ -122,7 +122,7 @@ def _migration_function(name: str) -> Callable[..., None]:
         The migration function.
     """
     module = import_module(
-        "core.migrations.0037_move_hunter_api_key_to_encrypted_credentials"
+        "core.migrations.0039_move_hunter_api_key_to_encrypted_credentials"
     )
     return getattr(module, name)  # type: ignore[no-any-return]
 

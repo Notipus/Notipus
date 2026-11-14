@@ -61,7 +61,7 @@ def move_keys_back_to_settings(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0036_integration_first_delivery_at"),
+        ("core", "0038_backfill_profile_only_memberships"),
     ]
 
     operations = [
