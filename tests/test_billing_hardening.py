@@ -323,3 +323,76 @@ class TestCheckoutCompletedStatus:
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "active"
+
+
+LOCMEM_CACHE = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "billing-hardening-dedup",
+    }
+}
+
+
+class TestRedeliveredSideEffects:
+    """Redelivered billing events don't repeat non-idempotent side effects."""
+
+    @pytest.fixture(autouse=True)
+    def _locmem_cache(self) -> Iterator[None]:
+        """Use a real (local-memory) cache so dedup markers persist."""
+        from django.core.cache import cache
+        from django.test import override_settings
+
+        with override_settings(CACHES=LOCMEM_CACHE):
+            cache.clear()
+            yield
+            cache.clear()
+
+    def _trial_event(self) -> dict[str, Any]:
+        """Build a trial_will_end subscription payload.
+
+        Returns:
+            Subscription dict for the test workspace.
+        """
+        return {"id": "sub_primary", "customer": CUSTOMER_ID, "trial_end": 1900000000}
+
+    def test_trial_ending_email_sent_once(self, workspace: Workspace) -> None:
+        """A redelivered trial_will_end doesn't re-send the email."""
+        with patch("webhooks.services.billing.send_trial_ending_alert") as send:
+            BillingService.handle_trial_ending(self._trial_event())
+            BillingService.handle_trial_ending(self._trial_event())
+
+        assert send.call_count == 1
+
+    def test_new_trial_end_sends_again(self, workspace: Workspace) -> None:
+        """An extended trial (new trial_end) is a new occurrence."""
+        with patch("webhooks.services.billing.send_trial_ending_alert") as send:
+            BillingService.handle_trial_ending(self._trial_event())
+            BillingService.handle_trial_ending(
+                {**self._trial_event(), "trial_end": 1900600000}
+            )
+
+        assert send.call_count == 2
+
+    def test_failed_attempt_is_not_marked(self, workspace: Workspace) -> None:
+        """A send that raised is retried on redelivery."""
+        with patch("webhooks.services.billing.send_trial_ending_alert") as send:
+            send.side_effect = [RuntimeError("smtp down"), None]
+            with pytest.raises(RuntimeError):
+                BillingService.handle_trial_ending(self._trial_event())
+            BillingService.handle_trial_ending(self._trial_event())
+
+        assert send.call_count == 2
+
+    def test_cancellation_tracked_once(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """A redelivered deletion doesn't count a second cancellation."""
+        stripe_subs.return_value = [_sub("sub_primary", "canceled")]
+        event = {"id": "sub_primary", "customer": CUSTOMER_ID}
+
+        with patch("webhooks.services.billing.analytics.track_workspace_event") as t:
+            BillingService.handle_subscription_deleted(event)
+            BillingService.handle_subscription_deleted(event)
+
+        cancels = [c for c in t.call_args_list if c.args[1] == "subscription_cancelled"]
+        assert len(cancels) == 1

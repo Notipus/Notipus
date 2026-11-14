@@ -134,6 +134,53 @@ def _first_ga4_delivery(dedup_key: str) -> bool:
         return True
 
 
+# Billing handlers run inside the Stripe plugin's parse_webhook, before
+# the router's event-level dedup, and only receive the event's data
+# object (not the evt_... id). Side effects that are not idempotent
+# (emails, one-shot analytics) are therefore deduplicated here on a key
+# derived from the object itself. Same TTL as GA4 dedup: it must outlive
+# Stripe's ~3-day redelivery window.
+_SIDE_EFFECT_DEDUP_TTL_SECONDS = 60 * 60 * 24 * 7
+
+
+def _side_effect_done(dedup_key: str) -> bool:
+    """Return whether a billing side effect already ran for this key.
+
+    Fails open (returns False) when the cache is unavailable: a repeated
+    email beats a dropped one, and the cache must never 5xx a webhook.
+
+    Args:
+        dedup_key: Stable identifier of the side effect occurrence.
+
+    Returns:
+        True when the side effect was recorded as done.
+    """
+    try:
+        return bool(cache.get(f"billing_side_effect:{dedup_key}"))
+    except Exception:
+        logger.warning(f"Billing dedup cache unavailable for {dedup_key}")
+        return False
+
+
+def _mark_side_effect_done(dedup_key: str) -> None:
+    """Record that a billing side effect completed.
+
+    Called only after the side effect succeeded, so a failed attempt is
+    retried on redelivery.
+
+    Args:
+        dedup_key: Stable identifier of the side effect occurrence.
+    """
+    try:
+        cache.set(
+            f"billing_side_effect:{dedup_key}",
+            1,
+            timeout=_SIDE_EFFECT_DEDUP_TTL_SECONDS,
+        )
+    except Exception:
+        logger.warning(f"Could not record billing side effect {dedup_key}")
+
+
 class StripeSyncLockTimeout(Exception):
     """Raised when the per-customer billing lock can't be acquired in time.
 
@@ -623,11 +670,14 @@ class BillingService:
             Workspace.objects.filter(id=workspace.id).update(
                 subscription_status="cancelled"
             )
-            analytics.track_workspace_event(
-                workspace,
-                "subscription_cancelled",
-                {"plan": workspace.subscription_plan},
-            )
+            # A subscription is deleted once; a redelivered deletion event
+            # must not count a second cancellation.
+            if _first_ga4_delivery(f"subscription_cancelled:{deleted_sub_id}"):
+                analytics.track_workspace_event(
+                    workspace,
+                    "subscription_cancelled",
+                    {"plan": workspace.subscription_plan},
+                )
             logger.info(f"Marked subscription as cancelled for customer {customer_id}")
             # Reconcile: if another live subscription exists on Stripe
             # (e.g. the recorded id was stale), sync restores it.
@@ -1067,6 +1117,17 @@ class BillingService:
             logger.warning(f"Trial ending for unknown customer {customer_id}")
             return
 
+        # customer.subscription.trial_will_end fires once per trial end,
+        # so (subscription, trial_end) identifies the occurrence: a
+        # redelivery of the same event must not email admins again.
+        dedup_key = f"trial_ending:{subscription.get('id') or customer_id}:{trial_end}"
+        if _side_effect_done(dedup_key):
+            logger.info(
+                f"Trial-ending email already sent for customer {customer_id} "
+                f"(trial_end: {trial_end}); skipping redelivered event"
+            )
+            return
+
         logger.info(
             f"Trial ending soon for workspace {ws.name} "
             f"(customer: {customer_id}), trial_end: {trial_end}"
@@ -1079,6 +1140,7 @@ class BillingService:
             # "false") must not send the "delivery will stop" variant.
             will_cancel=subscription.get("cancel_at_period_end") is True,
         )
+        _mark_side_effect_done(dedup_key)
         # TODO: Trigger Slack notification if configured
 
     @staticmethod
