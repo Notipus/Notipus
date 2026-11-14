@@ -189,3 +189,56 @@ class TestCloverInvoiceHandlers:
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "active"
+
+
+class TestSyncPrimarySubscription:
+    """Sync derives state from the stored primary plan subscription."""
+
+    def test_addon_does_not_mask_cancelled_primary(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """A live add-on can't keep a workspace whose plan was cancelled."""
+        stripe_subs.return_value = [
+            _sub("sub_addon", "active", product="Extra seats"),
+            _sub("sub_primary", "canceled"),
+        ]
+
+        BillingService.handle_subscription_deleted(
+            {"id": "sub_primary", "customer": CUSTOMER_ID}
+        )
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "cancelled"
+        assert workspace.stripe_subscription_id == "sub_primary"
+
+    def test_stored_live_subscription_wins(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """With two live plan subscriptions, the stored one is used."""
+        stripe_subs.return_value = [
+            _sub("sub_other", "active", product="Basic"),
+            _sub("sub_primary", "past_due", product="Pro"),
+        ]
+
+        assert BillingService.sync_workspace_from_stripe(CUSTOMER_ID) is True
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "past_due"
+        assert workspace.subscription_plan == "pro"
+        assert workspace.stripe_subscription_id == "sub_primary"
+
+    def test_resubscribe_replaces_ended_stored_subscription(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """A new live plan subscription replaces a cancelled stored one."""
+        stripe_subs.return_value = [
+            _sub("sub_primary", "canceled", product="Pro"),
+            _sub("sub_new", "active", product="Basic"),
+        ]
+
+        BillingService.sync_workspace_from_stripe(CUSTOMER_ID)
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "active"
+        assert workspace.subscription_plan == "basic"
+        assert workspace.stripe_subscription_id == "sub_new"

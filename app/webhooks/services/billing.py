@@ -95,6 +95,9 @@ def map_stripe_status(stripe_status: str) -> str:
 _SYNC_LOCK_TIMEOUT_SECONDS = 30
 _SYNC_LOCK_BLOCKING_SECONDS = 10
 
+# Stripe statuses that mean the subscription is still billing.
+_LIVE_STATUSES = frozenset({"active", "trialing", "past_due"})
+
 # Plan keys accepted for Workspace.subscription_plan.
 _VALID_PLAN_KEYS = frozenset(key for key, _label in Workspace.STRIPE_PLANS)
 
@@ -227,20 +230,44 @@ class BillingService:
     """
 
     @staticmethod
-    def _get_active_subscription(subscriptions: list[dict[str, Any]]) -> dict[str, Any]:
-        """Get the most relevant subscription from a list.
+    def _get_active_subscription(
+        subscriptions: list[dict[str, Any]], stored_id: str = ""
+    ) -> dict[str, Any]:
+        """Get the subscription the workspace's billing state derives from.
 
-        Prefers active/trialing subscriptions over cancelled ones.
+        Only subscriptions whose product maps to a known plan are
+        considered, so an add-on (e.g. extra seats) can't set the
+        workspace's plan or status; when none map, all are considered
+        (legacy products without plan metadata). Among those, the
+        workspace's stored primary subscription wins while it is live,
+        then any live subscription (a resubscribe after the stored one
+        ended), then the stored one, then the first. This matches the
+        sync_stripe_subscriptions command's preference for the stored id.
 
         Args:
-            subscriptions: List of subscription dictionaries.
+            subscriptions: Non-empty list of subscription dictionaries.
+            stored_id: The workspace's recorded stripe_subscription_id.
 
         Returns:
             The most relevant subscription dictionary.
         """
-        for sub in subscriptions:
-            if sub["status"] in ("active", "trialing", "past_due"):
-                return sub
+        plan_subs = [
+            sub
+            for sub in subscriptions
+            if BillingService._extract_plan_name_from_subscription(sub, warn=False)
+        ]
+        candidates = plan_subs or subscriptions
+        live = [sub for sub in candidates if sub.get("status") in _LIVE_STATUSES]
+        stored = [sub for sub in candidates if stored_id and sub.get("id") == stored_id]
+
+        for group in (
+            [sub for sub in stored if sub in live],
+            live,
+            stored,
+            candidates,
+        ):
+            if group:
+                return group[0]
         return subscriptions[0]
 
     @staticmethod
@@ -289,7 +316,7 @@ class BillingService:
 
     @staticmethod
     def _extract_plan_name_from_subscription(
-        subscription: dict[str, Any],
+        subscription: dict[str, Any], warn: bool = True
     ) -> str | None:
         """Extract plan name from subscription items.
 
@@ -300,6 +327,7 @@ class BillingService:
 
         Args:
             subscription: Subscription dictionary with items.
+            warn: Log unrecognized plan names (off when only probing).
 
         Returns:
             Plan name string or None.
@@ -316,10 +344,11 @@ class BillingService:
             plan_name = BillingService._normalize_plan_name(raw_name)
             if plan_name:
                 return plan_name
-            logger.warning(
-                f"Unrecognized plan name {raw_name!r} on subscription "
-                f"{subscription.get('id')}; ignoring"
-            )
+            if warn:
+                logger.warning(
+                    f"Unrecognized plan name {raw_name!r} on subscription "
+                    f"{subscription.get('id')}; ignoring"
+                )
 
         return None
 
@@ -362,7 +391,9 @@ class BillingService:
             logger.info(f"No subscriptions found for customer {customer_id}")
             return True
 
-        active_sub = BillingService._get_active_subscription(subscriptions)
+        active_sub = BillingService._get_active_subscription(
+            subscriptions, workspace.stripe_subscription_id
+        )
         stripe_status = active_sub.get("status", "active")
         internal_status = map_stripe_status(stripe_status)
         plan_name = BillingService._extract_plan_name_from_subscription(active_sub)
