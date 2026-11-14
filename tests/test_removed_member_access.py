@@ -159,3 +159,55 @@ def test_backfill_does_not_restore_removed_member(
 
     assert WorkspaceMember.objects.filter(user=creator).count() == 1
     assert not WorkspaceMember.objects.get(user=creator).is_active
+
+
+def _run_email_backfill() -> None:
+    """Run the 0038 Slack-email verification step."""
+    migration = importlib.import_module(
+        "core.migrations.0038_backfill_profile_only_memberships"
+    )
+    migration.verify_slack_linked_emails(apps, None)
+
+
+@pytest.mark.django_db
+def test_legacy_slack_user_email_becomes_verified() -> None:
+    """Accounts from the legacy Slack sign-in keep working with Slack login."""
+    from allauth.account.models import EmailAddress
+    from core.adapters import has_verified_email
+
+    workspace = Workspace.objects.create(name="Legacy Slack")
+    user = User.objects.create_user(username="slacker", email="slack@example.com")
+    UserProfile.objects.create(user=user, workspace=workspace, slack_user_id="U123")
+
+    _run_email_backfill()
+
+    assert has_verified_email(user, "slack@example.com")
+    assert EmailAddress.objects.get(user=user).primary is True
+
+
+@pytest.mark.django_db
+def test_email_backfill_ignores_accounts_without_slack_link() -> None:
+    """A passkey signup (no Slack link) is not marked verified."""
+    from allauth.account.models import EmailAddress
+
+    user = User.objects.create_user(username="pk", email="pk@example.com")
+
+    _run_email_backfill()
+
+    assert not EmailAddress.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+def test_email_backfill_skips_address_claimed_by_another_account() -> None:
+    """An address another account already holds is left alone."""
+    from allauth.account.models import EmailAddress
+
+    owner = User.objects.create_user(username="owner2", email="dup@example.com")
+    EmailAddress.objects.create(user=owner, email="dup@example.com", verified=True)
+    workspace = Workspace.objects.create(name="Dup")
+    other = User.objects.create_user(username="other", email="dup@example.com")
+    UserProfile.objects.create(user=other, workspace=workspace, slack_user_id="U999")
+
+    _run_email_backfill()
+
+    assert not EmailAddress.objects.filter(user=other).exists()
