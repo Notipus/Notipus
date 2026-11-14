@@ -6,7 +6,9 @@ format and sends them via the Telegram Bot API.
 
 import json
 import logging
+import math
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import requests
 from plugins.base import PluginCapability, PluginMetadata, PluginType
@@ -18,14 +20,21 @@ from webhooks.models.rich_notification import (
     CustomerInfo,
     DetailSection,
     InsightInfo,
+    NotificationType,
     PaymentInfo,
     RichNotification,
 )
+from webhooks.utils.currency import format_money
 
 logger = logging.getLogger(__name__)
 
 # Default timeout for Telegram API requests (seconds)
 DEFAULT_TIMEOUT = 30
+
+# Inline-keyboard url buttons only accept these schemes; anything else
+# (mailto:, tel:, ...) makes sendMessage fail with BUTTON_URL_INVALID,
+# which drops the whole notification.
+TELEGRAM_BUTTON_SCHEMES = frozenset({"http", "https", "tg"})
 
 # Telegram Bot API base URL
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
@@ -207,6 +216,10 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             if customer_footer:
                 lines.append(customer_footer)
 
+        # Telegram rejects mailto: button URLs, so contact actions render
+        # as text instead (Telegram auto-links the address).
+        lines.extend(self._format_contact_lines(n.actions))
+
         # Attribution footer, last so it never displaces event content.
         lines.append("")
         lines.append(
@@ -219,9 +232,11 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             "parse_mode": "HTML",
         }
 
-        # Action buttons (if present)
-        if n.actions:
-            result["reply_markup"] = self._format_actions(n.actions)
+        # Action buttons (if present). Only schemes Telegram accepts for
+        # url buttons are kept; one invalid button fails the whole send.
+        url_actions = [a for a in n.actions if self._is_button_url(a.url)]
+        if url_actions:
+            result["reply_markup"] = self._format_actions(url_actions)
 
         return result
 
@@ -351,8 +366,10 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
 
         # Only add payment-specific badges for payment events
         if n.is_payment_event:
-            # Add payment type (recurring/one-time)
-            if n.is_recurring:
+            # Add payment type (recurring/one-time). A refund is neither.
+            if n.type == NotificationType.REFUND_ISSUED:
+                pass
+            elif n.is_recurring:
                 if n.billing_interval:
                     interval = self._escape_html(n.billing_interval.title())
                     elements.append(f"🔄 Recurring ({interval})")
@@ -438,21 +455,29 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
         order_display = payment.order_number or "N/A"
         lines = [f"🛒 <b>Order #{self._escape_html(order_display)}</b>"]
 
-        # currency comes from the webhook payload; escape it once for reuse.
-        currency = self._escape_html(payment.currency)
-
         # Amount. Coerce defensively: some providers send amounts as strings,
-        # which would raise on :.2f formatting and fail the whole send.
+        # which would raise in formatting and fail the whole send. The
+        # currency comes from the webhook payload, so the formatted money
+        # string is escaped.
         amount = self._coerce_float(payment.amount)
-        lines.append(f"<b>Amount:</b> {currency} {amount:,.2f}")
+        money = self._escape_html(format_money(amount, payment.currency))
+        lines.append(f"<b>Amount:</b> {money}")
 
         # Line items (max 5)
         if payment.line_items:
             for item in payment.line_items[:5]:
                 qty = self._coerce_int(item.get("quantity", 1), default=1)
                 name = self._escape_html(item.get("name", "Item"))
-                price = self._coerce_float(item.get("price", 0))
-                lines.append(f"• {qty}x {name} ({currency} {price:.2f})")
+                line = f"• {qty}x {name}"
+                # Omit a missing price (refund line items carry none)
+                # rather than claiming the item cost 0.
+                raw_price = item.get("price")
+                if raw_price is not None:
+                    price = self._coerce_float(raw_price, default=math.nan)
+                    if math.isfinite(price):
+                        item_money = format_money(price, payment.currency)
+                        line += f" ({self._escape_html(item_money)})"
+                lines.append(line)
 
             if len(payment.line_items) > 5:
                 remaining = len(payment.line_items) - 5
@@ -628,6 +653,59 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             buttons.append(row)
 
         return {"inline_keyboard": buttons}
+
+    def _format_contact_lines(self, actions: list[ActionButton]) -> list[str]:
+        """Render mailto: actions as text lines carrying the address.
+
+        Args:
+            actions: Notification action buttons.
+
+        Returns:
+            One HTML line per mailto action, e.g.
+            "📧 Contact Customer: ann@example.com".
+        """
+        lines: list[str] = []
+        for action in actions:
+            contact_email = self._mailto_address(action.url)
+            if contact_email:
+                lines.append(
+                    f"📧 {self._escape_html(action.text)}: "
+                    f"{self._escape_html(contact_email)}"
+                )
+        return lines
+
+    @staticmethod
+    def _is_button_url(url: str | None) -> bool:
+        """Return whether Telegram accepts ``url`` on an inline url button.
+
+        Args:
+            url: Action button URL.
+
+        Returns:
+            True for http(s) and tg:// URLs, False otherwise.
+        """
+        if not url:
+            return False
+        try:
+            scheme = urlsplit(url).scheme.lower()
+        except ValueError:
+            return False
+        return scheme in TELEGRAM_BUTTON_SCHEMES
+
+    @staticmethod
+    def _mailto_address(url: str | None) -> str | None:
+        """Extract the address from a ``mailto:`` URL.
+
+        Args:
+            url: Action button URL.
+
+        Returns:
+            The email address, or None when the URL is not a mailto link.
+        """
+        if not url or not url.lower().startswith("mailto:"):
+            return None
+        address = unquote(url[len("mailto:") :].split("?", 1)[0]).strip()
+        return address or None
 
     @staticmethod
     def _escape_html(text: str) -> str:

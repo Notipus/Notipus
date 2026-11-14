@@ -6,6 +6,8 @@ to avoid code duplication.
 
 from typing import Any, cast
 
+from webhooks.utils.billing_period import period_suffix
+
 # Billing period to headline interval suffix mapping. Unknown or missing
 # periods fall back to "/mo" explicitly (most subscriptions are monthly).
 INTERVAL_SUFFIX_MAP: dict[str, str] = {
@@ -32,9 +34,13 @@ def interval_suffix(billing_period: Any) -> str:
             (e.g. "monthly", "annual"), or None.
 
     Returns:
-        Interval suffix such as "/mo" or "/yr", defaulting to "/mo".
+        Interval suffix such as "/mo", "/yr" or "/6mo" (for a
+        "6 months" period), defaulting to "/mo".
     """
-    return INTERVAL_SUFFIX_MAP.get(str(billing_period or "").lower(), "/mo")
+    key = str(billing_period or "").lower()
+    if key in INTERVAL_SUFFIX_MAP:
+        return INTERVAL_SUFFIX_MAP[key]
+    return period_suffix(key) or "/mo"
 
 
 def get_display_name(customer_data: dict[str, Any]) -> str:
@@ -59,18 +65,20 @@ def get_display_name(customer_data: dict[str, Any]) -> str:
         return cast(str, company_name)
 
     # Try customer's full name
-    first_name = customer_data.get("first_name", "")
-    last_name = customer_data.get("last_name", "")
+    # "or" rather than a .get default: providers send explicit nulls
+    # (e.g. Shopify "last_name": null), which would render as "Ann None".
+    first_name = customer_data.get("first_name") or ""
+    last_name = customer_data.get("last_name") or ""
     if first_name or last_name:
         return f"{first_name} {last_name}".strip()
 
     # Use full email address as fallback
-    email: str = customer_data.get("email", "")
+    email: str = customer_data.get("email") or ""
     if email and "@" in email:
         return email
 
     # Use customer ID as fallback (e.g., "cus_TremsiHkK4YcSS")
-    customer_id: str = customer_data.get("customer_id", "")
+    customer_id: str = customer_data.get("customer_id") or ""
     if customer_id:
         return customer_id
 
