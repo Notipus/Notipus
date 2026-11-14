@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from core.fields import EncryptedJSONField, EncryptedTextField
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -245,9 +246,15 @@ class Workspace(models.Model):
         (dunning), and cancelled workspaces are excluded per
         STATUS_CHOICES semantics.
 
+        With DISABLE_BILLING (self-hosted, no Notipus billing) every
+        workspace is entitled: there is no way to pay, so trial expiry
+        or a lapsed status must not cut service off.
+
         Returns:
             True if the workspace should receive service.
         """
+        if settings.DISABLE_BILLING:
+            return True
         if self.subscription_status == "active":
             return True
         if self.subscription_status == "trial":

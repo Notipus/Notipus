@@ -58,3 +58,18 @@ def workspace_role(request: HttpRequest) -> dict[str, Any]:
         memberships = memberships.filter(workspace=workspace)
     member = memberships.only("role").first()
     return {"nav_workspace_role": member.role if member else None}
+
+
+def billing(request: HttpRequest) -> dict[str, Any]:
+    """Expose whether Notipus's own billing is enabled to templates.
+
+    Self-hosted deployments set DISABLE_BILLING; shared chrome uses this
+    to hide billing navigation and upgrade prompts.
+
+    Args:
+        request: The current HTTP request.
+
+    Returns:
+        Dict with ``billing_enabled``.
+    """
+    return {"billing_enabled": not settings.DISABLE_BILLING}

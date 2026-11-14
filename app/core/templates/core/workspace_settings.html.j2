@@ -58,15 +58,17 @@
                               icon="plug"
                               title="Integrations"
                               description="Connect Slack, Stripe, Shopify and the rest." />
-                <c-action-row href="{% url 'core:billing_dashboard' %}"
-                              icon="credit-card"
-                              title="Billing"
-                              description="Usage, invoices and payment methods." />
-                <c-action-row href="{% url 'core:upgrade_plan' %}"
-                              icon="trending-up"
-                              tone="brand"
-                              title="Change plan"
-                              description="More events a month and more seats." />
+                {% if billing_enabled %}
+                    <c-action-row href="{% url 'core:billing_dashboard' %}"
+                                  icon="credit-card"
+                                  title="Billing"
+                                  description="Usage, invoices and payment methods." />
+                    <c-action-row href="{% url 'core:upgrade_plan' %}"
+                                  icon="trending-up"
+                                  tone="brand"
+                                  title="Change plan"
+                                  description="More events a month and more seats." />
+                {% endif %}
             </div>
         </c-card>
     </c-page>

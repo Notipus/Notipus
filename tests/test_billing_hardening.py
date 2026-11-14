@@ -682,3 +682,133 @@ class TestCheckoutRequiresPost:
         assert "csrfmiddlewaretoken" in html
         assert 'name="interval"' in html
         assert f'href="{action}' not in html
+
+
+class TestDisableBilling:
+    """DISABLE_BILLING turns off every billing restriction, not just the hook."""
+
+    @pytest.fixture
+    def billing_disabled(self, settings: Any) -> None:
+        """Run the test as a self-hosted deployment without billing."""
+        settings.DISABLE_BILLING = True
+
+    def test_expired_trial_keeps_access(
+        self, workspace: Workspace, billing_disabled: None
+    ) -> None:
+        """A long-expired trial (or lapsed status) still has access."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        workspace.subscription_status = "trial"
+        workspace.trial_end_date = timezone.now() - timedelta(days=30)
+        assert workspace.has_active_access is True
+        workspace.subscription_status = "cancelled"
+        assert workspace.has_active_access is True
+
+    def test_expired_trial_blocked_when_billing_enabled(
+        self, workspace: Workspace
+    ) -> None:
+        """Hosted behaviour is unchanged: an expired trial loses access."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        workspace.subscription_status = "trial"
+        workspace.trial_end_date = timezone.now() - timedelta(days=30)
+        assert workspace.has_active_access is False
+
+    def test_free_quota_is_unlimited(
+        self, workspace: Workspace, billing_disabled: None
+    ) -> None:
+        """The free-plan monthly limit doesn't apply."""
+        from webhooks.services.rate_limiter import RateLimiter
+
+        workspace.subscription_plan = "free"
+        limiter = RateLimiter()
+        assert limiter.get_organization_limit(workspace) == RateLimiter.UNLIMITED
+        with patch.object(limiter, "_cache_get_with_health", return_value=(5000, True)):
+            allowed, _info = limiter.check_rate_limit(workspace)
+        assert allowed is True
+
+    def test_webhook_for_expired_trial_is_accepted(
+        self, workspace: Workspace, billing_disabled: None
+    ) -> None:
+        """The webhook access check no longer 403s an expired trial."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+        from webhooks.webhook_router import _check_workspace_access
+
+        workspace.subscription_status = "trial"
+        workspace.trial_end_date = timezone.now() - timedelta(days=30)
+        assert _check_workspace_access(workspace) is None
+
+    @pytest.mark.parametrize(
+        ("view_name", "args"),
+        [
+            ("core:billing_dashboard", []),
+            ("core:upgrade_plan", []),
+            ("core:billing_portal", []),
+            ("core:payment_methods", []),
+            ("core:billing_history", []),
+            ("core:select_plan", []),
+            ("core:checkout_success", []),
+            ("core:checkout_cancel", []),
+        ],
+    )
+    def test_billing_pages_redirect_to_dashboard(
+        self,
+        checkout_client: tuple[Any, Workspace],
+        billing_disabled: None,
+        view_name: str,
+        args: list[str],
+    ) -> None:
+        """Billing pages send the user to the dashboard."""
+        from django.urls import reverse
+
+        client, _ws = checkout_client
+        response = client.get(reverse(view_name, args=args))
+
+        assert response.status_code == 302
+        assert response.url == reverse("core:dashboard")
+
+    def test_checkout_post_redirects_to_dashboard(
+        self,
+        checkout_client: tuple[Any, Workspace],
+        checkout_stripe: MagicMock,
+        billing_disabled: None,
+    ) -> None:
+        """Checkout can't be started at all."""
+        from django.urls import reverse
+
+        client, _ws = checkout_client
+        response = start_checkout(client, "pro")
+
+        assert response.url == reverse("core:dashboard")
+        checkout_stripe.return_value.get_or_create_customer.assert_not_called()
+
+    def test_billing_nav_hidden(
+        self, checkout_client: tuple[Any, Workspace], billing_disabled: None
+    ) -> None:
+        """Dashboard and settings show no billing links."""
+        from django.urls import reverse
+
+        client, _ws = checkout_client
+        for page in ("core:dashboard", "core:workspace_settings"):
+            response = client.get(reverse(page))
+            assert response.status_code == 200, page
+            html = response.content.decode()
+            assert reverse("core:billing_dashboard") not in html, page
+            assert reverse("core:upgrade_plan") not in html, page
+
+    def test_billing_nav_shown_when_enabled(
+        self, checkout_client: tuple[Any, Workspace]
+    ) -> None:
+        """Hosted deployments keep the billing links."""
+        from django.urls import reverse
+
+        client, _ws = checkout_client
+        response = client.get(reverse("core:dashboard"))
+        assert response.status_code == 200
+        assert reverse("core:billing_dashboard") in response.content.decode()

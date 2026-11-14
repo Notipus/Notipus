@@ -6,9 +6,12 @@ and checkout flows.
 
 import logging
 import secrets
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
+from functools import wraps
 from typing import Any, cast
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
@@ -29,7 +32,33 @@ logger = logging.getLogger(__name__)
 # Use centralized permission function instead of duplicating logic
 _get_user_workspace = get_workspace_for_user
 
+_View = Callable[..., HttpResponse]
 
+
+def billing_enabled_required(view: _View) -> _View:
+    """Redirect billing pages to the dashboard when billing is disabled.
+
+    Self-hosted deployments (settings.DISABLE_BILLING) have no Notipus
+    billing: plan, checkout and portal pages would only fail or offer
+    plans that can't be bought.
+
+    Args:
+        view: The billing view to guard.
+
+    Returns:
+        The wrapped view.
+    """
+
+    @wraps(view)
+    def wrapper(request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        if settings.DISABLE_BILLING:
+            return redirect("core:dashboard")
+        return view(request, *args, **kwargs)
+
+    return wrapper
+
+
+@billing_enabled_required
 @login_required
 def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Plan selection page for users who do not have a workspace yet.
@@ -83,6 +112,7 @@ def select_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     return render(request, "core/select_plan.html.j2", {"plans": plans})
 
 
+@billing_enabled_required
 @login_required
 def plan_selected(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Plan confirmation page.
@@ -102,6 +132,7 @@ def plan_selected(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     )
 
 
+@billing_enabled_required
 @login_required
 def billing_dashboard(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Billing dashboard showing current plan, usage, and billing info.
@@ -136,6 +167,7 @@ def billing_dashboard(request: HttpRequest) -> HttpResponse | HttpResponseRedire
     return render(request, "core/billing_dashboard.html.j2", context)
 
 
+@billing_enabled_required
 @login_required
 def upgrade_plan(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Plan upgrade/downgrade page.
@@ -239,6 +271,7 @@ def _annotate_yearly_pricing(plans: list[dict[str, Any]]) -> None:
             plan["yearly_savings"] = _format_dollars(savings)
 
 
+@billing_enabled_required
 @login_required
 def payment_methods(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Payment method management page.
@@ -268,6 +301,7 @@ def payment_methods(request: HttpRequest) -> HttpResponse | HttpResponseRedirect
     return render(request, "core/payment_methods.html.j2", context)
 
 
+@billing_enabled_required
 @login_required
 def billing_history(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Billing history and invoices page.
@@ -711,6 +745,7 @@ def _create_checkout_session(
     return None
 
 
+@billing_enabled_required
 @login_required
 @require_POST
 def checkout(
@@ -858,6 +893,7 @@ def checkout(
         return redirect("core:upgrade_plan")
 
 
+@billing_enabled_required
 @login_required
 def billing_portal(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Redirect to Stripe Customer Portal for self-service billing management.
@@ -910,6 +946,7 @@ def billing_portal(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         return redirect("core:billing_dashboard")
 
 
+@billing_enabled_required
 @login_required
 def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
     """Checkout success page.
@@ -1002,6 +1039,7 @@ def checkout_success(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     return render(request, "core/checkout_success.html.j2", context)
 
 
+@billing_enabled_required
 @login_required
 def checkout_cancel(request: HttpRequest) -> HttpResponse:
     """Checkout cancelled page.

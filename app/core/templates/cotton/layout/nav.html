@@ -27,8 +27,10 @@ lights up the right nav item without the view or the template being told to.
                                 current="{% if request.path == '/dashboard/' %}1{% endif %}">Dashboard</c-nav-link>
                     <c-nav-link href="{% url 'core:integrations' %}"
                                 current="{% if '/integrat' in request.path %}1{% endif %}">Integrations</c-nav-link>
-                    <c-nav-link href="{% url 'core:billing_dashboard' %}"
-                                current="{% if '/billing/' in request.path %}1{% endif %}">Billing</c-nav-link>
+                    {% if billing_enabled %}
+                        <c-nav-link href="{% url 'core:billing_dashboard' %}"
+                                    current="{% if '/billing/' in request.path %}1{% endif %}">Billing</c-nav-link>
+                    {% endif %}
                     {% if nav_workspace_role == "owner" or nav_workspace_role == "admin" %}
                         <c-nav-link href="{% url 'core:members_list' %}"
                                     current="{% if '/members' in request.path %}1{% endif %}">Members</c-nav-link>
@@ -78,10 +80,12 @@ lights up the right nav item without the view or the template being told to.
                             icon="plug"
                             mobile
                             current="{% if '/integrat' in request.path %}1{% endif %}">Integrations</c-nav-link>
-                <c-nav-link href="{% url 'core:billing_dashboard' %}"
-                            icon="credit-card"
-                            mobile
-                            current="{% if '/billing/' in request.path %}1{% endif %}">Billing</c-nav-link>
+                {% if billing_enabled %}
+                    <c-nav-link href="{% url 'core:billing_dashboard' %}"
+                                icon="credit-card"
+                                mobile
+                                current="{% if '/billing/' in request.path %}1{% endif %}">Billing</c-nav-link>
+                {% endif %}
                 {% if nav_workspace_role == "owner" or nav_workspace_role == "admin" %}
                     <c-nav-link href="{% url 'core:members_list' %}"
                                 icon="users"
