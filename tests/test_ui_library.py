@@ -458,3 +458,47 @@ class TestZeroValueRegression:
         html = render_component('<c-code-block :value="port" />', {"port": 0})
 
         assert "0" in html.split("<code")[1]
+
+
+@pytest.mark.django_db
+class TestNamedSlotsDoNotLeak:
+    """An unfilled named slot renders nothing, whatever the page has in scope.
+
+    Named slots are context variables inside the component, and Cotton's
+    context is not isolated, so an undeclared slot fell back to a page
+    variable of the same name.
+    """
+
+    LEAKY_CONTEXT = {
+        "actions": "LEAKED-ACTIONS",
+        "footer": "LEAKED-FOOTER",
+        "footnote": "LEAKED-FOOTNOTE",
+        "leading": "LEAKED-LEADING",
+        "head": "LEAKED-HEAD",
+    }
+
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            '<c-card title="Usage">body</c-card>',
+            '<c-alert title="Heads up">body</c-alert>',
+            '<c-stat label="Events" value="3" />',
+            '<c-list><c-list.row title="Ada" /></c-list>',
+            '<c-table caption="Members"><tr><td>x</td></tr></c-table>',
+        ],
+    )
+    def test_page_variables_do_not_fill_named_slots(self, markup: str) -> None:
+        """A page variable named like a slot never appears in the component."""
+        html = render_component(markup, self.LEAKY_CONTEXT)
+
+        assert "LEAKED" not in html
+
+    def test_a_filled_slot_still_renders(self) -> None:
+        """Declaring the slot's default does not shadow real slot content."""
+        html = render_component(
+            '<c-card title="Usage"><c-slot name="actions">MINE</c-slot>body</c-card>',
+            self.LEAKY_CONTEXT,
+        )
+
+        assert "MINE" in html
+        assert "LEAKED" not in html

@@ -55,6 +55,83 @@ def _template_files() -> list[Path]:
     ]
 
 
+# An opening, closing or self-closing Cotton tag. Quoted attribute values may
+# contain ">" (inline template tags), so they are matched as whole strings.
+COTTON_TAG = re.compile(
+    r"<(/?)c-([\w.-]+)\b((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)(/?)>", re.DOTALL
+)
+# How component docs name their slots: a "Slots:" list, or "An `x` slot".
+DOCUMENTED_SLOT = re.compile(r"`(\w+)` slot")
+
+
+def _component_path(tag: str) -> Path:
+    """Map a Cotton tag name to its component file.
+
+    Args:
+        tag: The name after ``c-``, e.g. ``plan-card`` or ``list.row``.
+
+    Returns:
+        The component's path under ``cotton/``.
+    """
+    return (
+        TEMPLATE_ROOT / "cotton" / (tag.replace(".", "/").replace("-", "_") + ".html")
+    )
+
+
+def _slots_passed_by_callers(slots: dict[Path, set[str]]) -> None:
+    """Add every ``<c-slot name>`` a template passes to the component it fills.
+
+    Each template's Cotton tags are walked with a stack, so a slot is
+    attributed to the component it sits directly inside.
+
+    Args:
+        slots: Component path -> slot names, updated in place.
+    """
+    for path in _template_files():
+        stack: list[str] = []
+        for match in COTTON_TAG.finditer(path.read_text()):
+            closing, tag, attrs, self_closing = match.groups()
+            if closing:
+                while stack and stack.pop() != tag:
+                    pass
+                continue
+            name = re.search(r'name="([\w-]+)"', attrs) if tag == "slot" else None
+            owner = next((t for t in reversed(stack) if t != "slot"), None)
+            if name and owner:
+                slots.setdefault(_component_path(owner), set()).add(name.group(1))
+            if not self_closing and tag != "vars":
+                stack.append(tag)
+
+
+def _slots_documented_by_components(slots: dict[Path, set[str]]) -> None:
+    """Add the named slots each component's doc comment advertises.
+
+    Args:
+        slots: Component path -> slot names, updated in place.
+    """
+    for path in (TEMPLATE_ROOT / "cotton").rglob("*.html"):
+        text = path.read_text()
+        documented = set(DOCUMENTED_SLOT.findall(text))
+        listing = re.search(r"^Slots:\n((?:  \w+ .*\n)+)", text, re.MULTILINE)
+        if listing:
+            documented |= set(re.findall(r"^  (\w+) ", listing.group(1), re.MULTILINE))
+        documented.discard("slot")
+        if documented:
+            slots.setdefault(path, set()).update(documented)
+
+
+def _named_slots_by_component() -> dict[Path, set[str]]:
+    """Collect every named slot each component is passed or documents.
+
+    Returns:
+        Component path -> the named slots it has to declare.
+    """
+    slots: dict[Path, set[str]] = {}
+    _slots_passed_by_callers(slots)
+    _slots_documented_by_components(slots)
+    return slots
+
+
 class TestContrastMaths:
     """The WCAG helpers themselves, against values with known answers."""
 
@@ -209,6 +286,30 @@ class TestTemplatesUseTokens:
         assert not offenders, (
             "These <c-vars> props have no default and will leak from the page "
             'context. Give them one, e.g. block="":\n' + "\n".join(offenders)
+        )
+
+    def test_components_declare_every_named_slot(self) -> None:
+        """Every named slot a component takes is declared in its <c-vars>.
+
+        A named slot is just a context variable inside the component. When the
+        caller does not fill it, the non-isolated context resolves it against
+        the page instead: a view passing `actions` or `footer` to its template
+        made every <c-card> on the page render them. Declaring the slot with an
+        empty default shadows the page; slot content still overrides it.
+        """
+        slots = _named_slots_by_component()
+        assert _component_path("card") in slots, "the slot scan found nothing"
+        offenders: list[str] = []
+        for path, names in sorted(slots.items()):
+            assert path.exists(), f"slot passed to a missing component: {path}"
+            match = re.search(r"<c-vars\b([^/>]*)/>", path.read_text())
+            declared = set(re.findall(r'([\w-]+)=""', match.group(1) if match else ""))
+            for name in sorted(names - declared):
+                offenders.append(f"{path.relative_to(TEMPLATE_ROOT)}: {name}")
+        assert not offenders, (
+            "These named slots are not declared in the component's <c-vars> "
+            'and will leak from the page context. Add e.g. actions="":\n'
+            + "\n".join(offenders)
         )
 
 
