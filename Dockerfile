@@ -92,9 +92,27 @@ EXPOSE 8080
 # docker-compose `command:` overrides) execute as-is
 ENTRYPOINT []
 
+# Which peers uvicorn believes when they send X-Forwarded-For/-Proto. A peer
+# outside this list has its forwarded headers ignored, so REMOTE_ADDR stays
+# its own address. uvicorn reads the variable itself (there is no shell in
+# this image to expand it in CMD), so override it per deployment with
+# `fly secrets set FORWARDED_ALLOW_IPS=...`, an [env] entry in fly.toml, or
+# `-e FORWARDED_ALLOW_IPS=...`.
+#
+# "*" (trust any peer) keeps today's production behaviour, and it is only
+# safe while nothing can reach port 8080 except the Fly proxy. It is NOT the
+# end state: with "*" any client can choose its REMOTE_ADDR by sending
+# X-Forwarded-For, which allauth's per-IP login rate limit keys on. Narrow it
+# to the address range the Fly proxy connects from once that is confirmed on
+# a running machine (and allauth is told to read Fly-Client-IP); narrowing it
+# first would make every visitor share the proxy's address - and one
+# rate-limit bucket. HTTPS detection is unaffected either way: Django reads
+# X-Forwarded-Proto itself through SECURE_PROXY_SSL_HEADER.
+ENV FORWARDED_ALLOW_IPS="*"
+
 # Command to start the server
 # Invoke uvicorn from the venv directly: `uv run` re-validates the lockfile and
 # environment on every boot, which costs startup time and can mutate the env
-# --proxy-headers: Use X-Forwarded-* headers for client IP (from Fly.io/Cloudflare)
-# --forwarded-allow-ips='*': Trust proxy headers from any IP (we're behind Fly.io)
-CMD ["/app/.venv/bin/uvicorn", "--host", "0.0.0.0", "--port", "8080", "--lifespan", "off", "--proxy-headers", "--forwarded-allow-ips", "*", "django_notipus.asgi:application"]
+# --proxy-headers: Use X-Forwarded-* headers for client IP, from the peers
+# FORWARDED_ALLOW_IPS (above) names
+CMD ["/app/.venv/bin/uvicorn", "--host", "0.0.0.0", "--port", "8080", "--lifespan", "off", "--proxy-headers", "django_notipus.asgi:application"]
