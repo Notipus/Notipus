@@ -307,10 +307,22 @@ class TestShopifyRefundRendering:
     """Refunds get a refund headline, an order ref and no payment badges."""
 
     def test_refund_headline(self) -> None:
-        """The headline states the formatted refunded amount."""
+        """The headline states the amount, not the internal order id.
+
+        A Shopify refund only carries the provider's internal order id
+        (order_ref), which merchants don't recognise as an order number.
+        """
         n = _build(_shopify_refund_event(), {"customer_id": "order_1"})
 
-        assert n.headline == "$25.00 refunded for order #820982911946154508"
+        assert n.headline == "$25.00 refunded"
+
+    def test_refund_headline_uses_merchant_order_number(self) -> None:
+        """When the merchant-facing order number is known, it is shown."""
+        event = _shopify_refund_event()
+        event["metadata"] = {**event["metadata"], "order_number": "1001"}
+        n = _build(event, {"customer_id": "order_1"})
+
+        assert n.headline == "$25.00 refunded for order #1001"
 
     def test_refund_headline_without_order(self) -> None:
         """Without an order reference the headline is just the amount."""
@@ -543,7 +555,9 @@ class _FakeLockClient:
         self.events: list[str] = []
         self.lock_names: list[str] = []
 
-    def lock(self, name: str, timeout: int, blocking_timeout: int) -> _FakeLock:
+    def lock(
+        self, name: str, timeout: int, blocking_timeout: int, sleep: float = 0.1
+    ) -> _FakeLock:
         """Return a lock for ``name``."""
         self.lock_names.append(name)
         return _FakeLock(self, self.acquirable)
@@ -714,3 +728,14 @@ class TestSlackTextLimits:
         blocks = SlackDestinationPlugin().format(n)["attachments"][0]["blocks"]
 
         assert blocks[0]["text"]["text"] == ":x: $49.00 payment failed (retry #1)"
+
+
+class TestCurrencyCoverage:
+    """Common currencies keep their threshold insights."""
+
+    @pytest.mark.parametrize("currency", ["NZD", "SGD", "HKD", "PLN", "ZAR"])
+    def test_threshold_defined(self, currency: str) -> None:
+        """These currencies are in the approximate rate table."""
+        from webhooks.utils.currency import usd_threshold_in
+
+        assert usd_threshold_in(1000, currency) is not None

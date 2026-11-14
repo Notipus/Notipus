@@ -560,8 +560,11 @@ class NotificationBuilder:
 
         elif event_type == "refund_issued":
             # A refund is money going out; without this branch it fell to
-            # the generic "Refund Issued" title with no amount.
-            order_number = metadata.get("order_number") or metadata.get("order_ref")
+            # the generic "Refund Issued" title with no amount. Only the
+            # merchant-facing order number is used: a refund's order_ref is
+            # the provider's internal order id (e.g. 820982911946154508),
+            # which merchants don't recognise.
+            order_number = metadata.get("order_number")
             if amount is not None and order_number:
                 money = format_money(amount, currency)
                 return f"{money} refunded for order #{order_number}"

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # workspace per day; older keys can never be shown and their records are
 # deleted when trimmed, which bounds Redis memory for very busy
 # workspaces. Trimming is logged, never silent.
-ACTIVITY_INDEX_MAX_PER_DAY = 1000
+ACTIVITY_INDEX_MAX_PER_DAY = 200
 
 # The activity-index lock only covers one cache get + set, so it is short.
 ACTIVITY_LOCK_TIMEOUT_SECONDS = 5
@@ -481,6 +481,7 @@ class DatabaseLookupService:
             f"{cache.make_key(activity_key)}:lock",
             timeout=ACTIVITY_LOCK_TIMEOUT_SECONDS,
             blocking_timeout=ACTIVITY_LOCK_BLOCKING_SECONDS,
+            sleep=0.01,
         )
 
     def _get_activity_keys(

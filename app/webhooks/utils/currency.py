@@ -160,6 +160,16 @@ APPROX_UNITS_PER_USD: dict[str, int] = {
     "DKK": 7,
     "BRL": 5,
     "MXN": 20,
+    "NZD": 2,
+    "SGD": 1,
+    "HKD": 8,
+    "PLN": 4,
+    "CZK": 23,
+    "ZAR": 18,
+    "ILS": 4,
+    "AED": 4,
+    "TWD": 32,
+    "THB": 35,
 }
 
 
