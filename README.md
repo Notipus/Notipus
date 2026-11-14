@@ -627,14 +627,23 @@ The Brandfetch integration enriches company domains with brand information:
 - Caches results in the `Company` model to reduce API calls
 - Used to enhance notifications with company branding
 
-### Industry Classification (LLM modules)
+### Company Profiles & Industry Classification (LLM modules)
 
 To help sales prioritise customers against ICPs, every enriched company also
-gets an industry classification from an LLM: a primary industry from a fixed
-taxonomy, a sub-industry, business model (B2B, B2C, Marketplace, ...), target
-market (Enterprise, Mid-market, SMB, ...), a few keywords, and a confidence
-level. It is stored in `Company.brand_info["industry_classification"]` and
-shown on Slack, Teams and Telegram notifications.
+gets an LLM-generated profile, built from Brandfetch's data:
+
+- **Company information**: display name, a short sales-ready description,
+  founding year, headcount band and headquarters. The LLM receives
+  Brandfetch's name, descriptions, industries, founding year, headcount,
+  location and company kind as input. Its description replaces Brandfetch's;
+  Brandfetch's factual fields (founding year, headcount, location) are kept
+  when present and the LLM fills the gaps.
+- **Industry classification**: a primary industry from a fixed taxonomy, a
+  sub-industry, business model (B2B, B2C, Marketplace, ...), target market
+  (Enterprise, Mid-market, SMB, ...), a few keywords, and a confidence level,
+  stored in `Company.brand_info["industry_classification"]`.
+
+Both are shown on Slack, Teams and Telegram notifications.
 
 LLM modules live in `app/plugins/enrichment/llm_*.py`. Each one implements a
 single `complete_json()` method; the prompt, schema, validation and privacy
@@ -653,6 +662,13 @@ filtering are shared in `base_llm.py`, so a new provider is one short file.
 - **Privacy:** only the bare domain and public company metadata are sent.
   Customer email addresses never reach these providers; values that are not a
   plain domain are rejected and email-like text in the metadata is redacted.
+- **Caching:** besides the `Company` record (refreshed after 30 days), every
+  provider response is cached in Redis: Brandfetch responses for 30 days, LLM
+  answers for 90 days keyed by a hash of their exact input (so unchanged
+  Brandfetch data never triggers a second LLM call), and empty responses for
+  6 hours so unknown domains are not re-queried on every webhook. Errors are
+  not cached. `refresh_enrichment()` and `classify_companies --force` bypass
+  the cache.
 - Companies enriched before a module was configured can be backfilled from
   the stored Brandfetch data: `python app/manage.py classify_companies`
   (`--dry-run`, `--limit N`, `--force`).
