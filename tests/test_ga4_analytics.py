@@ -355,7 +355,8 @@ class TestClientSideGtag:
         request = RequestFactory().get("/")
         with override_settings(GA4_MEASUREMENT_ID="G-TEST123", GA4_CLIENT_SIDE=True):
             assert context_processors.analytics(request) == {
-                "ga4_measurement_id": "G-TEST123"
+                "ga4_measurement_id": "G-TEST123",
+                "ga4_page_location": "http://testserver/",
             }
 
     def test_snippet_rendered_when_enabled(self, client: Client, db: None) -> None:
