@@ -34,26 +34,69 @@ INTEGRATION_TYPE = "teams_notifications"
 DISPLAY_NAME = "Microsoft Teams"
 
 
-def _is_valid_webhook_url(url: str) -> bool:
-    """Cheap sanity check for a Teams Workflows webhook URL.
+# Hosts Microsoft issues Teams incoming-webhook URLs on. The server posts
+# to whatever URL is saved (and the "Test" button does so on demand), so an
+# open https:// check let an admin point it at internal addresses (SSRF).
+# A suffix matches the host itself or any subdomain of it.
+ALLOWED_WEBHOOK_HOST_SUFFIXES: tuple[str, ...] = (
+    # Power Automate / Logic Apps Workflows, e.g. prod-12.westus.logic.azure.com
+    "logic.azure.com",
+    # US Government clouds
+    "logic.azure.us",
+    # Newer Power Platform workflow URLs
+    "environment.api.powerplatform.com",
+    # Legacy Office 365 connector webhooks
+    "webhook.office.com",
+    "outlook.office.com",
+    "outlook.office365.com",
+)
 
-    The Workflows webhook has no validation endpoint, so we only structurally
-    validate here and rely on the "Test" button for real verification. We
-    require an ``https`` scheme with a non-empty host so a degenerate value
-    like ``"https://"`` (which would be saved and then fail every send at
-    runtime) is rejected up front.
+
+def _is_allowed_webhook_host(hostname: str) -> bool:
+    """Whether ``hostname`` is one of Microsoft's webhook hosts.
+
+    Args:
+        hostname: Lower-cased host from the URL.
+
+    Returns:
+        True if it equals or is a subdomain of an allowed suffix.
+    """
+    return any(
+        hostname == suffix or hostname.endswith("." + suffix)
+        for suffix in ALLOWED_WEBHOOK_HOST_SUFFIXES
+    )
+
+
+def _is_valid_webhook_url(url: str) -> bool:
+    """Check that a URL is a Teams webhook on an official Microsoft host.
+
+    The Workflows webhook has no validation endpoint, so beyond this check
+    we rely on the "Test" button for real verification. The URL must be
+    ``https`` on the default port, carry no credentials, and its host must
+    be a Power Automate / Logic Apps / Office webhook host (see
+    ``ALLOWED_WEBHOOK_HOST_SUFFIXES``), so it cannot target internal or
+    arbitrary addresses.
 
     Args:
         url: The candidate webhook URL.
 
     Returns:
-        True if the URL is a plausible HTTPS webhook.
+        True if the URL is an allowed HTTPS webhook.
     """
     try:
         parsed = urlparse(url)
+        port = parsed.port
     except ValueError:
         return False
-    return parsed.scheme == "https" and bool(parsed.netloc)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    return (
+        parsed.scheme == "https"
+        and bool(hostname)
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and _is_allowed_webhook_host(hostname)
+    )
 
 
 @login_required
@@ -88,7 +131,11 @@ def connect_teams(request: HttpRequest) -> HttpResponse:
         messages.error(request, "Webhook URL is required")
         return redirect("core:teams_connect")
     if not _is_valid_webhook_url(webhook_url):
-        messages.error(request, "Enter a valid https:// Teams webhook URL")
+        messages.error(
+            request,
+            "Enter a valid Teams webhook URL. It should start with https:// and "
+            "come from a Teams Workflows (Power Automate) webhook.",
+        )
         return redirect("core:teams_connect")
 
     integration, created = Integration.objects.get_or_create(
@@ -178,13 +225,27 @@ def test_teams(request: HttpRequest) -> HttpResponseRedirect:
         messages.error(request, "Teams integration is missing its webhook URL")
         return redirect("core:integrations")
 
+    # Re-check the stored URL: it may have been saved before host
+    # validation existed.
+    if not _is_valid_webhook_url(webhook_url):
+        messages.error(
+            request,
+            "The saved Teams webhook URL is not a Microsoft webhook address. "
+            "Please reconnect Microsoft Teams.",
+        )
+        return redirect("core:integrations")
+
     try:
         response = requests.post(
             webhook_url,
             json=_build_test_card(request, workspace),
             timeout=DEFAULT_API_TIMEOUT,
+            # A redirect could bounce the request to an internal address.
+            allow_redirects=False,
         )
         response.raise_for_status()
+        if response.is_redirect:
+            raise requests.exceptions.HTTPError("Unexpected redirect")
         record_delivery(workspace, "teams")
         messages.success(request, "Test message sent successfully!")
     except requests.exceptions.Timeout:
