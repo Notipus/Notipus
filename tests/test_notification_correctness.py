@@ -64,3 +64,33 @@ class TestRetryNumbering:
         assert n.headline == "$49.00 payment failed (retry #1)"
         assert n.insight is not None
         assert n.insight.text.startswith("Retry #1")
+
+
+class TestNullCustomerNames:
+    """Explicit null name fields must not render as the string "None"."""
+
+    def test_null_last_name(self) -> None:
+        """A present-but-null last_name yields "Ann", not "Ann None"."""
+        n = _build(
+            {"type": "payment_success", "provider": "stripe", "amount": 10.0},
+            {"email": "ann@example.com", "first_name": "Ann", "last_name": None},
+        )
+
+        assert n.customer.name == "Ann"
+        assert n.customer.company_name == "Ann"
+
+    def test_all_null_fields_fall_back_to_customer_id(self) -> None:
+        """Null email and names fall through to the customer id."""
+        n = _build(
+            {"type": "payment_success", "provider": "stripe", "amount": 10.0},
+            {
+                "email": None,
+                "first_name": None,
+                "last_name": None,
+                "customer_id": "cus_x",
+            },
+        )
+
+        assert n.customer.name is None
+        assert n.customer.email == ""
+        assert n.customer.company_name == "cus_x"
