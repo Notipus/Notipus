@@ -161,13 +161,13 @@ def test_signup_rejects_expired_challenge(service: WebAuthnService) -> None:
         challenge="signup-challenge",
         user=None,
         challenge_type="signup_registration",
+        signup_username="bob",
+        signup_email="bob@example.com",
     )
     _age_challenge(challenge, CHALLENGE_TTL + timedelta(minutes=1))
 
     with patch("core.services.webauthn.verify_registration_response") as mock_verify:
-        result = service.complete_signup_registration(
-            {"challenge": "signup-challenge"}, "bob", "bob@example.com"
-        )
+        result = service.complete_signup_registration({"challenge": "signup-challenge"})
 
     assert result is None
     mock_verify.assert_not_called()
@@ -182,6 +182,8 @@ def test_signup_accepts_fresh_challenge(service: WebAuthnService) -> None:
         challenge=challenge_str,
         user=None,
         challenge_type="signup_registration",
+        signup_username="bob",
+        signup_email="bob@example.com",
     )
 
     verification = Mock()
@@ -193,9 +195,7 @@ def test_signup_accepts_fresh_challenge(service: WebAuthnService) -> None:
         "core.services.webauthn.verify_registration_response",
         return_value=verification,
     ):
-        result = service.complete_signup_registration(
-            {"challenge": challenge_str}, "bob", "bob@example.com"
-        )
+        result = service.complete_signup_registration({"challenge": challenge_str})
 
     assert result is not None
     assert result.username == "bob"

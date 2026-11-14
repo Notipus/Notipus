@@ -11,8 +11,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, cast
 
+from allauth.account.models import EmailAddress
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from webauthn import (
@@ -39,6 +41,54 @@ logger = logging.getLogger(__name__)
 # verification time. Challenges are single-use and short-lived, so a tight TTL
 # limits the window in which a leaked or stale challenge could be replayed.
 CHALLENGE_TTL = timedelta(minutes=5)
+
+# How long a signup holds its username/email lock. Only needs to cover the
+# create-user transaction; the timeout just guarantees a crashed worker
+# cannot wedge an address forever.
+SIGNUP_LOCK_SECONDS = 30
+
+
+def signup_identity_conflict(username: str, email: str) -> str | None:
+    """Report whether a username or email is already taken, ignoring case.
+
+    ``auth.User`` only enforces exact-match username uniqueness and nothing
+    for email, so ``Bob@Example.com`` would otherwise sit beside
+    ``bob@example.com``. This is an application-level guard: existing data
+    may already hold case-variant duplicates, which a database constraint
+    could not be added over safely.
+
+    Args:
+        username: Requested username.
+        email: Requested email address.
+
+    Returns:
+        ``"username"`` or ``"email"`` naming the conflict, or None.
+    """
+    if User.objects.filter(username__iexact=username).exists():
+        return "username"
+    if (
+        User.objects.filter(email__iexact=email).exists()
+        or EmailAddress.objects.filter(email__iexact=email).exists()
+    ):
+        return "email"
+    return None
+
+
+def _signup_lock_keys(username: str, email: str) -> list[str]:
+    """Cache keys serialising signups that claim the same username or email.
+
+    Args:
+        username: Requested username.
+        email: Requested email address.
+
+    Returns:
+        Lock keys, hashed so no address is stored in the cache key.
+    """
+    return [
+        "webauthn-signup-lock:"
+        + hashlib.sha256(f"{kind}:{value.lower()}".encode()).hexdigest()
+        for kind, value in (("username", username), ("email", email))
+    ]
 
 
 class WebAuthnService:
@@ -406,6 +456,8 @@ class WebAuthnService:
                 challenge=challenge_str,
                 user=None,  # No user yet, this is for signup
                 challenge_type="signup_registration",
+                signup_username=username,
+                signup_email=email,
             )
 
             # Convert to JSON-serializable format
@@ -416,14 +468,15 @@ class WebAuthnService:
             raise
 
     def complete_signup_registration(
-        self, credential_data: dict[str, Any], username: str, email: str
+        self, credential_data: dict[str, Any]
     ) -> User | None:
         """Complete WebAuthn registration and create the user account.
 
+        The username and email come from the stored challenge, i.e. the
+        values the begin step validated, never from the complete request.
+
         Args:
             credential_data: Registration response from client.
-            username: The username for the new account.
-            email: The email address for the new account.
 
         Returns:
             Created User instance if successful, None otherwise.
@@ -455,33 +508,28 @@ class WebAuthnService:
 
             # verify_registration_response raises on failure,
             # so reaching here means verification succeeded
-            # Create the user account atomically with the WebAuthn credential
-            with transaction.atomic():
-                # Create user without password (passwordless account)
-                user = User.objects.create_user(
-                    username=username,
-                    email=email,
-                    password=None,  # No password for passkey-only accounts
+            username = challenge.signup_username
+            email = challenge.signup_email
+            if not username or not email:
+                logger.error("Signup challenge carries no account details")
+                return None
+
+            # Serialise signups claiming the same username/email so two
+            # concurrent completes cannot both pass the uniqueness re-check.
+            lock_keys = _signup_lock_keys(username, email)
+            acquired = [
+                key for key in lock_keys if cache.add(key, 1, SIGNUP_LOCK_SECONDS)
+            ]
+            try:
+                if len(acquired) != len(lock_keys):
+                    logger.warning("Concurrent signup for the same identity refused")
+                    return None
+                return self._create_signup_account(
+                    challenge, verification, username, email
                 )
-
-                # Store the WebAuthn credential
-                WebAuthnCredential.objects.create(
-                    user=user,
-                    credential_id=base64.urlsafe_b64encode(
-                        verification.credential_id
-                    ).decode(),
-                    public_key=base64.urlsafe_b64encode(
-                        verification.credential_public_key
-                    ).decode(),
-                    sign_count=verification.sign_count,
-                    name="Signup Passkey",
-                )
-
-                # Clean up challenge
-                challenge.delete()
-
-            logger.info(f"WebAuthn signup completed for user {username}")
-            return user
+            finally:
+                for key in acquired:
+                    cache.delete(key)
 
         except WebAuthnChallenge.DoesNotExist:
             logger.error("Challenge not found for signup registration")
@@ -489,6 +537,59 @@ class WebAuthnService:
         except Exception as e:
             logger.error(f"Error during signup registration: {e}")
             return None
+
+    def _create_signup_account(
+        self,
+        challenge: WebAuthnChallenge,
+        verification: Any,
+        username: str,
+        email: str,
+    ) -> User | None:
+        """Create the passkey account, re-checking uniqueness first.
+
+        Args:
+            challenge: The consumed signup challenge.
+            verification: Verified registration response.
+            username: Username bound to the challenge.
+            email: Email bound to the challenge.
+
+        Returns:
+            The new user, or None if the identity was taken meanwhile.
+        """
+        # Create the user account atomically with the WebAuthn credential
+        with transaction.atomic():
+            # Re-check inside the transaction: the address may have been
+            # claimed (in any letter case) since the begin step.
+            if signup_identity_conflict(username, email):
+                logger.warning("Signup identity taken since challenge issued")
+                challenge.delete()
+                return None
+
+            # Create user without password (passwordless account)
+            user = User.objects.create_user(
+                username=username,
+                email=email,
+                password=None,  # No password for passkey-only accounts
+            )
+
+            # Store the WebAuthn credential
+            WebAuthnCredential.objects.create(
+                user=user,
+                credential_id=base64.urlsafe_b64encode(
+                    verification.credential_id
+                ).decode(),
+                public_key=base64.urlsafe_b64encode(
+                    verification.credential_public_key
+                ).decode(),
+                sign_count=verification.sign_count,
+                name="Signup Passkey",
+            )
+
+            # Clean up challenge
+            challenge.delete()
+
+        logger.info(f"WebAuthn signup completed for user {username}")
+        return user
 
     def _get_user_credentials(self, user: User) -> list[PublicKeyCredentialDescriptor]:
         """Get existing credentials for a user as PublicKeyCredentialDescriptor objects.
