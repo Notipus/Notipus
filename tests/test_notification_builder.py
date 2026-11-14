@@ -1043,3 +1043,36 @@ class TestSilentFallbackLogging:
         assert not any(
             "lifetime value" in record.getMessage() for record in caplog.records
         )
+
+
+class TestNumericMetadata:
+    """Numeric identifiers from providers are rendered as text."""
+
+    @pytest.mark.parametrize("destination", ["slack", "telegram", "teams"])
+    def test_integer_shopify_order_number_formats(self, destination: str) -> None:
+        """Shopify sends order_number as an integer; formatting must not crash."""
+        from plugins.destinations.slack import SlackDestinationPlugin
+        from plugins.destinations.teams import TeamsDestinationPlugin
+        from plugins.destinations.telegram import TelegramDestinationPlugin
+
+        plugins = {
+            "slack": SlackDestinationPlugin,
+            "telegram": TelegramDestinationPlugin,
+            "teams": TeamsDestinationPlugin,
+        }
+        notification = NotificationBuilder().build(
+            {
+                "type": "payment_success",
+                "provider": "shopify",
+                "amount": 99.0,
+                "currency": "USD",
+                "metadata": {"order_number": 1001, "subscription_id": 42},
+            },
+            {"email": "buyer@example.com"},
+        )
+        assert notification.payment is not None
+        assert notification.payment.order_number == "1001"
+        assert notification.payment.subscription_id == "42"
+
+        formatted = plugins[destination]().format(notification)
+        assert "1001" in str(formatted)
