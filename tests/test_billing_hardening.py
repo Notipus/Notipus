@@ -227,6 +227,42 @@ class TestSyncPrimarySubscription:
         assert workspace.subscription_plan == "pro"
         assert workspace.stripe_subscription_id == "sub_primary"
 
+    def test_unmapped_live_primary_beats_cancelled_plan_subscription(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """A paying customer stays active when their product can't be mapped.
+
+        A failed Product.retrieve (or a renamed product) leaves the live
+        primary without a plan name; an old cancelled Pro subscription must
+        not be chosen over it.
+        """
+        stripe_subs.return_value = [
+            _sub("sub_primary", "active", product=""),
+            _sub("sub_old", "canceled", product="Pro"),
+        ]
+
+        assert BillingService.sync_workspace_from_stripe(CUSTOMER_ID) is True
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "active"
+        assert workspace.stripe_subscription_id == "sub_primary"
+
+    def test_unmapped_live_beats_cancelled_without_stored_id(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """With no stored id, a live subscription still wins over an ended one."""
+        Workspace.objects.filter(pk=workspace.pk).update(stripe_subscription_id="")
+        stripe_subs.return_value = [
+            _sub("sub_old", "canceled", product="Pro"),
+            _sub("sub_live", "active", product=""),
+        ]
+
+        assert BillingService.sync_workspace_from_stripe(CUSTOMER_ID) is True
+
+        workspace.refresh_from_db()
+        assert workspace.subscription_status == "active"
+        assert workspace.stripe_subscription_id == "sub_live"
+
     def test_resubscribe_replaces_ended_stored_subscription(
         self, workspace: Workspace, stripe_subs: MagicMock
     ) -> None:
@@ -864,3 +900,31 @@ class TestAuditCommandAmount:
         assert Command._compact_sub(self._sdk_sub(1000, "jpy"))["amount"] == (
             "1000 JPY"
         )
+
+
+class TestPermanentStripeErrors:
+    """Permanent Stripe errors don't make the webhook retry for days."""
+
+    def test_invalid_request_is_not_retried(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """A deleted customer (4xx) returns False instead of raising."""
+        import stripe
+
+        stripe_subs.side_effect = stripe.InvalidRequestError(
+            "No such customer", param="customer", http_status=404
+        )
+
+        assert BillingService.sync_workspace_from_stripe(CUSTOMER_ID) is False
+
+    def test_transient_error_still_propagates(
+        self, workspace: Workspace, stripe_subs: MagicMock
+    ) -> None:
+        """Connection errors still raise so Stripe redelivers the event."""
+        import pytest
+        import stripe
+
+        stripe_subs.side_effect = stripe.APIConnectionError("network down")
+
+        with pytest.raises(stripe.APIConnectionError):
+            BillingService.sync_workspace_from_stripe(CUSTOMER_ID)

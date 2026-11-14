@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, cast
 
+import stripe
 from core import analytics
 from core.models import Workspace
 from core.services.stripe import StripeAPI
@@ -281,14 +282,19 @@ class BillingService:
     ) -> dict[str, Any]:
         """Get the subscription the workspace's billing state derives from.
 
-        Only subscriptions whose product maps to a known plan are
-        considered, so an add-on (e.g. extra seats) can't set the
-        workspace's plan or status; when none map, all are considered
-        (legacy products without plan metadata). Among those, the
-        workspace's stored primary subscription wins while it is live,
-        then any live subscription (a resubscribe after the stored one
-        ended), then the stored one, then the first. This matches the
-        sync_stripe_subscriptions command's preference for the stored id.
+        In order of preference:
+
+        1. The workspace's stored primary subscription, while it is live.
+        2. A live subscription whose product maps to a known plan (a
+           resubscribe after the stored one ended).
+        3. With no stored id (legacy workspaces), any live subscription.
+        4. The stored subscription even though it has ended, so cancelling
+           the primary plan isn't masked by a live add-on (e.g. extra seats).
+        5. Any live subscription, then any plan subscription, then the first.
+
+        Liveness is decided before plan mapping: a live subscription whose
+        product could not be mapped (a failed Product.retrieve, a renamed
+        product) must never lose to a cancelled one.
 
         Args:
             subscriptions: Non-empty list of subscription dictionaries.
@@ -297,20 +303,24 @@ class BillingService:
         Returns:
             The most relevant subscription dictionary.
         """
-        plan_subs = [
-            sub
-            for sub in subscriptions
-            if BillingService._extract_plan_name_from_subscription(sub, warn=False)
+
+        def maps_to_plan(sub: dict[str, Any]) -> bool:
+            return bool(
+                BillingService._extract_plan_name_from_subscription(sub, warn=False)
+            )
+
+        live = [sub for sub in subscriptions if sub.get("status") in _LIVE_STATUSES]
+        stored = [
+            sub for sub in subscriptions if stored_id and sub.get("id") == stored_id
         ]
-        candidates = plan_subs or subscriptions
-        live = [sub for sub in candidates if sub.get("status") in _LIVE_STATUSES]
-        stored = [sub for sub in candidates if stored_id and sub.get("id") == stored_id]
 
         for group in (
             [sub for sub in stored if sub in live],
-            live,
+            [sub for sub in live if maps_to_plan(sub)],
+            [] if stored_id else live,
             stored,
-            candidates,
+            live,
+            [sub for sub in subscriptions if maps_to_plan(sub)],
         ):
             if group:
                 return group[0]
@@ -430,9 +440,20 @@ class BillingService:
         # subscriptions" and report success. The error propagates so the
         # webhook returns 5xx and Stripe redelivers the event.
         stripe_api = StripeAPI()
-        subscriptions = stripe_api.get_customer_subscriptions(
-            customer_id, status="all", raise_on_error=True
-        )
+        try:
+            subscriptions = stripe_api.get_customer_subscriptions(
+                customer_id, status="all", raise_on_error=True
+            )
+        except stripe.InvalidRequestError as e:
+            # A permanent 4xx (e.g. the customer was deleted in Stripe) won't
+            # succeed on redelivery; retrying would just 5xx the same event
+            # for days. Transient errors (connection, rate limit, 5xx) still
+            # propagate so Stripe retries them.
+            logger.error(
+                f"Stripe rejected the subscription lookup for customer "
+                f"{customer_id}: {type(e).__name__} (status {e.http_status})"
+            )
+            return False
 
         if not subscriptions:
             logger.info(f"No subscriptions found for customer {customer_id}")
