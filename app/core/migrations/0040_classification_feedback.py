@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('core', '0036_integration_first_delivery_at'),
+        ('core', '0039_move_hunter_api_key_to_encrypted_credentials'),
     ]
 
     operations = [
