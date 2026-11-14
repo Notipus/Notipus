@@ -96,8 +96,10 @@ def new_customer_data() -> dict:
         "first_name": "Bob",
         "last_name": "Jones",
         "company_name": "NewCo",
-        "orders_count": 0,
-        "total_spent": 0,
+        # Post-payment snapshot of a first order: one order whose total
+        # equals the $49 subscription_created_event amount.
+        "orders_count": 1,
+        "total_spent": 49.0,
     }
 
 

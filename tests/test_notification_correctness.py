@@ -174,3 +174,43 @@ class TestCurrencyAwareThresholds:
 
         assert insight is not None
         assert "1,000 lifetime!" in insight.text
+
+
+class TestFirstOrderConservative:
+    """Shopify first-order detection reads the snapshot post-payment."""
+
+    @staticmethod
+    def _event(amount: float = 30.0) -> dict[str, Any]:
+        """Return a Shopify payment_success event."""
+        return {
+            "type": "payment_success",
+            "provider": "shopify",
+            "amount": amount,
+            "currency": "USD",
+            "metadata": {},
+        }
+
+    def test_zero_orders_is_lagging_snapshot(self) -> None:
+        """orders_count=0 means the snapshot lags; no first-order claim."""
+        insight = InsightDetector()._detect_first_payment(
+            self._event(), {"orders_count": 0}
+        )
+
+        assert insight is None
+
+    def test_one_prior_order_in_lagging_snapshot(self) -> None:
+        """orders_count=1 with spend from an earlier order is not first."""
+        insight = InsightDetector()._detect_first_payment(
+            self._event(30.0), {"orders_count": 1, "total_spent": "55.00"}
+        )
+
+        assert insight is None
+
+    def test_consistent_first_order_fires(self) -> None:
+        """orders_count=1 whose spend equals this order is a first order."""
+        insight = InsightDetector()._detect_first_payment(
+            self._event(30.0), {"orders_count": "1", "total_spent": "30.00"}
+        )
+
+        assert insight is not None
+        assert insight.text == "First payment from this customer"

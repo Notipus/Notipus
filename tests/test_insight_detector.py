@@ -91,11 +91,14 @@ def payment_failure_event() -> dict:
 
 @pytest.fixture
 def new_customer_data() -> dict:
-    """Sample new customer data (first payment)."""
+    """Sample new customer data (first payment).
+
+    orders_count=1 is the post-payment reading of a first order; the
+    snapshot carries no lifetime spend to cross-check against.
+    """
     return {
         "email": "new@example.com",
-        "orders_count": 0,
-        "total_spent": 0,
+        "orders_count": 1,
         "payment_history": [],
     }
 
