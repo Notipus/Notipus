@@ -124,3 +124,39 @@ def test_test_button_does_not_follow_redirects(
     assert post.call_args.kwargs["allow_redirects"] is False
     texts = [str(m) for m in response.context["messages"]]
     assert any("Failed to send test message" in t for t in texts)
+
+
+class TestDeliveryTimeChecks:
+    """Delivery re-checks the host and never follows redirects."""
+
+    def test_send_refuses_non_microsoft_url(self) -> None:
+        """A URL saved before the allow-list existed is not posted to."""
+        from unittest.mock import patch
+
+        import pytest
+        from plugins.destinations.teams import TeamsDestinationPlugin
+
+        with patch("plugins.destinations.teams.requests.post") as post:
+            with pytest.raises(RuntimeError, match="allowed Microsoft host"):
+                TeamsDestinationPlugin().send(
+                    {"type": "message"}, {"webhook_url": "https://10.0.0.5/hook"}
+                )
+        post.assert_not_called()
+
+    def test_send_does_not_follow_redirects(self) -> None:
+        """A redirect from an allowed host is refused, not followed."""
+        from unittest.mock import MagicMock, patch
+
+        import pytest
+        from plugins.destinations.teams import TeamsDestinationPlugin
+
+        response = MagicMock(status_code=307)
+        with patch(
+            "plugins.destinations.teams.requests.post", return_value=response
+        ) as post:
+            with pytest.raises(RuntimeError, match="redirected"):
+                TeamsDestinationPlugin().send(
+                    {"type": "message"},
+                    {"webhook_url": "https://prod-1.westus.logic.azure.com/wf"},
+                )
+        assert post.call_args.kwargs["allow_redirects"] is False

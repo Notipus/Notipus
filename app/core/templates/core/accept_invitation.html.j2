@@ -4,6 +4,11 @@
     Join {{ workspace.name }} - Notipus
 {% endblock title %}
 
+{% block extra_head %}
+    {# The URL carries the invitation token; keep it out of Referer headers. #}
+    <meta name="referrer" content="no-referrer">
+{% endblock extra_head %}
+
 {% block content %}
     <c-page width="narrow">
         <c-card>

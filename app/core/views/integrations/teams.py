@@ -10,7 +10,6 @@ into the form, never logged).
 
 import logging
 from typing import cast
-from urllib.parse import urlparse
 
 import requests
 from django.contrib import messages
@@ -18,6 +17,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
+from plugins.destinations.teams import is_allowed_webhook_url
 from webhooks.services.destination_credentials import record_delivery
 
 from ...models import Integration, Workspace
@@ -34,69 +34,8 @@ INTEGRATION_TYPE = "teams_notifications"
 DISPLAY_NAME = "Microsoft Teams"
 
 
-# Hosts Microsoft issues Teams incoming-webhook URLs on. The server posts
-# to whatever URL is saved (and the "Test" button does so on demand), so an
-# open https:// check let an admin point it at internal addresses (SSRF).
-# A suffix matches the host itself or any subdomain of it.
-ALLOWED_WEBHOOK_HOST_SUFFIXES: tuple[str, ...] = (
-    # Power Automate / Logic Apps Workflows, e.g. prod-12.westus.logic.azure.com
-    "logic.azure.com",
-    # US Government clouds
-    "logic.azure.us",
-    # Newer Power Platform workflow URLs
-    "environment.api.powerplatform.com",
-    # Legacy Office 365 connector webhooks
-    "webhook.office.com",
-    "outlook.office.com",
-    "outlook.office365.com",
-)
-
-
-def _is_allowed_webhook_host(hostname: str) -> bool:
-    """Whether ``hostname`` is one of Microsoft's webhook hosts.
-
-    Args:
-        hostname: Lower-cased host from the URL.
-
-    Returns:
-        True if it equals or is a subdomain of an allowed suffix.
-    """
-    return any(
-        hostname == suffix or hostname.endswith("." + suffix)
-        for suffix in ALLOWED_WEBHOOK_HOST_SUFFIXES
-    )
-
-
-def _is_valid_webhook_url(url: str) -> bool:
-    """Check that a URL is a Teams webhook on an official Microsoft host.
-
-    The Workflows webhook has no validation endpoint, so beyond this check
-    we rely on the "Test" button for real verification. The URL must be
-    ``https`` on the default port, carry no credentials, and its host must
-    be a Power Automate / Logic Apps / Office webhook host (see
-    ``ALLOWED_WEBHOOK_HOST_SUFFIXES``), so it cannot target internal or
-    arbitrary addresses.
-
-    Args:
-        url: The candidate webhook URL.
-
-    Returns:
-        True if the URL is an allowed HTTPS webhook.
-    """
-    try:
-        parsed = urlparse(url)
-        port = parsed.port
-    except ValueError:
-        return False
-    hostname = (parsed.hostname or "").lower().rstrip(".")
-    return (
-        parsed.scheme == "https"
-        and bool(hostname)
-        and port in (None, 443)
-        and parsed.username is None
-        and parsed.password is None
-        and _is_allowed_webhook_host(hostname)
-    )
+# The allow-list lives with the destination plugin so delivery re-checks it.
+_is_valid_webhook_url = is_allowed_webhook_url
 
 
 @login_required

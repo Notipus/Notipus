@@ -164,3 +164,17 @@ def test_invite_log_omits_token(
     invitation = WorkspaceInvitation.objects.get(email="new@example.com")
     assert str(invitation.token) not in caplog.text
     assert f"Invitation {invitation.id} created" in caplog.text
+
+
+@pytest.mark.django_db
+def test_invitation_page_sends_no_referrer(
+    pending_invitation: WorkspaceInvitation,
+) -> None:
+    """The token-bearing page opts out of Referer, so links can't leak it."""
+    client, _invitee = _login(pending_invitation.email)
+
+    response = client.get(
+        reverse("core:accept_invitation", args=[pending_invitation.token])
+    )
+
+    assert '<meta name="referrer" content="no-referrer">' in response.content.decode()
