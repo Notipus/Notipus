@@ -5,27 +5,48 @@ them through the notification pipeline. Use this to recover from situations
 where webhooks were received but notifications were lost due to worker
 recycling before timers could fire.
 
+Each stored webhook is rebuilt with the live parser
+(``ShopifySourcePlugin.build_event_from_payload``), checked against the
+same dedup key the live endpoint records
+(``shopify:{type}:sha256:{body_hash}``), and delivered through the same
+immediate path to every configured destination. Webhooks that were
+already processed live are therefore skipped, unknown topics are
+skipped, and one bad payload never stops the run.
+
+Records stored before ``body_sha256`` was captured cannot be matched
+against the live dedup key, so they are skipped unless ``--force``.
+
 Usage:
-    python manage.py replay_shopify_webhooks --workspace screenly
-    python manage.py replay_shopify_webhooks --workspace screenly --dry-run
-    python manage.py replay_shopify_webhooks --workspace screenly --days 7
+    python manage.py replay_shopify_webhooks --workspace my-shop
+    python manage.py replay_shopify_webhooks --workspace my-shop --dry-run
+    python manage.py replay_shopify_webhooks --workspace my-shop --days 7
 """
 
 import json
 import logging
 from typing import Any
 
-from core.models import Integration, Workspace
-from django.conf import settings
+from core.models import Workspace
 from django.core.management.base import BaseCommand, CommandError
-from plugins.base import PluginType
-from plugins.destinations.base import BaseDestinationPlugin
-from plugins.registry import PluginRegistry
 from plugins.sources.shopify import ShopifySourcePlugin
 from webhooks.services.event_consolidation import event_consolidation_service
 from webhooks.services.webhook_storage import webhook_storage_service
+from webhooks.webhook_router import (
+    _get_dedup_key,
+    _process_immediately,
+    _record_dedup_marker,
+)
 
 logger = logging.getLogger(__name__)
+
+STAT_KEYS = (
+    "processed",
+    "skipped_dedup",
+    "skipped_filter",
+    "skipped_topic",
+    "skipped_unverifiable",
+    "errors",
+)
 
 
 class Command(BaseCommand):
@@ -34,7 +55,11 @@ class Command(BaseCommand):
     help = "Replay stored Shopify webhooks that were never processed"
 
     def add_arguments(self, parser: Any) -> None:
-        """Add command arguments."""
+        """Add command arguments.
+
+        Args:
+            parser: The argument parser.
+        """
         parser.add_argument(
             "--workspace",
             type=str,
@@ -59,59 +84,60 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
-        """Execute the command."""
-        workspace_slug = options["workspace"]
-        days = options["days"]
-        dry_run = options["dry_run"]
-        force = options["force"]
+        """Execute the command.
 
-        workspace = self._get_workspace(workspace_slug)
-        slack_webhook_url = self._get_slack_webhook_url(workspace)
-        slack_plugin = self._get_slack_plugin()
+        Args:
+            *args: Unused positional arguments.
+            **options: Parsed command options.
+        """
+        workspace = self._get_workspace(options["workspace"])
+        days: int = options["days"]
+        dry_run: bool = options["dry_run"]
+        force: bool = options["force"]
 
         self._print_header(workspace, days, dry_run)
 
-        orders = self._get_unique_orders(workspace, days)
-        stats = self._process_orders(
-            orders, workspace, slack_webhook_url, slack_plugin, dry_run, force
-        )
+        webhooks = self._get_stored_webhooks(workspace, days)
+        stats = dict.fromkeys(STAT_KEYS, 0)
+        for webhook in webhooks:
+            try:
+                result = self._process_single_webhook(
+                    webhook, workspace, dry_run, force
+                )
+            except Exception as e:
+                # One bad payload must not stop the rest of the replay.
+                logger.exception("Replay of a stored Shopify webhook failed")
+                self.stdout.write(self.style.ERROR(f"  Error: {e}"))
+                result = "errors"
+            stats[result] += 1
+
         self._print_summary(stats, dry_run)
 
     def _get_workspace(self, slug: str) -> Workspace:
-        """Get workspace by slug."""
+        """Get workspace by slug.
+
+        Args:
+            slug: Workspace slug.
+
+        Returns:
+            The workspace.
+
+        Raises:
+            CommandError: If no such workspace exists.
+        """
         try:
             return Workspace.objects.get(slug=slug)
         except Workspace.DoesNotExist as e:
             raise CommandError(f"Workspace '{slug}' not found") from e
 
-    def _get_slack_webhook_url(self, workspace: Workspace) -> str:
-        """Get Slack webhook URL for workspace."""
-        try:
-            slack_integration = Integration.objects.get(
-                workspace=workspace,
-                integration_type="slack_notifications",
-                is_active=True,
-            )
-            url = slack_integration.oauth_credentials.get("incoming_webhook", {}).get(
-                "url"
-            )
-            if not url:
-                raise CommandError("Slack webhook URL not configured")
-            return str(url)
-        except Integration.DoesNotExist as e:
-            raise CommandError("No active Slack integration found") from e
-
-    def _get_slack_plugin(self) -> BaseDestinationPlugin:
-        """Get Slack destination plugin."""
-        registry = PluginRegistry.instance()
-        registry.discover()
-        plugin = registry.get(PluginType.DESTINATION, "slack")
-        if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
-            raise CommandError("Slack plugin not available")
-        return plugin
-
     def _print_header(self, workspace: Workspace, days: int, dry_run: bool) -> None:
-        """Print command header."""
+        """Print command header.
+
+        Args:
+            workspace: The workspace being replayed.
+            days: Look-back window.
+            dry_run: Whether this is a dry run.
+        """
         self.stdout.write(f"Replaying Shopify webhooks for workspace: {workspace.name}")
         self.stdout.write(f"Looking back {days} days")
         if dry_run:
@@ -119,236 +145,191 @@ class Command(BaseCommand):
                 self.style.WARNING("DRY RUN - no notifications will be sent")
             )
 
-    def _get_unique_orders(
+    def _get_stored_webhooks(
         self, workspace: Workspace, days: int
-    ) -> dict[str, dict[str, Any]]:
-        """Get unique orders from stored webhooks."""
+    ) -> list[dict[str, Any]]:
+        """Load stored Shopify webhooks for the workspace, oldest first.
+
+        Every topic for an order (create, paid, fulfilled, ...) is kept:
+        they are separate events. Exact redeliveries (same topic, same
+        signed body) are collapsed to one.
+
+        Args:
+            workspace: The workspace.
+            days: Look-back window.
+
+        Returns:
+            Stored webhook records in arrival order.
+        """
         webhooks = webhook_storage_service.get_recent_webhooks(
             days=days,
-            limit=1000,
+            limit=10_000,
             provider="shopify",
             workspace_uuid=str(workspace.uuid),
         )
         self.stdout.write(f"Found {len(webhooks)} stored webhooks")
 
-        orders: dict[str, dict[str, Any]] = {}
+        unique: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
         for webhook in reversed(webhooks):
-            body = webhook.get("body", "{}")
-            if isinstance(body, str):
-                try:
-                    body = json.loads(body)
-                except json.JSONDecodeError:
+            body_hash = webhook.get("body_sha256")
+            topic = (webhook.get("headers") or {}).get("X-Shopify-Topic") or ""
+            if body_hash:
+                if (topic, body_hash) in seen:
                     continue
+                seen.add((topic, body_hash))
+            unique.append(webhook)
+        return unique
 
-            order_id = str(body.get("id", ""))
-            if not order_id or order_id in orders:
-                continue
-
-            orders[order_id] = {
-                "body": body,
-                "topic": webhook.get("headers", {}).get("X-Shopify-Topic"),
-            }
-
-        self.stdout.write(f"Found {len(orders)} unique orders to process")
-        return orders
-
-    def _process_orders(
+    def _process_single_webhook(
         self,
-        orders: dict[str, dict[str, Any]],
+        webhook: dict[str, Any],
         workspace: Workspace,
-        slack_webhook_url: str,
-        slack_plugin: BaseDestinationPlugin,
-        dry_run: bool,
-        force: bool,
-    ) -> dict[str, int]:
-        """Process all orders and return stats."""
-        stats = {"processed": 0, "skipped_dedup": 0, "skipped_filter": 0, "errors": 0}
-        workspace_id = str(workspace.uuid)
-
-        for order_id, order_data in orders.items():
-            result = self._process_single_order(
-                order_id,
-                order_data,
-                workspace,
-                workspace_id,
-                slack_webhook_url,
-                slack_plugin,
-                dry_run,
-                force,
-            )
-            stats[result] += 1
-
-        return stats
-
-    def _process_single_order(
-        self,
-        order_id: str,
-        order_data: dict[str, Any],
-        workspace: Workspace,
-        workspace_id: str,
-        slack_webhook_url: str,
-        slack_plugin: BaseDestinationPlugin,
         dry_run: bool,
         force: bool,
     ) -> str:
-        """Process a single order. Returns stat key to increment."""
-        body = order_data["body"]
-        topic = order_data["topic"]
+        """Rebuild and (unless dry-run) deliver one stored webhook.
 
-        # Check dedup
+        Args:
+            webhook: The stored webhook record.
+            workspace: The workspace.
+            dry_run: Report only, send nothing.
+            force: Ignore dedup and missing body hashes.
+
+        Returns:
+            The stats key to increment.
+        """
+        headers = webhook.get("headers") or {}
+        topic = headers.get("X-Shopify-Topic") or ""
+        if topic == "test" or topic not in ShopifySourcePlugin.EVENT_TYPE_MAPPING:
+            self.stdout.write(f"  Skipping unsupported topic {topic or '(none)'}")
+            return "skipped_topic"
+
+        body = webhook.get("body", "{}")
+        if isinstance(body, str):
+            body = json.loads(body)
+        if not isinstance(body, dict):
+            raise ValueError("stored body is not a JSON object")
+
+        body_hash = webhook.get("body_sha256")
+        if not body_hash and not force:
+            self.stdout.write(
+                f"  Skipping {topic} {body.get('id')} - stored without a body "
+                "hash, cannot check the live dedup key (use --force)"
+            )
+            return "skipped_unverifiable"
+
+        plugin = ShopifySourcePlugin()
+        is_test = str(headers.get("X-Shopify-Test") or "").lower() == "true"
+        event_data = plugin.build_event_from_payload(topic, body, is_test=is_test)
+        if event_data is None:
+            return "skipped_topic"
+        if body_hash:
+            event_data["content_hash"] = body_hash
+
+        workspace_id = str(workspace.uuid)
+        dedup_key = _get_dedup_key(event_data)
+        label = self._label(event_data, topic)
+
         if not force and event_consolidation_service.is_duplicate(
-            workspace_id, order_id
+            workspace_id, dedup_key
         ):
-            self.stdout.write(f"  Skipping order {order_id} - already processed")
+            self.stdout.write(f"  Skipping {label} - already processed")
             return "skipped_dedup"
 
-        # Build event and customer data
-        event_data, customer_data = self._build_event_data(
-            body, topic, order_id, workspace_id
-        )
-
-        # Check consolidation filter (suppression is scoped to the
-        # transaction-level correlator, e.g. the Shopify order id)
-        if not event_consolidation_service.should_send_notification(
-            event_type=event_data["type"],
-            customer_id=event_data["customer_id"],
-            workspace_id=workspace_id,
-            amount=event_data.get("amount"),
-            correlation_id=event_consolidation_service.extract_correlation_id(
-                event_data
-            ),
-        ):
-            self.stdout.write(
-                f"  Skipping order {order_id} - filtered by consolidation"
-            )
-            return "skipped_filter"
-
-        # Build notification
-        try:
-            formatted = settings.EVENT_PROCESSOR.process_event_rich(
-                event_data, customer_data, target="slack", workspace=workspace
-            )
-        except Exception as e:
-            self.stdout.write(
-                self.style.ERROR(f"  Error building notification for {order_id}: {e}")
-            )
-            return "errors"
-
-        # Send or dry-run
-        return self._send_notification(
-            formatted,
-            event_data,
-            customer_data,
-            body,
-            order_id,
-            workspace_id,
-            slack_webhook_url,
-            slack_plugin,
-            dry_run,
-        )
-
-    def _build_event_data(
-        self,
-        body: dict[str, Any],
-        topic: str | None,
-        order_id: str,
-        workspace_id: str,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Build event and customer data from webhook body."""
-        customer = body.get("customer", {})
-        customer_id = str(customer.get("id", "")) if customer else ""
-
-        event_type = ShopifySourcePlugin.EVENT_TYPE_MAPPING.get(
-            topic or "", "payment_success"
-        )
-
-        # Extract line items for display in notification
-        line_items = []
-        for item in body.get("line_items", []):
-            line_items.append(
-                {
-                    "name": item.get("name", item.get("title", "Unknown Product")),
-                    "sku": item.get("sku", ""),
-                    "quantity": item.get("quantity", 1),
-                    "price": float(item.get("price", 0)),
-                    "variant_title": item.get("variant_title", ""),
-                }
-            )
-
-        event_data = {
-            "type": event_type,
-            "customer_id": customer_id,
-            "provider": "shopify",
-            "external_id": order_id,
-            "amount": float(body.get("total_price", 0)),
-            "currency": body.get("currency", "USD"),
-            "workspace_id": workspace_id,
-            "metadata": {
-                "order_number": body.get("order_number"),
-                "financial_status": body.get("financial_status"),
-                "line_items": line_items,
-            },
-        }
-
-        customer_data = {
-            "email": customer.get("email", ""),
-            "first_name": customer.get("first_name", ""),
-            "last_name": customer.get("last_name", ""),
-            "company": customer.get("company", ""),
-        }
-
-        return event_data, customer_data
-
-    def _send_notification(
-        self,
-        formatted: dict[str, Any],
-        event_data: dict[str, Any],
-        customer_data: dict[str, Any],
-        body: dict[str, Any],
-        order_id: str,
-        workspace_id: str,
-        slack_webhook_url: str,
-        slack_plugin: BaseDestinationPlugin,
-        dry_run: bool,
-    ) -> str:
-        """Send notification or print dry-run message."""
-        amount = event_data.get("amount", 0)
-        currency = event_data.get("currency", "USD")
-        order_num = body.get("order_number")
-        email = customer_data.get("email", "no email")
+        customer_data = plugin.get_customer_data(event_data.get("customer_id") or "")
 
         if dry_run:
-            self.stdout.write(
-                f"  [DRY RUN] Would send: Order #{order_num} "
-                f"- {currency} {amount:.2f} - {email}"
-            )
+            self.stdout.write(f"  [DRY RUN] Would send: {label}")
             return "processed"
 
+        return self._deliver(
+            event_data, customer_data, workspace, workspace_id, dedup_key, label, force
+        )
+
+    def _deliver(
+        self,
+        event_data: dict[str, Any],
+        customer_data: dict[str, Any],
+        workspace: Workspace,
+        workspace_id: str,
+        dedup_key: str,
+        label: str,
+        force: bool,
+    ) -> str:
+        """Deliver through the live immediate path and record dedup.
+
+        The dedup key is claimed first (unless forced) so a replay never
+        races a live delivery of the same event.
+
+        Args:
+            event_data: The rebuilt event.
+            customer_data: The customer data.
+            workspace: The workspace.
+            workspace_id: The workspace UUID string.
+            dedup_key: The live dedup key.
+            label: Human-readable description for output.
+            force: Deliver even if the event was already processed.
+
+        Returns:
+            The stats key to increment.
+        """
+        if (
+            not force
+            and event_consolidation_service.claim_event(workspace_id, dedup_key)
+            != "claimed"
+        ):
+            self.stdout.write(f"  Skipping {label} - processed concurrently")
+            return "skipped_dedup"
         try:
-            slack_plugin.send(formatted, {"webhook_url": slack_webhook_url})
-            event_consolidation_service.record_event(
-                event_type=event_data["type"],
-                customer_id=event_data["customer_id"],
-                workspace_id=workspace_id,
-                external_id=order_id,
+            response = _process_immediately(
+                event_data, customer_data, "customer_shopify", workspace
             )
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"  Sent: Order #{order_num} - {currency} {amount:.2f}"
-                )
-            )
-            return "processed"
-        except Exception as e:
-            self.stdout.write(self.style.ERROR(f"  Error sending for {order_id}: {e}"))
-            return "errors"
+        except Exception:
+            event_consolidation_service.release_claim(workspace_id, dedup_key)
+            raise
+
+        _record_dedup_marker(event_data, workspace_id, dedup_key)
+        message = json.loads(response.content).get("message", "")
+        if "consolidated" in message:
+            self.stdout.write(f"  Skipping {label} - filtered by consolidation")
+            return "skipped_filter"
+        self.stdout.write(self.style.SUCCESS(f"  Sent: {label}"))
+        return "processed"
+
+    def _label(self, event_data: dict[str, Any], topic: str) -> str:
+        """Describe an event for command output (no customer PII).
+
+        Args:
+            event_data: The rebuilt event.
+            topic: The Shopify topic.
+
+        Returns:
+            A short description.
+        """
+        metadata = event_data.get("metadata") or {}
+        ref = metadata.get("order_number") or event_data.get("external_id") or "?"
+        amount = event_data.get("amount")
+        currency = event_data.get("currency") or ""
+        money = f" - {currency} {float(amount):.2f}" if amount is not None else ""
+        return f"{topic} #{ref}{money}"
 
     def _print_summary(self, stats: dict[str, int], dry_run: bool) -> None:
-        """Print command summary."""
+        """Print command summary.
+
+        Args:
+            stats: Counters per outcome.
+            dry_run: Whether this was a dry run.
+        """
         self.stdout.write("")
         self.stdout.write("=" * 50)
         self.stdout.write(f"Processed: {stats['processed']}")
         self.stdout.write(f"Skipped (already processed): {stats['skipped_dedup']}")
         self.stdout.write(f"Skipped (filtered): {stats['skipped_filter']}")
+        self.stdout.write(f"Skipped (unsupported topic): {stats['skipped_topic']}")
+        self.stdout.write(
+            f"Skipped (no body hash, use --force): {stats['skipped_unverifiable']}"
+        )
         self.stdout.write(f"Errors: {stats['errors']}")
 
         if dry_run:
