@@ -152,6 +152,9 @@ class CompanyInfo:
         name: Company display name.
         domain: Company domain (e.g., notion.so).
         industry: Industry classification.
+        sub_industry: Specific niche within the industry (LLM classification).
+        business_model: B2B, B2C, Marketplace, ... (LLM classification).
+        target_market: Enterprise, Mid-market, SMB, ... (LLM classification).
         year_founded: Year the company was founded.
         employee_count: Employee count range (e.g., "51-200").
         description: Brief company description.
@@ -167,6 +170,24 @@ class CompanyInfo:
     description: str | None = None
     logo_url: str | None = None
     linkedin_url: str | None = None
+    sub_industry: str | None = None
+    business_model: str | None = None
+    target_market: str | None = None
+
+    @property
+    def industry_label(self) -> str | None:
+        """Industry with its sub-industry, e.g. "Software & SaaS › Payroll"."""
+        if self.industry and self.sub_industry:
+            return f"{self.industry} › {self.sub_industry}"
+        return self.industry or self.sub_industry
+
+    @property
+    def segment_label(self) -> str | None:
+        """Business model and market, e.g. "B2B · Mid-market"."""
+        parts = [
+            p for p in (self.business_model, self.target_market) if p and p != "Unknown"
+        ]
+        return " · ".join(parts) or None
 
 
 @dataclass

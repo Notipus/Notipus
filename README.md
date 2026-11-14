@@ -627,6 +627,36 @@ The Brandfetch integration enriches company domains with brand information:
 - Caches results in the `Company` model to reduce API calls
 - Used to enhance notifications with company branding
 
+### Industry Classification (LLM modules)
+
+To help sales prioritise customers against ICPs, every enriched company also
+gets an industry classification from an LLM: a primary industry from a fixed
+taxonomy, a sub-industry, business model (B2B, B2C, Marketplace, ...), target
+market (Enterprise, Mid-market, SMB, ...), a few keywords, and a confidence
+level. It is stored in `Company.brand_info["industry_classification"]` and
+shown on Slack, Teams and Telegram notifications.
+
+LLM modules live in `app/plugins/enrichment/llm_*.py`. Each one implements a
+single `complete_json()` method; the prompt, schema, validation and privacy
+filtering are shared in `base_llm.py`, so a new provider is one short file.
+
+| Module | Enable with | Model override (default) |
+|--------|-------------|--------------------------|
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_ENRICHMENT_MODEL` (`gpt-5-mini`) |
+| Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_ENRICHMENT_MODEL` (`claude-opus-5-5`) |
+| Ollama | `OLLAMA_BASE_URL` (optional `OLLAMA_API_KEY`) | `OLLAMA_ENRICHMENT_MODEL` (`llama3.2`) |
+
+- When several modules are configured they are used **round-robin**, one call
+  per domain, failing over to the next module if one errors.
+- When Brandfetch has data for the domain, its name, description and industry
+  are passed to the model as grounding. Otherwise only the domain is sent.
+- **Privacy:** only the bare domain and public company metadata are sent.
+  Customer email addresses never reach these providers; values that are not a
+  plain domain are rejected and email-like text in the metadata is redacted.
+- Companies enriched before a module was configured can be backfilled from
+  the stored Brandfetch data: `python app/manage.py classify_companies`
+  (`--dry-run`, `--limit N`, `--force`).
+
 ### Rate Limiting & Circuit Breaker
 
 The webhook system includes robust rate limiting:
