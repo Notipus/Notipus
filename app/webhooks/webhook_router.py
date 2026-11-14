@@ -45,26 +45,17 @@ def _log_webhook_payload(
     request: HttpRequest, provider_name: str, workspace_uuid: Optional[str] = None
 ) -> None:
     """
-    Log the raw webhook payload for analysis when LOG_WEBHOOKS is enabled.
+    Record the raw webhook payload for analysis when LOG_WEBHOOKS is enabled.
 
-    This logs the complete request body and relevant headers to help with
-    debugging and understanding webhook patterns from providers.
+    The log line carries only metadata (provider, path, safe headers, body
+    size). The body itself is customer PII (emails, names, addresses) and
+    goes only to the encrypted, TTL-bound Redis copy written by
+    webhook_storage_service - never into plaintext log records.
     """
     if not settings.LOG_WEBHOOKS:
         return
 
     try:
-        # Get the raw body
-        raw_body = request.body.decode("utf-8")
-
-        # Try to parse as JSON for prettier logging
-        try:
-            body_data = json.loads(raw_body)
-            body_str = json.dumps(body_data, indent=2, default=str)
-        except (json.JSONDecodeError, TypeError):
-            # Not JSON, log as-is (could be form data)
-            body_str = raw_body
-
         # Extract relevant headers (excluding sensitive auth headers)
         relevant_headers = {
             "Content-Type": request.headers.get("Content-Type"),
@@ -92,7 +83,7 @@ def _log_webhook_payload(
                 "webhook_provider": provider_name,
                 "workspace_uuid": workspace_uuid,
                 "headers": relevant_headers,
-                "body": body_str,
+                "body_size": len(request.body),
             },
         )
 

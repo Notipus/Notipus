@@ -812,10 +812,7 @@ class PendingEventQueue:
             # (invoice events have customer_email, subscription events don't)
             if customer_data.get("email") and not result_customer.get("email"):
                 result_customer["email"] = customer_data["email"]
-                logger.debug(
-                    f"Found customer email from {event_data.get('type')}: "
-                    f"{customer_data['email']}"
-                )
+                logger.debug(f"Found customer email from {event_data.get('type')}")
 
             # Also check event_data for customer_email (from raw webhook)
             if event_data.get("customer_email") and not result_customer.get("email"):
@@ -831,7 +828,7 @@ class PendingEventQueue:
 
         logger.info(
             f"Aggregated {len(stored_items)} events: type={result_event.get('type')}, "
-            f"email={result_customer.get('email') or 'MISSING'}"
+            f"email_present={bool(result_customer.get('email'))}"
         )
 
         self._warn_if_missing_email(result_event, result_customer, stored_items)
@@ -948,14 +945,15 @@ class PendingEventQueue:
             return
 
         event_types = [item["event_data"].get("type") for item in stored_items]
-        emails_found = [
-            item["customer_data"].get("email", "none") or "none"
-            for item in stored_items
+        # Presence only: the addresses themselves are customer PII and
+        # must not reach plaintext logs.
+        emails_present = [
+            bool(item["customer_data"].get("email")) for item in stored_items
         ]
         logger.warning(
             f"No customer email found for {event_type} after aggregating "
             f"{len(stored_items)} events. Event types: {event_types}, "
-            f"Emails checked: {emails_found}"
+            f"email_present per event: {emails_present}"
         )
 
     def _send_notification(
