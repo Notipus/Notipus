@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -16,10 +17,24 @@ from core.encrypted_cache import decrypt_cache_value, encrypt_cache_value
 from django.core.cache import cache
 from django.utils import timezone
 
+from .redis_client import get_raw_redis_client
+
 if TYPE_CHECKING:
     from webhooks.models.rich_notification import RichNotification
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on the per-day activity index (was 100). The dashboard reads
+# at most the newest 100 records (DashboardService._get_recent_activity),
+# so the index keeps the newest ACTIVITY_INDEX_MAX_PER_DAY keys per
+# workspace per day; older keys can never be shown and their records are
+# deleted when trimmed, which bounds Redis memory for very busy
+# workspaces. Trimming is logged, never silent.
+ACTIVITY_INDEX_MAX_PER_DAY = 1000
+
+# The activity-index lock only covers one cache get + set, so it is short.
+ACTIVITY_LOCK_TIMEOUT_SECONDS = 5
+ACTIVITY_LOCK_BLOCKING_SECONDS = 2
 
 
 class DatabaseLookupService:
@@ -60,6 +75,22 @@ class DatabaseLookupService:
             Formatted Redis key string.
         """
         return f"webhook:{workspace_id}:{webhook_type}:{timestamp}"
+
+    @staticmethod
+    def _record_key_suffix(now: datetime) -> str:
+        """Return a unique, time-ordered suffix for a record key.
+
+        The microsecond timestamp alone collides when two workers store
+        a record of the same type for the same workspace in the same
+        microsecond, and the second write silently replaced the first.
+
+        Args:
+            now: The storage time.
+
+        Returns:
+            Suffix like "20260220_120000_000000_1a2b3c4d".
+        """
+        return f"{now.strftime('%Y%m%d_%H%M%S_%f')}_{uuid.uuid4().hex[:8]}"
 
     def _get_activity_key(self, date_str: str, workspace_id: str = "global") -> str:
         """Generate Redis key for daily activity list.
@@ -190,7 +221,7 @@ class DatabaseLookupService:
             }
 
             # Store in Redis with TTL
-            timestamp_key = now.strftime("%Y%m%d_%H%M%S_%f")
+            timestamp_key = self._record_key_suffix(now)
             webhook_key = self._get_webhook_key(
                 display_type, timestamp_key, workspace_id
             )
@@ -338,7 +369,7 @@ class DatabaseLookupService:
 
             # Store in Redis with TTL
             now = timezone.now()
-            timestamp_key = now.strftime("%Y%m%d_%H%M%S_%f")
+            timestamp_key = self._record_key_suffix(now)
             webhook_key = self._get_webhook_key("order", timestamp_key, workspace_id)
 
             cache.set(
@@ -363,7 +394,19 @@ class DatabaseLookupService:
     def _add_to_activity_list(
         self, webhook_key: str, workspace_id: str = "global"
     ) -> None:
-        """Add webhook key to daily activity list with cleanup.
+        """Append a webhook key to the daily activity index.
+
+        The index is a JSON list under one cache key per workspace per
+        day. Appending is a read-modify-write, so with a Redis-backed
+        cache it runs under a short per-index Redis lock: concurrent
+        webhook workers previously overwrote each other's appends and
+        events vanished from the dashboard. The JSON format is kept (no
+        Redis list) because the Shopify privacy handlers in
+        shopify_compliance.py read and rewrite the same index. If the
+        lock cannot be taken in time the append proceeds unlocked - a
+        rare lost index entry beats dropping the webhook. Non-Redis
+        caches (LocMemCache, DummyCache) are process-local and append
+        without a lock.
 
         The index itself stays plaintext on purpose: it holds only cache
         key names (no PII); the records those keys point at are encrypted.
@@ -376,22 +419,88 @@ class DatabaseLookupService:
         date_str = now.strftime("%Y-%m-%d")
         activity_key = self._get_activity_key(date_str, workspace_id)
 
-        # Get current activity list and append new record
-        current_activity = cache.get(activity_key, [])
-        if isinstance(current_activity, str):
-            current_activity = json.loads(current_activity)
+        lock = self._activity_lock(activity_key)
+        acquired = False
+        if lock is not None:
+            try:
+                acquired = bool(lock.acquire())
+            except Exception:
+                logger.warning("Activity index lock unavailable", exc_info=True)
+            if not acquired:
+                logger.warning(
+                    "Appending to activity index without lock",
+                    extra={"workspace_id": workspace_id, "date": date_str},
+                )
+        try:
+            current_activity = cache.get(activity_key, [])
+            if isinstance(current_activity, str):
+                current_activity = json.loads(current_activity)
+            current_activity.append(webhook_key)
 
-        current_activity.append(webhook_key)
+            overflow = current_activity[:-ACTIVITY_INDEX_MAX_PER_DAY]
+            current_activity = current_activity[-ACTIVITY_INDEX_MAX_PER_DAY:]
+            cache.set(
+                activity_key, json.dumps(current_activity), timeout=self.ttl_seconds
+            )
+        finally:
+            if acquired and lock is not None:
+                try:
+                    lock.release()
+                except Exception:
+                    # Expired while held; the timeout already freed it.
+                    logger.warning("Activity index lock expired", exc_info=True)
 
-        # Keep only last 100 records per day
-        if len(current_activity) > 100:
-            # Remove oldest records from cache
-            old_keys = current_activity[:-100]
-            for old_key in old_keys:
-                cache.delete(old_key)
-            current_activity = current_activity[-100:]
+        if overflow:
+            # Records that fell out of the index can never be shown on the
+            # dashboard; delete them so a busy day cannot grow Redis
+            # without bound. Logged, not silent.
+            cache.delete_many(overflow)
+            logger.info(
+                "Trimmed daily activity index",
+                extra={
+                    "workspace_id": workspace_id,
+                    "date": date_str,
+                    "trimmed": len(overflow),
+                },
+            )
 
-        cache.set(activity_key, json.dumps(current_activity), timeout=self.ttl_seconds)
+    @staticmethod
+    def _activity_lock(activity_key: str) -> Any | None:
+        """Return a short Redis lock guarding one activity index, if any.
+
+        Args:
+            activity_key: Unprefixed cache key of the activity index.
+
+        Returns:
+            A redis-py lock, or None when the cache is not Redis-backed.
+        """
+        client = get_raw_redis_client()
+        if client is None or not hasattr(client, "lock"):
+            return None
+        return client.lock(
+            f"{cache.make_key(activity_key)}:lock",
+            timeout=ACTIVITY_LOCK_TIMEOUT_SECONDS,
+            blocking_timeout=ACTIVITY_LOCK_BLOCKING_SECONDS,
+        )
+
+    def _get_activity_keys(
+        self, date_str: str, workspace_id: str, limit: int
+    ) -> list[str]:
+        """Return the newest ``limit`` webhook keys indexed for a day.
+
+        Args:
+            date_str: Date string in YYYY-MM-DD format.
+            workspace_id: Workspace UUID for tenant isolation.
+            limit: Maximum number of keys to return.
+
+        Returns:
+            Webhook record keys, oldest first.
+        """
+        keys = cache.get(self._get_activity_key(date_str, workspace_id), [])
+        if isinstance(keys, str):
+            keys = json.loads(keys)
+        keys = list(keys)
+        return keys[-limit:] if limit > 0 else []
 
     def _customer_display_key(
         self, event_data: dict[str, Any], notification: RichNotification
@@ -520,7 +629,7 @@ class DatabaseLookupService:
                     webhook_record["order_number"] = notification.payment.order_number
 
             # Store in Redis with TTL
-            timestamp_key = now.strftime("%Y%m%d_%H%M%S_%f")
+            timestamp_key = self._record_key_suffix(now)
             webhook_key = self._get_webhook_key(
                 display_type, timestamp_key, workspace_id
             )
@@ -566,12 +675,8 @@ class DatabaseLookupService:
             for i in range(days):
                 date = timezone.now() - timedelta(days=i)
                 date_str = date.strftime("%Y-%m-%d")
-                activity_key = self._get_activity_key(date_str, workspace_id)
-
-                # Get webhook keys for this day
-                webhook_keys = cache.get(activity_key, [])
-                if isinstance(webhook_keys, str):
-                    webhook_keys = json.loads(webhook_keys)
+                # Newest keys for this day (the index is oldest-first)
+                webhook_keys = self._get_activity_keys(date_str, workspace_id, limit)
 
                 # Fetch webhook records (decrypting; legacy plaintext
                 # entries written before encryption come back as JSON
@@ -582,6 +687,11 @@ class DatabaseLookupService:
                         if isinstance(webhook_data, str):
                             webhook_data = json.loads(webhook_data)
                         activity_records.append(webhook_data)
+
+                # Days are visited newest first, so once a day has filled
+                # the limit no older day can make the cut.
+                if len(activity_records) >= limit:
+                    break
 
             # Sort by timestamp (most recent first)
             activity_records.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
