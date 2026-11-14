@@ -5,11 +5,13 @@ and checkout flows.
 """
 
 import logging
+import secrets
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, cast
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
 from django.utils import timezone
@@ -576,6 +578,138 @@ def _price_amount_major(price: dict[str, Any]) -> Decimal | None:
     return amount
 
 
+# How long concurrent checkout attempts for the same plan and interval
+# share one idempotency key (double-click / retry dedup window).
+_CHECKOUT_NONCE_TTL_SECONDS = 60
+
+
+def _checkout_nonce_key(workspace: Any, plan_name: str, interval: str) -> str:
+    """Return the cache key holding a checkout attempt's nonce.
+
+    Args:
+        workspace: The purchasing workspace.
+        plan_name: Plan being purchased.
+        interval: Billing interval.
+
+    Returns:
+        Cache key string.
+    """
+    return f"checkout_nonce:{workspace.uuid}:{plan_name}:{interval}"
+
+
+def _checkout_nonce(workspace: Any, plan_name: str, interval: str) -> str:
+    """Return the nonce shared by concurrent attempts for one purchase.
+
+    ``cache.add`` is atomic, so racing requests agree on one nonce.
+    Falls back to a fresh nonce when the cache is unavailable (no
+    double-click dedup, but never a replayed session).
+
+    Args:
+        workspace: The purchasing workspace.
+        plan_name: Plan being purchased.
+        interval: Billing interval.
+
+    Returns:
+        Nonce string.
+    """
+    key = _checkout_nonce_key(workspace, plan_name, interval)
+    fresh = secrets.token_hex(8)
+    try:
+        cache.add(key, fresh, timeout=_CHECKOUT_NONCE_TTL_SECONDS)
+        return str(cache.get(key) or fresh)
+    except Exception:
+        logger.warning("Checkout nonce cache unavailable", exc_info=True)
+        return fresh
+
+
+def _drop_checkout_nonce(workspace: Any, plan_name: str, interval: str) -> None:
+    """Forget a purchase's nonce so the next attempt gets a fresh key.
+
+    Args:
+        workspace: The purchasing workspace.
+        plan_name: Plan of the session that is no longer usable.
+        interval: Interval of that session.
+    """
+    try:
+        cache.delete(_checkout_nonce_key(workspace, plan_name, interval))
+    except Exception:
+        logger.warning("Checkout nonce cache unavailable", exc_info=True)
+
+
+def _reuse_or_expire_open_sessions(
+    stripe_api: Any,
+    workspace: Any,
+    customer_id: str,
+    plan_name: str,
+    interval: str,
+) -> str | None:
+    """Expire stale open sessions, returning a reusable one's URL.
+
+    Args:
+        stripe_api: StripeAPI instance.
+        workspace: The purchasing workspace.
+        customer_id: Stripe customer id.
+        plan_name: Plan being purchased.
+        interval: Billing interval.
+
+    Returns:
+        URL of an open session for this plan and interval, or None.
+    """
+    reusable_url, expired = stripe_api.reuse_or_expire_open_checkout_sessions(
+        customer_id, plan_name, interval
+    )
+    for expired_plan, expired_interval in expired:
+        # The expired session may be the one a cached nonce created;
+        # reusing that key would make Stripe replay the dead session.
+        _drop_checkout_nonce(workspace, expired_plan, expired_interval)
+    return cast(str | None, reusable_url)
+
+
+def _create_checkout_session(
+    stripe_api: Any,
+    workspace: Any,
+    *,
+    customer_id: str,
+    price_id: str,
+    metadata: dict[str, str],
+    plan_name: str,
+    interval: str,
+) -> dict[str, Any] | None:
+    """Create a checkout session that is guaranteed to be open.
+
+    If Stripe replays a session that is no longer open for the cached
+    key (e.g. it completed or expired within the nonce window), the
+    nonce is dropped and one fresh attempt is made.
+
+    Args:
+        stripe_api: StripeAPI instance.
+        workspace: The purchasing workspace.
+        customer_id: Stripe customer id.
+        price_id: Stripe price id.
+        metadata: Session metadata.
+        plan_name: Plan being purchased.
+        interval: Billing interval.
+
+    Returns:
+        The session dict, or None on failure.
+    """
+    session: dict[str, Any] | None = None
+    for _attempt in range(2):
+        nonce = _checkout_nonce(workspace, plan_name, interval)
+        session = stripe_api.create_checkout_session(
+            customer_id=customer_id,
+            price_id=price_id,
+            metadata=metadata,
+            idempotency_key=(
+                f"checkout-{workspace.uuid}-{nonce}-{plan_name}-{interval}"
+            ),
+        )
+        if not session or session.get("status") in (None, "open"):
+            return session
+        _drop_checkout_nonce(workspace, plan_name, interval)
+    return None
+
+
 @login_required
 def checkout(
     request: HttpRequest, plan_name: str
@@ -643,12 +777,20 @@ def checkout(
             return guard_redirect
 
         # A customer must never hold two live checkout sessions at once:
-        # the idempotency key is per (plan, interval), so switching plan
-        # or interval would otherwise leave a stale session that can
-        # still be completed after the new one is paid (double-billing).
+        # a stale session for another plan or interval could still be
+        # completed after the new one is paid (double-billing). An open
+        # session for this same plan and interval is reused instead —
+        # the customer resumes it rather than getting a new one.
         # Best-effort — a brand-new customer has nothing to expire.
-        if had_stripe_customer:
-            stripe_api.expire_open_checkout_sessions(customer["id"])
+        reusable_url = (
+            _reuse_or_expire_open_sessions(
+                stripe_api, workspace, customer["id"], plan_name, interval
+            )
+            if had_stripe_customer
+            else None
+        )
+        if reusable_url:
+            return redirect(reusable_url)
 
         price_id, checkout_amount = _resolve_checkout_price(
             stripe_api, plan, plan_name, interval
@@ -664,22 +806,20 @@ def checkout(
             analytics.client_id_for_request(request),
         )
 
-        # Create Stripe Checkout Session.
-        # Idempotency key collapses duplicate checkout-initiation requests
-        # (double-click, browser back, retry) to one session within Stripe's
-        # 24h window, while leaving a deliberate next-day retry unblocked.
-        checkout_session = stripe_api.create_checkout_session(
+        # Create Stripe Checkout Session. The idempotency key carries a
+        # short-lived per-attempt nonce shared via the cache, so
+        # concurrent duplicate requests (double-click) collapse to one
+        # session while a later attempt gets a fresh key. A fixed key
+        # would make Stripe replay the first session for 24h — including
+        # after it was expired above, sending the customer to a dead page.
+        checkout_session = _create_checkout_session(
+            stripe_api,
+            workspace,
             customer_id=customer["id"],
             price_id=price_id,
             metadata=session_metadata,
-            # No time-based component: any date bucket (local or UTC)
-            # has a midnight edge where retries minutes apart fall on
-            # different sides and stop deduping. Stripe's idempotency
-            # keys already expire 24h after first use, so the same
-            # (workspace, plan, interval) within 24h collapses to one
-            # session and a deliberate next-day retry creates a new one —
-            # exactly the desired behavior, without a midnight glitch.
-            idempotency_key=f"checkout-{workspace.uuid}-{plan_name}-{interval}",
+            plan_name=plan_name,
+            interval=interval,
         )
 
         if not checkout_session or not checkout_session.get("url"):

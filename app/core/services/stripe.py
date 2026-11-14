@@ -484,11 +484,7 @@ class StripeAPI:
     def expire_open_checkout_sessions(self, customer_id: str) -> int:
         """Expire all open Checkout Sessions for a customer.
 
-        Called before creating a new checkout session so a customer can
-        never hold two live sessions at once — completing a stale
-        session after paying a newer one would create a second
-        subscription (double-billing). Best-effort: failures are logged
-        and must not block the new checkout.
+        Best-effort: failures are logged and never raised.
 
         Args:
             customer_id: The Stripe customer ID.
@@ -496,7 +492,36 @@ class StripeAPI:
         Returns:
             Number of sessions expired.
         """
-        expired = 0
+        _url, expired = self.reuse_or_expire_open_checkout_sessions(customer_id)
+        return len(expired)
+
+    def reuse_or_expire_open_checkout_sessions(
+        self,
+        customer_id: str,
+        plan_name: str | None = None,
+        interval: str | None = None,
+    ) -> tuple[str | None, list[tuple[str, str]]]:
+        """Keep one open session for this purchase and expire the rest.
+
+        Called before creating a new checkout session so a customer can
+        never hold two live sessions at once — completing a stale
+        session after paying a newer one would create a second
+        subscription (double-billing). An open session for the same plan
+        and interval is kept and its URL returned so the caller can send
+        the customer back to it instead of creating (or replaying) one.
+        Best-effort: failures are logged and must not block the checkout.
+
+        Args:
+            customer_id: The Stripe customer ID.
+            plan_name: Plan being purchased; None expires every session.
+            interval: Billing interval being purchased.
+
+        Returns:
+            (URL of a reusable open session or None, list of the
+            (plan_name, interval) metadata pairs of expired sessions).
+        """
+        reusable_url: str | None = None
+        expired: list[tuple[str, str]] = []
         try:
             sessions = stripe.checkout.Session.list(
                 customer=customer_id, status="open", limit=100, api_key=self.api_key
@@ -508,8 +533,25 @@ class StripeAPI:
                 if not session_id:
                     continue
                 try:
+                    metadata = _metadata_to_dict(_safe_getattr(session, "metadata"))
+                except (TypeError, ValueError):
+                    metadata = {}
+                session_plan = str(metadata.get("plan_name") or "")
+                session_interval = str(metadata.get("interval") or "")
+                url = _safe_getattr(session, "url")
+                if (
+                    reusable_url is None
+                    and plan_name is not None
+                    and session_plan == plan_name
+                    and session_interval == interval
+                    and isinstance(url, str)
+                    and url
+                ):
+                    reusable_url = url
+                    continue
+                try:
                     stripe.checkout.Session.expire(session_id, api_key=self.api_key)
-                    expired += 1
+                    expired.append((session_plan, session_interval))
                 except stripe.StripeError as e:
                     logger.warning(
                         f"Could not expire checkout session {session_id}: {e!s}"
@@ -521,8 +563,10 @@ class StripeAPI:
         except Exception as e:
             logger.error(f"Unexpected error expiring checkout sessions: {e!s}")
         if expired:
-            logger.info(f"Expired {expired} open checkout session(s) for {customer_id}")
-        return expired
+            logger.info(
+                f"Expired {len(expired)} open checkout session(s) for {customer_id}"
+            )
+        return reusable_url, expired
 
     def create_portal_session(
         self,

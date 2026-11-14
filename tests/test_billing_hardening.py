@@ -396,3 +396,197 @@ class TestRedeliveredSideEffects:
 
         cancels = [c for c in t.call_args_list if c.args[1] == "subscription_cancelled"]
         assert len(cancels) == 1
+
+
+@pytest.fixture
+def checkout_client(db: None) -> Iterator[tuple[Any, Workspace]]:
+    """Logged-in owner of a workspace with an existing Stripe customer.
+
+    Uses a local-memory cache so the checkout nonce persists between
+    requests.
+
+    Yields:
+        (client, workspace).
+    """
+    from core.models import Plan, WorkspaceMember
+    from django.contrib.auth.models import User
+    from django.core.cache import cache
+    from django.test import Client, override_settings
+
+    user = User.objects.create_user(username="checkout-owner", password="x")
+    ws = Workspace.objects.create(
+        name="Checkout Workspace",
+        stripe_customer_id=CUSTOMER_ID,
+        subscription_plan="free",
+        subscription_status="active",
+    )
+    WorkspaceMember.objects.create(user=user, workspace=ws, role="owner")
+    for name, price in (("basic", 29), ("pro", 99)):
+        Plan.objects.update_or_create(
+            name=name,
+            defaults={
+                "display_name": name.title(),
+                "price_monthly": price,
+                "is_active": True,
+                "stripe_price_id_monthly": f"price_{name}_monthly",
+            },
+        )
+    client = Client()
+    client.force_login(user)
+    with override_settings(CACHES=LOCMEM_CACHE):
+        cache.clear()
+        yield client, ws
+        cache.clear()
+
+
+def start_checkout(client: Any, plan: str, interval: str = "monthly") -> Any:
+    """Start a checkout the way the upgrade page's form does.
+
+    Args:
+        client: Logged-in test client.
+        plan: Plan name.
+        interval: Billing interval.
+
+    Returns:
+        The response.
+    """
+    from django.urls import reverse
+
+    return client.get(reverse("core:checkout", args=[plan]), {"interval": interval})
+
+
+@pytest.fixture
+def checkout_stripe() -> Iterator[MagicMock]:
+    """Patch the StripeAPI methods the checkout view calls.
+
+    Yields:
+        The patched StripeAPI class; configure ``return_value`` methods.
+    """
+    with patch("core.services.stripe.StripeAPI") as api_cls:
+        api = api_cls.return_value
+        api.get_or_create_customer.return_value = {"id": CUSTOMER_ID}
+        api.has_live_subscription.return_value = False
+        api.get_price_by_lookup_key.return_value = None
+        api.reuse_or_expire_open_checkout_sessions.return_value = (None, [])
+        api.create_checkout_session.return_value = {
+            "id": "cs_1",
+            "url": "https://checkout.stripe.com/c/cs_1",
+            "status": "open",
+        }
+        yield api_cls
+
+
+class TestRepeatCheckout:
+    """A repeat checkout attempt always lands on a working session."""
+
+    def test_open_session_for_same_plan_is_reused(
+        self, checkout_client: tuple[Any, Workspace], checkout_stripe: MagicMock
+    ) -> None:
+        """The customer is sent back to their open session, not a new one."""
+        client, _ws = checkout_client
+        api = checkout_stripe.return_value
+        api.reuse_or_expire_open_checkout_sessions.return_value = (
+            "https://checkout.stripe.com/c/cs_open",
+            [],
+        )
+
+        response = start_checkout(client, "pro")
+
+        assert response.status_code == 302
+        assert response.url == "https://checkout.stripe.com/c/cs_open"
+        api.create_checkout_session.assert_not_called()
+
+    def test_double_click_shares_idempotency_key(
+        self, checkout_client: tuple[Any, Workspace], checkout_stripe: MagicMock
+    ) -> None:
+        """Back-to-back attempts reuse one key so Stripe dedups them."""
+        client, _ws = checkout_client
+        api = checkout_stripe.return_value
+
+        start_checkout(client, "pro")
+        start_checkout(client, "pro")
+
+        keys = [
+            c.kwargs["idempotency_key"] for c in api.create_checkout_session.mock_calls
+        ]
+        assert len(keys) == 2 and keys[0] == keys[1]
+
+    def test_expired_session_key_is_not_reused(
+        self, checkout_client: tuple[Any, Workspace], checkout_stripe: MagicMock
+    ) -> None:
+        """After its session is expired, the next attempt gets a new key."""
+        client, _ws = checkout_client
+        api = checkout_stripe.return_value
+
+        start_checkout(client, "pro")
+        api.reuse_or_expire_open_checkout_sessions.return_value = (
+            None,
+            [("pro", "monthly")],
+        )
+        start_checkout(client, "basic")
+        api.reuse_or_expire_open_checkout_sessions.return_value = (
+            None,
+            [("basic", "monthly")],
+        )
+        start_checkout(client, "pro")
+
+        keys = [
+            c.kwargs["idempotency_key"] for c in api.create_checkout_session.mock_calls
+        ]
+        assert keys[0] != keys[2]
+        assert keys[0].endswith("-pro-monthly") and keys[2].endswith("-pro-monthly")
+
+    def test_replayed_dead_session_is_retried(
+        self, checkout_client: tuple[Any, Workspace], checkout_stripe: MagicMock
+    ) -> None:
+        """A replayed expired session is replaced by a fresh one."""
+        client, _ws = checkout_client
+        api = checkout_stripe.return_value
+        api.create_checkout_session.side_effect = [
+            {
+                "id": "cs_old",
+                "url": "https://checkout.stripe.com/old",
+                "status": "expired",
+            },
+            {
+                "id": "cs_new",
+                "url": "https://checkout.stripe.com/new",
+                "status": "open",
+            },
+        ]
+
+        response = start_checkout(client, "pro")
+
+        assert response.url == "https://checkout.stripe.com/new"
+        first, second = api.create_checkout_session.mock_calls
+        assert first.kwargs["idempotency_key"] != second.kwargs["idempotency_key"]
+
+    def test_reuse_or_expire_keeps_matching_session(self) -> None:
+        """Only the open session for the same plan and interval survives."""
+        from core.services.stripe import StripeAPI
+
+        def _session(sid: str, plan: str, interval: str) -> Any:
+            return stripe.checkout.Session.construct_from(
+                {
+                    "id": sid,
+                    "url": f"https://checkout.stripe.com/{sid}",
+                    "metadata": {"plan_name": plan, "interval": interval},
+                },
+                "sk_test",
+            )
+
+        sessions = [
+            _session("cs_a", "basic", "monthly"),
+            _session("cs_b", "pro", "monthly"),
+            _session("cs_c", "pro", "yearly"),
+        ]
+        with patch("core.services.stripe.stripe.checkout.Session") as session_cls:
+            session_cls.list.return_value.auto_paging_iter.return_value = sessions
+            url, expired = StripeAPI(
+                api_key="sk_test"
+            ).reuse_or_expire_open_checkout_sessions(CUSTOMER_ID, "pro", "monthly")
+
+        assert url == "https://checkout.stripe.com/cs_b"
+        assert expired == [("basic", "monthly"), ("pro", "yearly")]
+        expired_ids = [c.args[0] for c in session_cls.expire.call_args_list]
+        assert expired_ids == ["cs_a", "cs_c"]

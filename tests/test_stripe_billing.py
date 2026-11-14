@@ -1833,7 +1833,10 @@ class TestCheckoutBillingInterval:
 class TestCheckoutSessionExpiry:
     """A customer never holds two live checkout sessions at once."""
 
-    @patch("core.services.stripe.StripeAPI.expire_open_checkout_sessions")
+    @patch(
+        "core.services.stripe.StripeAPI.reuse_or_expire_open_checkout_sessions",
+        return_value=(None, []),
+    )
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
     @patch("core.services.stripe.StripeAPI.has_live_subscription")
@@ -1875,7 +1878,7 @@ class TestCheckoutSessionExpiry:
         )
 
         assert response.status_code == 302
-        mock_expire.assert_called_once_with("cus_existing")
+        mock_expire.assert_called_once_with("cus_existing", "pro", "yearly")
 
     @patch("core.services.stripe.stripe.checkout.Session")
     def test_expire_open_checkout_sessions_expires_each(
