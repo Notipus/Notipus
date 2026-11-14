@@ -16,6 +16,7 @@ from typing import Any
 
 import requests
 from core.utils.email_domain import is_enrichable_domain
+from core.utils.log_privacy import mask_email
 from plugins.base import PluginCapability, PluginMetadata, PluginType
 from plugins.enrichment.base_email import (
     BaseEmailEnrichmentPlugin,
@@ -25,6 +26,25 @@ from plugins.enrichment.base_email import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _describe_request_error(error: requests.exceptions.RequestException) -> str:
+    """Describe a requests error without its URL.
+
+    ``str(error)`` for requests exceptions embeds the full request URL, which
+    for Hunter.io includes the customer email as a query parameter. Only the
+    exception type and HTTP status code (when there is a response) are kept.
+
+    Args:
+        error: The exception raised by ``requests``.
+
+    Returns:
+        A log- and UI-safe description such as ``"HTTPError (status 502)"``.
+    """
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    name = type(error).__name__
+    return f"{name} (status {status})" if status is not None else name
 
 
 class HunterPlugin(BaseEmailEnrichmentPlugin):
@@ -45,6 +65,22 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
 
     BASE_URL = "https://api.hunter.io/v2"
     DEFAULT_TIMEOUT = 10
+
+    @staticmethod
+    def _auth_headers(api_key: str) -> dict[str, str]:
+        """Build the request headers carrying the API key.
+
+        The key is sent as the ``X-API-KEY`` header rather than an
+        ``api_key`` query parameter so it never appears in request URLs,
+        which end up in exception messages, proxy logs and breadcrumbs.
+
+        Args:
+            api_key: The workspace's Hunter.io API key.
+
+        Returns:
+            Headers dict for ``requests``.
+        """
+        return {"X-API-KEY": api_key}
 
     def __init__(self) -> None:
         """Initialize the Hunter plugin."""
@@ -106,7 +142,7 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
         try:
             response = requests.get(
                 f"{self.BASE_URL}/account",
-                params={"api_key": api_key},
+                headers=self._auth_headers(api_key),
                 timeout=self.timeout,
             )
 
@@ -134,8 +170,9 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
         except requests.exceptions.Timeout:
             return False, "Connection timed out. Please try again."
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error verifying Hunter.io API key: {e!s}")
-            return False, f"Connection error: {e!s}"
+            description = _describe_request_error(e)
+            logger.error("Error verifying Hunter.io API key: %s", description)
+            return False, f"Connection error: {description}"
 
     def enrich_email(self, email: str, api_key: str) -> dict[str, Any]:
         """Enrich email with person data from Hunter.io People Find API.
@@ -165,13 +202,17 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
         # Skip non-business emails (Gmail, Yahoo, disposable, etc.)
         # Hunter.io only supports business email domains
         if not is_enrichable_domain(email):
-            logger.debug(f"Skipping Hunter.io lookup for non-business email: {email}")
+            logger.debug(
+                "Skipping Hunter.io lookup for non-business email: %s",
+                mask_email(email),
+            )
             raise EmailNotFoundError(email)
 
         try:
             response = requests.get(
                 f"{self.BASE_URL}/people/find",
-                params={"email": email, "api_key": api_key},
+                params={"email": email},
+                headers=self._auth_headers(api_key),
                 timeout=self.timeout,
             )
 
@@ -179,7 +220,9 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
             if response.status_code == 400:
                 # 400 = Bad Request, typically for unsupported email domains
                 # (free providers like Gmail, Yahoo, etc.)
-                logger.debug(f"Hunter.io: Unsupported email domain for {email}")
+                logger.debug(
+                    "Hunter.io: Unsupported email domain for %s", mask_email(email)
+                )
                 raise EmailNotFoundError(email)
 
             if response.status_code == 404:
@@ -207,10 +250,10 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
             # Re-raise domain-specific exceptions for caller to handle
             raise
         except requests.exceptions.Timeout:
-            logger.warning(f"Hunter.io API timeout for {email}")
+            logger.warning("Hunter.io API timeout for %s", mask_email(email))
             return {}
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error calling Hunter.io API: {e!s}")
+            logger.error("Error calling Hunter.io API: %s", _describe_request_error(e))
             return {}
 
     def _normalize_response(self, data: dict[str, Any], email: str) -> dict[str, Any]:
