@@ -132,6 +132,35 @@ def create_error_response(error: Exception, status_code: int = 500) -> dict:
     }
 
 
+def _integration_not_found(provider_label: str, workspace_uuid: str) -> JsonResponse:
+    """Answer a webhook addressed to a workspace/integration that is gone.
+
+    Reporting 500 would have the provider retry for days and then
+    disable the endpoint; 404 says plainly that there is nothing here.
+
+    Args:
+        provider_label: Human-readable provider name for the message.
+        workspace_uuid: The workspace UUID from the URL, for logging.
+
+    Returns:
+        A 404 JsonResponse.
+    """
+    logger.warning(
+        "%s webhook for unknown workspace/integration %s",
+        provider_label,
+        workspace_uuid,
+    )
+    return JsonResponse(
+        {
+            "status": "error",
+            "error": "NotFound",
+            "message": f"No active {provider_label} integration for this workspace",
+            "code": 404,
+        },
+        status=404,
+    )
+
+
 def _check_workspace_access(workspace: Optional[Workspace]) -> Optional[JsonResponse]:
     """Reject webhooks for workspaces that are not entitled to service.
 
@@ -660,15 +689,19 @@ def customer_shopify_webhook(
             is_active=True,
         )
 
-        shop_mismatch = _reject_shop_mismatch(request, integration, organization_uuid)
+        # A merchant-registered webhook carries its own secret. An
+        # app-installed one has none, and is signed with the app's
+        # client secret like every other app-level delivery.
+        uses_app_secret = not integration.webhook_secret
+
+        shop_mismatch = _reject_shop_mismatch(
+            request, integration, organization_uuid, uses_app_secret
+        )
         if shop_mismatch is not None:
             return shop_mismatch
 
         from plugins.sources.shopify import ShopifySourcePlugin
 
-        # A merchant-registered webhook carries its own secret. An
-        # app-installed one has none, and is signed with the app's
-        # client secret like every other app-level delivery.
         provider = ShopifySourcePlugin(
             webhook_secret=integration.webhook_secret or settings.SHOPIFY_CLIENT_SECRET
         )
@@ -683,30 +716,35 @@ def customer_shopify_webhook(
         )
 
     except Http404:
-        # An address for a workspace or integration that no longer
-        # exists. Reporting 500 would have the provider retry for two
-        # days and then disable the endpoint; 404 says plainly that
-        # there is nothing here.
-        logger.warning(
-            "Shopify webhook for unknown workspace/integration %s", organization_uuid
-        )
-        return JsonResponse(
-            {
-                "status": "error",
-                "error": "NotFound",
-                "message": "No active Shopify integration for this workspace",
-                "code": 404,
-            },
-            status=404,
-        )
+        # An address for a workspace or integration that no longer exists.
+        return _integration_not_found("Shopify", organization_uuid)
     except Exception as e:
         logger.error(f"Error in customer Shopify webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
         return JsonResponse(error_response, status=500)
 
 
+def _shop_forbidden(error: str, message: str) -> JsonResponse:
+    """Build the 403 returned when an event cannot be bound to this shop.
+
+    Args:
+        error: Machine-readable error name.
+        message: Human-readable explanation.
+
+    Returns:
+        A 403 JsonResponse.
+    """
+    return JsonResponse(
+        {"status": "error", "error": error, "message": message, "code": 403},
+        status=403,
+    )
+
+
 def _reject_shop_mismatch(
-    request: HttpRequest, integration: Integration, workspace_uuid: str
+    request: HttpRequest,
+    integration: Integration,
+    workspace_uuid: str,
+    uses_app_secret: bool = False,
 ) -> JsonResponse | None:
     """Reject an event whose shop is not the one this workspace connected.
 
@@ -716,17 +754,61 @@ def _reject_shop_mismatch(
     workspace's address and be attributed to it - one tenant seeing
     another's orders.
 
+    How strict this is depends on the secret. A merchant-registered
+    webhook is signed with that merchant's own secret, which already
+    binds the body to this tenant, so the header is only cross-checked
+    when present. A delivery verified with the app's client secret is
+    not bound to any tenant - every installed store shares that secret -
+    so it must name its shop, the shop must be the connected one, and
+    where the signed body names a store too, that must agree as well.
+    Refusing the app-secret fallback outright would break stores whose
+    per-shop subscriptions were created against this address at OAuth
+    install time; those always have ``shop_domain`` recorded and Shopify
+    always sends the header, so they keep working.
+
     Args:
         request: The incoming request.
         integration: The addressed workspace's Shopify integration.
         workspace_uuid: The workspace UUID, for logging.
+        uses_app_secret: True when the request will be verified with the
+            app's client secret rather than a per-integration secret.
 
     Returns:
-        A 403 response on mismatch, None when the shop agrees or when
-        either side is unknown.
+        A 403 response when the shop cannot be bound to this workspace,
+        None otherwise.
     """
     header_shop = request.headers.get("X-Shopify-Shop-Domain")
     configured_shop = integration.integration_settings.get("shop_domain")
+
+    if uses_app_secret:
+        if not configured_shop:
+            logger.warning(
+                "Rejecting app-signed Shopify webhook for workspace %s: no "
+                "connected shop to bind it to",
+                workspace_uuid,
+            )
+            return _shop_forbidden(
+                "ShopUnbound", "No connected store to verify this webhook against"
+            )
+        if not header_shop:
+            logger.warning(
+                "Rejecting app-signed Shopify webhook for workspace %s: "
+                "missing X-Shopify-Shop-Domain",
+                workspace_uuid,
+            )
+            return _shop_forbidden("ShopMismatch", "Webhook does not name its store")
+        signed_shop = _signed_shop_domain(request)
+        if signed_shop and signed_shop != str(configured_shop).lower():
+            logger.warning(
+                "Rejecting Shopify webhook for workspace %s: signed body is "
+                "from %s, connected shop is %s",
+                workspace_uuid,
+                signed_shop,
+                configured_shop,
+            )
+            return _shop_forbidden(
+                "ShopMismatch", "Webhook shop does not match the connected store"
+            )
 
     if not header_shop or not configured_shop:
         # Nothing to compare: a merchant-registered webhook need not have
@@ -969,6 +1051,8 @@ def customer_chargify_webhook(
             log_provider_name="chargify",
         )
 
+    except (Workspace.DoesNotExist, Integration.DoesNotExist):
+        return _integration_not_found("Chargify/Maxio", organization_uuid)
     except Exception as e:
         logger.error(
             f"Error in customer Chargify/Maxio webhook: {str(e)}", exc_info=True
@@ -1021,6 +1105,8 @@ def customer_stripe_webhook(
             log_provider_name="stripe",
         )
 
+    except Http404:
+        return _integration_not_found("Stripe", organization_uuid)
     except Exception as e:
         logger.error(f"Error in customer Stripe webhook: {str(e)}", exc_info=True)
         error_response = create_error_response(e, 500)
