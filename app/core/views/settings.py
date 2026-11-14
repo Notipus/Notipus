@@ -141,6 +141,19 @@ def update_notification_settings(request: HttpRequest) -> JsonResponse:
     try:
         workspace = _get_user_workspace(request)
 
+        # Changing what the whole workspace is notified about is an admin
+        # action; view-only members may read the settings but not edit them.
+        if not WorkspaceMember.objects.filter(
+            user=request.user,
+            workspace=workspace,
+            is_active=True,
+            role__in=("owner", "admin"),
+        ).exists():
+            return JsonResponse(
+                {"error": "You don't have permission to perform this action."},
+                status=403,
+            )
+
         data: Any = json.loads(request.body)
         error_response = _validate_settings_payload(data)
         if error_response is not None:
