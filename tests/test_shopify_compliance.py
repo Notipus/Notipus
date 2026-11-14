@@ -694,3 +694,24 @@ class TestShopRedactPeople:
         )
         assert remaining == {"payer@example.com"}
         assert any("may remain" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.django_db
+def test_shop_redact_deletes_undecryptable_records(
+    client: Client, workspace: Workspace
+) -> None:
+    """A record that cannot be decrypted is deleted, not just unindexed."""
+    from django.utils import timezone
+    from webhooks.services.shopify_compliance import _activity_key
+
+    webhook_key = f"webhook:{workspace.uuid}:order:garbled"
+    cache.set(webhook_key, "not-a-valid-ciphertext", timeout=600)
+    activity_key = _activity_key(
+        str(workspace.uuid), timezone.now().strftime("%Y-%m-%d")
+    )
+    cache.set(activity_key, json.dumps([webhook_key]), timeout=600)
+
+    response = post(client, "shopify_shop_redact", "shop/redact", {"shop_domain": SHOP})
+
+    assert response.status_code == 200
+    assert cache.get(webhook_key) is None

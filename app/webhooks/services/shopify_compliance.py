@@ -437,7 +437,10 @@ def redact_shop(workspace: Workspace) -> dict[str, int]:
         for webhook_key in webhook_keys:
             record = _load_record(webhook_key)
             if record is None:
-                continue  # Expired or unreadable: drop the dangling key
+                # Expired or unreadable. An unreadable record may still
+                # hold the shop's PII, so delete it as well as the key.
+                cache.delete(webhook_key)
+                continue
             if str(record.get("provider", "")).lower() != "shopify":
                 survivors.append(webhook_key)
                 continue
