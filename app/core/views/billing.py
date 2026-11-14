@@ -401,8 +401,8 @@ def _duplicate_subscription_guard(
     if has_live_sub:
         messages.info(
             request,
-            "You already have an active subscription. "
-            "Use the billing portal to change plans.",
+            "You already have a subscription. Use the billing portal to "
+            "change plans or settle an outstanding payment.",
         )
         return redirect("core:billing_portal")
 

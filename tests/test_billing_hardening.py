@@ -590,3 +590,45 @@ class TestRepeatCheckout:
         assert expired == [("basic", "monthly"), ("pro", "yearly")]
         expired_ids = [c.args[0] for c in session_cls.expire.call_args_list]
         assert expired_ids == ["cs_a", "cs_c"]
+
+
+class TestDuplicateSubscriptionGuard:
+    """Unpaid, paused and incomplete subscriptions block a new checkout."""
+
+    @pytest.mark.parametrize("status", ["unpaid", "paused", "incomplete"])
+    def test_non_live_but_recoverable_status_counts(self, status: str) -> None:
+        """has_live_subscription finds subscriptions in these statuses."""
+        from core.services.stripe import StripeAPI
+
+        def _list(**kwargs: Any) -> MagicMock:
+            return MagicMock(
+                data=[{"id": "sub_x"}] if kwargs["status"] == status else []
+            )
+
+        with patch("core.services.stripe.stripe.Subscription.list", side_effect=_list):
+            assert StripeAPI(api_key="sk_test").has_live_subscription(CUSTOMER_ID)
+
+    def test_unpaid_customer_sent_to_portal(
+        self, checkout_client: tuple[Any, Workspace]
+    ) -> None:
+        """A customer with an unpaid subscription goes to the portal."""
+        from core.services.stripe import StripeAPI
+
+        client, _ws = checkout_client
+
+        def _list(**kwargs: Any) -> MagicMock:
+            unpaid = kwargs["status"] == "unpaid"
+            return MagicMock(data=[{"id": "sub_x"}] if unpaid else [])
+
+        with (
+            patch.object(
+                StripeAPI, "get_or_create_customer", return_value={"id": CUSTOMER_ID}
+            ),
+            patch.object(StripeAPI, "create_checkout_session") as create,
+            patch("core.services.stripe.stripe.Subscription.list", side_effect=_list),
+        ):
+            response = start_checkout(client, "pro")
+
+        assert response.status_code == 302
+        assert response.url.endswith("/billing/portal/")
+        create.assert_not_called()

@@ -1231,7 +1231,14 @@ class TestStripeAPISubscriptions:
 
         assert stripe_api.has_live_subscription("cus_test123") is False
         statuses = [c.kwargs["status"] for c in mock_list.call_args_list]
-        assert statuses == ["active", "trialing", "past_due"]
+        assert statuses == [
+            "active",
+            "trialing",
+            "past_due",
+            "unpaid",
+            "paused",
+            "incomplete",
+        ]
 
     @patch("core.services.stripe.stripe.Subscription.list")
     def test_has_live_subscription_returns_false_on_error_by_default(

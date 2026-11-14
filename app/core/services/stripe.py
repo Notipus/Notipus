@@ -807,7 +807,11 @@ class StripeAPI:
     ) -> bool:
         """Return True if the customer has any live subscription on Stripe.
 
-        "Live" = active, trialing, or past_due. Queries each live status
+        "Live" = any status a subscription can still recover from without
+        a new checkout: active, trialing, past_due, unpaid, paused, and
+        incomplete. Creating a second subscription for an unpaid, paused
+        or incomplete one would double-bill once the first is settled, so
+        those customers belong in the billing portal. Queries each status
         with limit=1 and short-circuits on the first hit, so a customer
         with a long history of canceled subscriptions doesn't force the
         caller to paginate the entire history just to answer yes/no.
@@ -827,10 +831,16 @@ class StripeAPI:
                 API call fails. Default callers continue to receive False
                 on error.
         """
-        live_statuses: tuple[Literal["active", "trialing", "past_due"], ...] = (
+        live_statuses: tuple[
+            Literal["active", "trialing", "past_due", "unpaid", "paused", "incomplete"],
+            ...,
+        ] = (
             "active",
             "trialing",
             "past_due",
+            "unpaid",
+            "paused",
+            "incomplete",
         )
         try:
             for status in live_statuses:
