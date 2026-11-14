@@ -171,7 +171,7 @@ class HunterPlugin(BaseEmailEnrichmentPlugin):
             return False, "Connection timed out. Please try again."
         except requests.exceptions.RequestException as e:
             description = _describe_request_error(e)
-            logger.error("Error verifying Hunter.io API key: %s", description)
+            logger.error("Hunter.io account check failed: %s", description)
             return False, f"Connection error: {description}"
 
     def enrich_email(self, email: str, api_key: str) -> dict[str, Any]:
