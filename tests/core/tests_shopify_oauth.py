@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import requests
-from core.models import Integration, UserProfile, Workspace
+from core.models import Integration, UserProfile, Workspace, WorkspaceMember
 from core.views.integrations.shopify import (
     _is_valid_shop_domain,
     _normalize_shop_domain,
@@ -115,6 +115,7 @@ class TestIntegrateShopifyView:
             user=user,
             workspace=workspace,
         )
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         return user, workspace, user_profile
 
     def test_integrate_shopify_requires_login(self, client: Client) -> None:
@@ -182,6 +183,7 @@ class TestShopifyConnectView:
             user=user,
             workspace=workspace,
         )
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         return user, workspace, user_profile
 
     def test_shopify_connect_requires_post(
@@ -306,6 +308,7 @@ class TestShopifyConnectCallbackView:
             user=user,
             workspace=workspace,
         )
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         return user, workspace, user_profile
 
     def test_callback_with_error(self, client: Client, setup_user: tuple) -> None:
@@ -508,6 +511,7 @@ class TestDisconnectShopifyView:
             user=user,
             workspace=workspace,
         )
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         integration = Integration.objects.create(
             workspace=workspace,
             integration_type="shopify",
@@ -540,6 +544,7 @@ class TestDisconnectShopifyView:
         user = User.objects.create_user(username="testuser", password="testpass123")
         workspace = Workspace.objects.create(name="Test Org")
         UserProfile.objects.create(user=user, workspace=workspace)
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         client.force_login(user)
 
         response = client.post(reverse("core:disconnect_shopify"))
@@ -586,6 +591,7 @@ class TestNoCredentialsAreStored:
             shop_domain="test.myshopify.com",
         )
         user_profile = UserProfile.objects.create(user=user, workspace=workspace)
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         return user, workspace, user_profile
 
     @staticmethod

@@ -108,6 +108,9 @@ class TemplateContextTests(TestCase):
             slack_user_id="U123456",
             workspace=self.workspace,
         )
+        WorkspaceMember.objects.create(
+            user=self.user, workspace=self.workspace, role="owner"
+        )
 
     def test_landing_page_unauthenticated_redirects_to_login(self) -> None:
         """Test landing page redirects unauthenticated users to login."""
@@ -275,6 +278,9 @@ class WorkspaceTemplateTests(TestCase):
             user=self.user_with_workspace,
             slack_user_id="U111222",
             workspace=self.workspace,
+        )
+        WorkspaceMember.objects.create(
+            user=self.user_with_workspace, workspace=self.workspace, role="owner"
         )
 
     def test_create_workspace_renders(self) -> None:

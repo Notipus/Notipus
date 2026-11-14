@@ -31,8 +31,14 @@ def admin_emails(workspace: Any) -> list[str]:
     emails = {member.user.email for member in members if member.user.email}
 
     if not emails:
-        profiles = UserProfile.objects.filter(workspace=workspace).select_related(
-            "user"
+        # Never a user who was removed (deactivated) from this workspace.
+        removed = WorkspaceMember.objects.filter(
+            workspace=workspace, is_active=False
+        ).values_list("user_id", flat=True)
+        profiles = (
+            UserProfile.objects.filter(workspace=workspace)
+            .exclude(user_id__in=removed)
+            .select_related("user")
         )
         emails = {profile.user.email for profile in profiles if profile.user.email}
 

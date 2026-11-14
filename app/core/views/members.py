@@ -11,13 +11,14 @@ This module provides views for:
 import logging
 from uuid import UUID
 
-from core.models import WorkspaceInvitation, WorkspaceMember
+from core.models import Workspace, WorkspaceInvitation, WorkspaceMember
 from core.permissions import (
     admin_required,
     can_change_role,
     can_invite_user,
     can_remove_member,
     get_remaining_seats,
+    has_seat_for_new_member,
 )
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -29,6 +30,11 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from ..services.email_quota import (
+    DAILY_EMAIL_CAP,
+    INVITATION,
+    consume_daily_email_quota,
+)
 from ..services.mail import send_email
 
 logger = logging.getLogger(__name__)
@@ -141,6 +147,30 @@ def members_list(request: HttpRequest) -> HttpResponse:
     return render(request, "core/members.html.j2", context)
 
 
+def _invite_form_error(
+    email: str, role: str, current_member: WorkspaceMember
+) -> str | None:
+    """Validate the invite form fields.
+
+    Args:
+        email: Normalised invitee email.
+        role: Requested role.
+        current_member: The inviting member.
+
+    Returns:
+        An error message, or None if the fields are valid.
+    """
+    if not email:
+        return "Please enter an email address."
+    valid_roles = [r[0] for r in WorkspaceMember.ROLE_CHOICES]
+    if role not in valid_roles:
+        return "Invalid role selected."
+    # Admins cannot invite owners
+    if role == "owner" and current_member.role != "owner":
+        return "Only owners can invite new owners."
+    return None
+
+
 @login_required
 @admin_required
 @require_POST
@@ -159,20 +189,9 @@ def invite_member(request: HttpRequest) -> HttpResponse:
     email = request.POST.get("email", "").strip().lower()
     role = request.POST.get("role", "user")
 
-    # Validate email
-    if not email:
-        messages.error(request, "Please enter an email address.")
-        return redirect("core:members_list")
-
-    # Validate role
-    valid_roles = [r[0] for r in WorkspaceMember.ROLE_CHOICES]
-    if role not in valid_roles:
-        messages.error(request, "Invalid role selected.")
-        return redirect("core:members_list")
-
-    # Admins cannot invite owners
-    if role == "owner" and current_member.role != "owner":
-        messages.error(request, "Only owners can invite new owners.")
+    form_error = _invite_form_error(email, role, current_member)
+    if form_error:
+        messages.error(request, form_error)
         return redirect("core:members_list")
 
     # Check plan limits
@@ -206,6 +225,16 @@ def invite_member(request: HttpRequest) -> HttpResponse:
             return redirect("core:members_list")
         existing_invitation.delete()
 
+    # Cap invitation emails per workspace per day so the invite form
+    # cannot be used to send mail to arbitrary addresses at volume.
+    if not consume_daily_email_quota(workspace.id, INVITATION):
+        messages.error(
+            request,
+            f"Your workspace has reached today's limit of {DAILY_EMAIL_CAP} "
+            f"invitations. Please try again tomorrow.",
+        )
+        return redirect("core:members_list")
+
     # Create invitation. The DB constraint guards against a concurrent
     # duplicate slipping past the check above.
     try:
@@ -224,7 +253,8 @@ def invite_member(request: HttpRequest) -> HttpResponse:
     invite_url = request.build_absolute_uri(
         f"/workspace/invitation/{invitation.token}/accept/"
     )
-    logger.info(f"Invitation created for {email}: {invite_url}")
+    # Never log the URL: its token is a bearer credential for joining.
+    logger.info(f"Invitation {invitation.id} created for workspace {workspace.id}")
 
     email_sent = send_invitation_email(invitation, invite_url)
 
@@ -410,16 +440,15 @@ def accept_invitation(request: HttpRequest, token: UUID) -> HttpResponse:
             return redirect("core:dashboard")
         return redirect("account_login")
 
-    # If user is not authenticated, show login/signup page with invitation context
-    if not request.user.is_authenticated:
-        context = {
-            "invitation": invitation,
-            "workspace": invitation.workspace,
-        }
-        return render(request, "core/accept_invitation.html.j2", context)
-
-    # User is authenticated - process the invitation
-    return _process_invitation_acceptance(request, invitation)
+    # GET never joins: it shows the invitation with a sign-in prompt, or a
+    # "Join" button that POSTs to confirm_accept_invitation. Joining on GET
+    # let a link prefetch, preview bot or cross-site image add the signed-in
+    # user to a workspace they never agreed to join.
+    context = {
+        "invitation": invitation,
+        "workspace": invitation.workspace,
+    }
+    return render(request, "core/accept_invitation.html.j2", context)
 
 
 @login_required
@@ -475,38 +504,57 @@ def _process_invitation_acceptance(
         )
         return redirect("account_login")
 
-    # Check if user is already a member
-    existing_member = WorkspaceMember.objects.filter(
-        workspace=workspace, user=user
-    ).first()
+    with transaction.atomic():
+        # Lock the workspace so concurrent acceptances are serialised and
+        # the seat re-check below cannot be raced past; lock the invitation
+        # so it cannot be accepted twice.
+        Workspace.objects.select_for_update().get(pk=workspace.pk)
+        invitation = WorkspaceInvitation.objects.select_for_update().get(
+            pk=invitation.pk
+        )
+        if invitation.accepted_at is not None:
+            messages.info(request, "This invitation has already been accepted.")
+            return redirect("core:dashboard")
 
-    if existing_member:
-        if existing_member.is_active:
+        existing_member = WorkspaceMember.objects.filter(
+            workspace=workspace, user=user
+        ).first()
+
+        if existing_member and existing_member.is_active:
             messages.info(request, "You are already a member of this workspace.")
-        else:
+        elif not has_seat_for_new_member(workspace):
+            # The plan may have been downgraded, or seats filled, since the
+            # invitation was sent.
+            messages.error(
+                request,
+                f"{workspace.name} has no free seats on its current plan. "
+                f"Ask a workspace admin to upgrade or free up a seat.",
+            )
+            return redirect("core:dashboard")
+        elif existing_member:
             # Reactivate membership
             existing_member.is_active = True
             existing_member.role = invitation.role
             existing_member.save(update_fields=["is_active", "role"])
             messages.success(request, f"Welcome back to {workspace.name}!")
-    else:
-        # Create new membership
-        WorkspaceMember.objects.create(
-            user=user,
-            workspace=workspace,
-            role=invitation.role,
-        )
-        messages.success(
-            request, f"Welcome to {workspace.name}! You've joined as {invitation.role}."
-        )
+        else:
+            # Create new membership
+            WorkspaceMember.objects.create(
+                user=user,
+                workspace=workspace,
+                role=invitation.role,
+            )
+            messages.success(
+                request,
+                f"Welcome to {workspace.name}! You've joined as {invitation.role}.",
+            )
 
-    # Mark invitation as accepted
-    with transaction.atomic():
+        # Mark invitation as accepted
         invitation.accepted_at = timezone.now()
         invitation.save(update_fields=["accepted_at"])
 
     logger.info(
-        f"User {user.email} accepted invitation to workspace {workspace.name} "
-        f"as {invitation.role}"
+        f"User {user.pk} accepted invitation {invitation.id} to workspace "
+        f"{workspace.id} as {invitation.role}"
     )
     return redirect("core:dashboard")

@@ -256,3 +256,24 @@ class TestCompanyLogoViewConditionalRequests:
 
         assert response.status_code == 200
         assert response.content == company_with_logo.logo_data
+
+
+@pytest.mark.django_db
+def test_svg_logo_is_served_sandboxed(client: Client) -> None:
+    """A stored SVG (which may carry script) gets a sandboxing CSP and nosniff."""
+    company = Company.objects.create(
+        name="Svg Co",
+        domain="svgco.example.com",
+        logo_data=b'<svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>',
+        logo_content_type="image/svg+xml",
+    )
+
+    response = client.get(
+        reverse("core:company-logo", kwargs={"domain": company.domain})
+    )
+
+    assert response.status_code == 200
+    assert response["Content-Security-Policy"] == (
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    )
+    assert response["X-Content-Type-Options"] == "nosniff"

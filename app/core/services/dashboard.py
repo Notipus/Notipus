@@ -47,12 +47,9 @@ class DashboardService:
         if member:
             workspace = member.workspace
         else:
-            # Fall back to UserProfile for backward compatibility
-            try:
-                user_profile = UserProfile.objects.get(user=user)
-                workspace = user_profile.workspace
-            except UserProfile.DoesNotExist:
-                return None
+            # No UserProfile fallback: the profile link survives removal
+            # from a workspace, so it must not grant access.
+            return None
 
         if not workspace:
             return None

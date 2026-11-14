@@ -38,7 +38,8 @@ ALLOWED_NOTIFICATION_FIELDS: frozenset[str] = frozenset(
 def _get_user_workspace(request: HttpRequest) -> "Workspace":
     """Resolve the workspace for the requesting user.
 
-    Tries WorkspaceMember first, falling back to the legacy UserProfile.
+    Only an active WorkspaceMember counts; the legacy UserProfile link
+    survives removal from a workspace, so it is never used here.
 
     Args:
         request: The HTTP request object.
@@ -53,8 +54,7 @@ def _get_user_workspace(request: HttpRequest) -> "Workspace":
     member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()
     if member:
         return cast(Workspace, member.workspace)
-    user_profile = UserProfile.objects.get(user=request.user)
-    return cast(Workspace, user_profile.workspace)
+    raise UserProfile.DoesNotExist("No active workspace membership")
 
 
 @login_required
@@ -140,6 +140,19 @@ def update_notification_settings(request: HttpRequest) -> JsonResponse:
 
     try:
         workspace = _get_user_workspace(request)
+
+        # Changing what the whole workspace is notified about is an admin
+        # action; view-only members may read the settings but not edit them.
+        if not WorkspaceMember.objects.filter(
+            user=request.user,
+            workspace=workspace,
+            is_active=True,
+            role__in=("owner", "admin"),
+        ).exists():
+            return JsonResponse(
+                {"error": "You don't have permission to perform this action."},
+                status=403,
+            )
 
         data: Any = json.loads(request.body)
         error_response = _validate_settings_payload(data)

@@ -27,6 +27,11 @@ from django.shortcuts import redirect
 from django.template.loader import render_to_string
 
 from ...models import Workspace
+from ...services.email_quota import (
+    DAILY_EMAIL_CAP,
+    SETUP_INSTRUCTIONS,
+    consume_daily_email_quota,
+)
 from ...services.mail import send_email
 from .base import require_admin_role, require_post_method
 from .chargify import DISPLAY_NAME as CHARGIFY_DISPLAY_NAME
@@ -274,6 +279,17 @@ def email_setup_instructions(
         validate_email(recipient)
     except ValidationError:
         messages.error(request, "Please enter a valid email address.")
+        return redirect(instructions.integrate_route)
+
+    # Cap these per workspace per day: the recipient is any address the
+    # admin types, so an uncapped form is an open mail relay.
+    if not consume_daily_email_quota(workspace.pk, SETUP_INSTRUCTIONS):
+        messages.error(
+            request,
+            f"Your workspace has reached today's limit of {DAILY_EMAIL_CAP} "
+            "setup-instruction emails. Please try again tomorrow, or copy the "
+            "instructions manually.",
+        )
         return redirect(instructions.integrate_route)
 
     # login_required plus the admin check above guarantee an

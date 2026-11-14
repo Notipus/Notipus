@@ -10,7 +10,6 @@ into the form, never logged).
 
 import logging
 from typing import cast
-from urllib.parse import urlparse
 
 import requests
 from django.contrib import messages
@@ -18,6 +17,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import redirect, render
+from plugins.destinations.teams import is_allowed_webhook_url
 from webhooks.services.destination_credentials import record_delivery
 
 from ...models import Integration, Workspace
@@ -34,26 +34,8 @@ INTEGRATION_TYPE = "teams_notifications"
 DISPLAY_NAME = "Microsoft Teams"
 
 
-def _is_valid_webhook_url(url: str) -> bool:
-    """Cheap sanity check for a Teams Workflows webhook URL.
-
-    The Workflows webhook has no validation endpoint, so we only structurally
-    validate here and rely on the "Test" button for real verification. We
-    require an ``https`` scheme with a non-empty host so a degenerate value
-    like ``"https://"`` (which would be saved and then fail every send at
-    runtime) is rejected up front.
-
-    Args:
-        url: The candidate webhook URL.
-
-    Returns:
-        True if the URL is a plausible HTTPS webhook.
-    """
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    return parsed.scheme == "https" and bool(parsed.netloc)
+# The allow-list lives with the destination plugin so delivery re-checks it.
+_is_valid_webhook_url = is_allowed_webhook_url
 
 
 @login_required
@@ -88,7 +70,11 @@ def connect_teams(request: HttpRequest) -> HttpResponse:
         messages.error(request, "Webhook URL is required")
         return redirect("core:teams_connect")
     if not _is_valid_webhook_url(webhook_url):
-        messages.error(request, "Enter a valid https:// Teams webhook URL")
+        messages.error(
+            request,
+            "Enter a valid Teams webhook URL. It should start with https:// and "
+            "come from a Teams Workflows (Power Automate) webhook.",
+        )
         return redirect("core:teams_connect")
 
     integration, created = Integration.objects.get_or_create(
@@ -178,13 +164,27 @@ def test_teams(request: HttpRequest) -> HttpResponseRedirect:
         messages.error(request, "Teams integration is missing its webhook URL")
         return redirect("core:integrations")
 
+    # Re-check the stored URL: it may have been saved before host
+    # validation existed.
+    if not _is_valid_webhook_url(webhook_url):
+        messages.error(
+            request,
+            "The saved Teams webhook URL is not a Microsoft webhook address. "
+            "Please reconnect Microsoft Teams.",
+        )
+        return redirect("core:integrations")
+
     try:
         response = requests.post(
             webhook_url,
             json=_build_test_card(request, workspace),
             timeout=DEFAULT_API_TIMEOUT,
+            # A redirect could bounce the request to an internal address.
+            allow_redirects=False,
         )
         response.raise_for_status()
+        if response.is_redirect:
+            raise requests.exceptions.HTTPError("Unexpected redirect")
         record_delivery(workspace, "teams")
         messages.success(request, "Test message sent successfully!")
     except requests.exceptions.Timeout:

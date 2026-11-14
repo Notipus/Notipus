@@ -101,6 +101,15 @@ _ALLOWED_QUERY_PARAMS = frozenset(
     }
 )
 
+# Path segments that are bearer tokens: anyone holding the URL can act on
+# it (join a workspace, answer feedback), so the segment is replaced with
+# a placeholder before a page_location leaves our infrastructure.
+_TOKEN_PATH_PATTERNS = (
+    re.compile(r"^(/workspace/invitation/)[^/]+"),
+    re.compile(r"^(/feedback/industry/)[^/]+"),
+)
+_REDACTED_PATH_SEGMENT = "redacted"
+
 # Substring markers of user agents that must not count as active users.
 # The Measurement Protocol has no bot filtering of its own (gtag relies
 # on browser signals we don't have), so this coarse filter is all that
@@ -436,9 +445,10 @@ def sanitize_page_location(url: str) -> str:
     """Strip a URL down to what analytics may see.
 
     Keeps scheme, host and path; drops every query param except
-    campaign attribution and the fragment entirely. Invitation tokens,
-    Stripe session ids and prefilled emails all travel in query
-    strings, and none of them belong in Google's logs.
+    campaign attribution and the fragment entirely. Stripe session ids
+    and prefilled emails travel in query strings, and invitation and
+    feedback tokens sit in the path itself (``redact_token_path``);
+    none of them belong in Google's logs.
 
     Args:
         url: The full request URL.
@@ -452,7 +462,30 @@ def sanitize_page_location(url: str) -> str:
         for key, value in parse_qsl(parts.query, keep_blank_values=True)
         if key in _ALLOWED_QUERY_PARAMS
     ]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), ""))
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            redact_token_path(parts.path),
+            urlencode(kept),
+            "",
+        )
+    )
+
+
+def redact_token_path(path: str) -> str:
+    """Replace a bearer-token path segment with a placeholder.
+
+    Args:
+        path: URL path, e.g. ``/workspace/invitation/<token>/accept/``.
+
+    Returns:
+        The path with any token segment replaced, e.g.
+        ``/workspace/invitation/redacted/accept/``.
+    """
+    for pattern in _TOKEN_PATH_PATTERNS:
+        path = pattern.sub(rf"\g<1>{_REDACTED_PATH_SEGMENT}", path)
+    return path
 
 
 def _build_event_params(

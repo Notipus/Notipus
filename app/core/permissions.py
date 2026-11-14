@@ -200,8 +200,84 @@ def can_change_role(
     return new_role in ("admin", "user")
 
 
+def _max_users(workspace: "Workspace") -> int:
+    """Return the seat limit of the workspace's plan.
+
+    Args:
+        workspace: The workspace to check.
+
+    Returns:
+        The plan's ``max_users``, or 1 when the plan is unknown.
+    """
+    from core.models import Plan
+
+    try:
+        plan = Plan.objects.get(name=workspace.subscription_plan, is_active=True)
+        return int(plan.max_users)
+    except Plan.DoesNotExist:
+        # Default to 1 if plan not found (trial or misconfigured)
+        return 1
+
+
+def active_member_count(workspace: "Workspace") -> int:
+    """Count the workspace's active members.
+
+    Args:
+        workspace: The workspace to check.
+
+    Returns:
+        Number of active memberships.
+    """
+    from core.models import WorkspaceMember
+
+    return int(
+        WorkspaceMember.objects.filter(workspace=workspace, is_active=True).count()
+    )
+
+
+def seats_in_use(workspace: "Workspace") -> int:
+    """Count seats taken by active members plus outstanding invitations.
+
+    An unexpired pending invitation reserves a seat: otherwise any number
+    of invitations could be sent while one seat was free, and every one of
+    them accepted.
+
+    Args:
+        workspace: The workspace to check.
+
+    Returns:
+        Active members plus unexpired, unaccepted invitations.
+    """
+    from core.models import WorkspaceInvitation
+    from django.utils import timezone
+
+    pending = WorkspaceInvitation.objects.filter(
+        workspace=workspace,
+        accepted_at__isnull=True,
+        expires_at__gt=timezone.now(),
+    ).count()
+    return active_member_count(workspace) + int(pending)
+
+
+def has_seat_for_new_member(workspace: "Workspace") -> bool:
+    """Whether one more active member fits in the plan right now.
+
+    Used at invitation acceptance, where the accepting invitation's own
+    reservation is being turned into a membership.
+
+    Args:
+        workspace: The workspace to check.
+
+    Returns:
+        True if active members are below the plan limit.
+    """
+    return active_member_count(workspace) < _max_users(workspace)
+
+
 def can_invite_user(workspace: "Workspace") -> tuple[bool, str]:
     """Check if the workspace can invite another user based on plan limits.
+
+    Pending invitations count against the limit (see ``seats_in_use``).
 
     Args:
         workspace: The workspace to check.
@@ -209,26 +285,15 @@ def can_invite_user(workspace: "Workspace") -> tuple[bool, str]:
     Returns:
         Tuple of (allowed, message). If not allowed, message explains why.
     """
-    from core.models import Plan, WorkspaceMember
+    max_users = _max_users(workspace)
 
-    current_count = WorkspaceMember.objects.filter(
-        workspace=workspace, is_active=True
-    ).count()
-
-    # Get the plan's max_users
-    try:
-        plan = Plan.objects.get(name=workspace.subscription_plan, is_active=True)
-        max_users = plan.max_users
-    except Plan.DoesNotExist:
-        # Default to 1 if plan not found (trial or misconfigured)
-        max_users = 1
-
-    if current_count >= max_users:
+    if seats_in_use(workspace) >= max_users:
         user_word = "users" if max_users > 1 else "user"
         return (
             False,
             f"Your {workspace.subscription_plan} plan allows up to {max_users} "
-            f"{user_word}. Please upgrade to add more team members.",
+            f"{user_word}, counting pending invitations. Please upgrade or "
+            f"cancel a pending invitation to add more team members.",
         )
 
     return True, ""
@@ -237,25 +302,15 @@ def can_invite_user(workspace: "Workspace") -> tuple[bool, str]:
 def get_remaining_seats(workspace: "Workspace") -> int:
     """Get the number of remaining user seats for a workspace.
 
+    Pending invitations count as taken, matching ``can_invite_user``.
+
     Args:
         workspace: The workspace to check.
 
     Returns:
         Number of remaining seats (0 if at limit or over).
     """
-    from core.models import Plan, WorkspaceMember
-
-    current_count = WorkspaceMember.objects.filter(
-        workspace=workspace, is_active=True
-    ).count()
-
-    try:
-        plan = Plan.objects.get(name=workspace.subscription_plan, is_active=True)
-        max_users = plan.max_users
-    except Plan.DoesNotExist:
-        max_users = 1
-
-    return int(max(0, max_users - current_count))
+    return max(0, _max_users(workspace) - seats_in_use(workspace))
 
 
 # Billing tier hierarchy for feature gating

@@ -37,7 +37,7 @@ lights up the right nav item without the view or the template being told to.
                                 current="{% if '/workspace/settings/' in request.path %}1{% endif %}">Settings</c-nav-link>
                     <span class="mx-2 h-6 border-l border-border" aria-hidden="true"></span>
                     <span class="px-2 text-body text-content-muted">{{ user.get_short_name|default:user.username|title }}</span>
-                    <c-nav-link href="{% url 'account_logout' %}">Log out</c-nav-link>
+                    <c-nav-link href="{% url 'account_logout' %}" post="1">Log out</c-nav-link>
                 {% else %}
                     <c-nav-link href="{% url 'account_login' %}">Log in</c-nav-link>
                     <c-button href="{% url 'account_signup' %}" size="sm">Sign up</c-button>
@@ -93,7 +93,7 @@ lights up the right nav item without the view or the template being told to.
                             mobile
                             current="{% if '/workspace/settings/' in request.path %}1{% endif %}">Settings</c-nav-link>
                 <div class="mt-2 border-t border-border pt-2">
-                    <c-nav-link href="{% url 'account_logout' %}" icon="logout" mobile>Log out</c-nav-link>
+                    <c-nav-link href="{% url 'account_logout' %}" icon="logout" mobile post="1">Log out</c-nav-link>
                 </div>
             {% else %}
                 <c-nav-link href="{% url 'account_login' %}" icon="login" mobile>Log in</c-nav-link>
