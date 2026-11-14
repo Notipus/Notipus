@@ -310,6 +310,12 @@ class NotificationBuilder:
             customer_data, event_data.get("currency") or "USD"
         )
         payment_info = self._build_payment_info(event_data)
+        if payment_info and not payment_info.order_number:
+            # Refunds (and other non-order payloads) carry only the order
+            # reference; without it the order section reads "Order #N/A".
+            order_ref = (event_data.get("metadata") or {}).get("order_ref")
+            if order_ref:
+                payment_info.order_number = str(order_ref)
         company_info = self._build_company_info(company) if company else None
         person_info = self._build_person_info(person) if person else None
 
@@ -551,6 +557,19 @@ class NotificationBuilder:
             elif amount is not None:
                 return f"{format_money(amount, currency)} payment failed"
             return "Payment failed"
+
+        elif event_type == "refund_issued":
+            # A refund is money going out; without this branch it fell to
+            # the generic "Refund Issued" title with no amount.
+            order_number = metadata.get("order_number") or metadata.get("order_ref")
+            if amount is not None and order_number:
+                money = format_money(amount, currency)
+                return f"{money} refunded for order #{order_number}"
+            elif amount is not None:
+                return f"{format_money(amount, currency)} refunded"
+            elif order_number:
+                return f"Refund issued for order #{order_number}"
+            return "Refund issued"
 
         elif event_type == "subscription_created":
             # "New subscription", not "New customer": the webhook proves a
