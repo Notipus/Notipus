@@ -50,6 +50,12 @@ class EventConsolidationService:
     # Multiplier of 6 means 30 minutes for dedup vs 5 minutes for consolidation
     DEDUP_WINDOW_MULTIPLIER: ClassVar[int] = 6
 
+    # How long a "delivered" marker outlives the dedup marker. Replay
+    # (replay_shopify_webhooks) looks back over the raw webhook store,
+    # which keeps payloads for 7 days, so the marker has to cover at
+    # least that or replay re-sends what was already delivered.
+    DELIVERED_MARKER_TTL_SECONDS: ClassVar[int] = 60 * 60 * 24 * 8
+
     # Events that suppress other events when processed first
     # Format: {primary_event: {events_to_suppress}}
     PRIMARY_EVENTS: ClassVar[dict[str, set[str]]] = {
@@ -289,7 +295,9 @@ class EventConsolidationService:
         """Record that an event was processed (for deduplication).
 
         This can be used for exact deduplication based on external_id,
-        in addition to the type-based consolidation.
+        in addition to the type-based consolidation. Called only once the
+        event has been queued or delivered, so it also writes a long-lived
+        "delivered" marker (see ``was_delivered``) for replay to honour.
 
         Args:
             event_type: The event type.
@@ -303,6 +311,43 @@ class EventConsolidationService:
                 self.CONSOLIDATION_WINDOW_SECONDS * self.DEDUP_WINDOW_MULTIPLIER
             )
             cache.set(dedup_key, True, timeout=dedup_timeout)
+            cache.set(
+                self._delivered_key(workspace_id, external_id),
+                True,
+                timeout=self.DELIVERED_MARKER_TTL_SECONDS,
+            )
+
+    def _delivered_key(self, workspace_id: str, external_id: str) -> str:
+        """Return the cache key for a long-lived "delivered" marker.
+
+        Args:
+            workspace_id: The workspace UUID.
+            external_id: The provider event/dedup identifier.
+
+        Returns:
+            Cache key string.
+        """
+        return f"event_delivered:{workspace_id}:{external_id}"
+
+    def was_delivered(self, workspace_id: str, external_id: str | None) -> bool:
+        """Check whether an event was processed within the replay window.
+
+        The live dedup marker expires after 30 minutes, which is right for
+        provider retries but far shorter than a replay look-back; this
+        checks the long-lived marker as well.
+
+        Args:
+            workspace_id: The workspace UUID.
+            external_id: The dedup identifier.
+
+        Returns:
+            True when the event was already queued or delivered.
+        """
+        if not external_id:
+            return False
+        if self.is_duplicate(workspace_id, external_id):
+            return True
+        return cache.get(self._delivered_key(workspace_id, external_id)) is not None
 
     def is_duplicate(
         self,

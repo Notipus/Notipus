@@ -216,3 +216,36 @@ def test_replayed_event_is_dedup_marked_and_dry_run_sends_nothing(
         assert deliver.call_count == 1
 
     assert "Skipped (already processed): 1" in second
+
+
+def test_event_delivered_days_ago_is_not_resent(
+    locmem_cache: None, workspace: Workspace
+) -> None:
+    """Delivery is remembered past the 30-minute live dedup marker."""
+    from webhooks.services.event_consolidation import event_consolidation_service
+
+    request = _store(workspace, "orders/paid", ORDER)
+    live_event = ShopifySourcePlugin("s").parse_webhook(request)
+    assert live_event is not None
+    dedup_key = _get_dedup_key(live_event)
+    _record_dedup_marker(live_event, str(workspace.uuid), dedup_key)
+    # Three days later the live dedup marker has long expired.
+    cache.delete(event_consolidation_service._dedup_key(str(workspace.uuid), dedup_key))
+
+    with patch(
+        "webhooks.management.commands.replay_shopify_webhooks._process_immediately"
+    ) as deliver:
+        output = _run()
+
+    deliver.assert_not_called()
+    assert "Skipped (already processed): 1" in output
+
+
+def test_delivered_marker_outlives_the_replay_window() -> None:
+    """The delivered marker covers the whole raw-webhook retention."""
+    from webhooks.services.event_consolidation import EventConsolidationService
+
+    assert (
+        EventConsolidationService.DELIVERED_MARKER_TTL_SECONDS
+        >= webhook_storage_service.TTL_SECONDS
+    )

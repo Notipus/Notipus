@@ -9,9 +9,10 @@ Each stored webhook is rebuilt with the live parser
 (``ShopifySourcePlugin.build_event_from_payload``), checked against the
 same dedup key the live endpoint records
 (``shopify:{type}:sha256:{body_hash}``), and delivered through the same
-immediate path to every configured destination. Webhooks that were
-already processed live are therefore skipped, unknown topics are
-skipped, and one bad payload never stops the run.
+immediate path to every configured destination. The live path writes an
+8-day "delivered" marker under that key on success, so webhooks that
+were already processed live within the look-back are skipped, unknown
+topics are skipped, and one bad payload never stops the run.
 
 Records stored before ``body_sha256`` was captured cannot be matched
 against the live dedup key, so they are skipped unless ``--force``.
@@ -231,7 +232,7 @@ class Command(BaseCommand):
         dedup_key = _get_dedup_key(event_data)
         label = self._label(event_data, topic)
 
-        if not force and event_consolidation_service.is_duplicate(
+        if not force and event_consolidation_service.was_delivered(
             workspace_id, dedup_key
         ):
             self.stdout.write(f"  Skipping {label} - already processed")
