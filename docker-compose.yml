@@ -3,11 +3,14 @@
 # DEVELOPMENT:
 #   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 #
-# PRODUCTION:
-#   1. Copy this file to docker-compose.prod.yml
-#   2. Update environment variables for production
-#   3. Set proper secrets, database passwords, etc.
-#   4. docker-compose -f docker-compose.prod.yml up
+# This file is for local development. Postgres and Redis are published on
+# 127.0.0.1 only and fall back to well-known dev passwords; override them
+# with DB_PASSWORD and REDIS_PASSWORD (e.g. in a .env file next to this one).
+#
+# PRODUCTION: do not run this file as-is. If you base a deployment on it, set
+# real values for DB_PASSWORD, REDIS_PASSWORD, SECRET_DJANGO_KEY and
+# FIELD_ENCRYPTION_KEYS, set DEBUG=False, and drop the db/redis `ports:`
+# entries - the app reaches both over app_network and nothing else needs to.
 
 # YAML Anchors for reusable configurations
 x-common-variables: &common-variables
@@ -19,8 +22,10 @@ x-common-variables: &common-variables
   # CodeQL[SM02380]: Development default password - not used in production
   DB_PASSWORD: ${DB_PASSWORD:-dev_password_123}
 
-  # Redis
-  REDIS_URL: redis://redis:6379/0
+  # Redis. The password is part of the URL, so it must be URL-safe
+  # (letters, digits, - . _ ~) or percent-encoded.
+  # CodeQL[SM02380]: Development default password - not used in production
+  REDIS_URL: redis://:${REDIS_PASSWORD:-dev_redis_password}@redis:6379/0
 
   # Django (development defaults)
   # CodeQL[SM02380]: Development default secret - not used in production
@@ -92,31 +97,42 @@ services:
     image: postgres:18
     container_name: notipus_db
     environment:
-      POSTGRES_DB: notipus_dev
-      POSTGRES_USER: notipus_user
-      POSTGRES_PASSWORD: dev_password_123
+      POSTGRES_DB: ${DB_NAME:-notipus_dev}
+      POSTGRES_USER: ${DB_USER:-notipus_user}
+      # Same variable and default as the app's DB_PASSWORD above, so the two
+      # cannot drift apart. Postgres only reads this when it initialises an
+      # empty volume: changing it later needs ALTER USER or a fresh volume.
+      # CodeQL[SM02380]: Development default password - not used in production
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev_password_123}
     volumes:
       # postgres:18+ stores data in a major-version subdirectory and
       # refuses to start when the volume is mounted at the old
       # .../data path. Mount the parent instead.
       - postgres_data:/var/lib/postgresql
+    # Loopback only: reachable from this machine (for `uv run` against the
+    # container), never from the network.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     networks:
       - app_network
     restart: unless-stopped
     healthcheck:
       <<: *healthcheck-defaults
-      test: ["CMD-SHELL", "pg_isready -U notipus_user -d notipus_dev"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
 
   redis:
     image: redis:8-alpine
     container_name: notipus_redis
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >-
+      redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+      --requirepass "${REDIS_PASSWORD:-dev_redis_password}"
+    environment:
+      # redis-cli reads this, so the healthcheck below can authenticate.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-dev_redis_password}
     volumes:
       - redis_data:/data
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     networks:
       - app_network
     restart: unless-stopped

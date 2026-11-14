@@ -70,8 +70,13 @@ export FIELD_ENCRYPTION_KEYS=your-base64url-32byte-key-here
 export NOTIPUS_STRIPE_SECRET_KEY=sk_test_your_stripe_key
 export NOTIPUS_STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
 
-# Optional: Override other settings
+# Optional: replace the development passwords docker-compose.yml falls back
+# to (dev_password_123 and dev_redis_password). Postgres and Redis are only
+# published on 127.0.0.1. Set DB_PASSWORD before the database volume is first
+# created: Postgres reads it only when it initialises an empty volume.
+# REDIS_PASSWORD becomes part of REDIS_URL, so keep it URL-safe.
 export DB_PASSWORD=secure_db_password
+export REDIS_PASSWORD=secure_redis_password
 ```
 
 > **Note**: Webhook secrets for customer integrations are managed per-tenant through the web interface.
@@ -88,7 +93,7 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
-Access the application at http://localhost:8000.
+Access the application at http://localhost:8080 (or http://localhost:8000 with the `docker-compose.dev.yml` override, which runs Django's dev server).
 
 6. **Stop the containers**
 
@@ -126,10 +131,13 @@ uv sync --all-groups
 ```bash
 export SECRET_DJANGO_KEY=your-secure-secret-key-here
 export DEBUG=True
+# These match the defaults the docker-compose Postgres and Redis in step 5
+# are created with.
 export DB_NAME=notipus_dev
-export DB_USER=postgres
-export DB_PASSWORD=postgres
+export DB_USER=notipus_user
+export DB_PASSWORD=dev_password_123
 export DB_HOST=localhost
+export REDIS_URL=redis://:dev_redis_password@localhost:6379/0
 
 # Optional in dev: with DEBUG=True a deterministic key is derived from
 # SECRET_DJANGO_KEY if FIELD_ENCRYPTION_KEYS is unset (dev only, see below).
@@ -709,7 +717,8 @@ This creates Stripe Products/Prices for your plans and updates the database with
 - `DEBUG`: Set to "False" for production (defaults to "True")
 - `ALLOWED_HOSTS`: Comma-separated list of allowed hostnames
 - `DB_NAME`, `DB_USER`, `DB_HOST`, `DB_PORT`: Database connection parameters
-- `REDIS_URL`: Redis connection URL
+- `REDIS_URL`: Redis connection URL, e.g. `redis://:password@host:6379/0`
+- `REDIS_PASSWORD`: used by `docker-compose.yml` to set the Redis password and build `REDIS_URL` (dev default `dev_redis_password`); without `REDIS_URL`, the app also builds its Redis URL from `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB` and `REDIS_PASSWORD`
 - `FORWARDED_ALLOW_IPS`: Comma-separated addresses/CIDRs of the reverse proxy whose `X-Forwarded-For`/`X-Forwarded-Proto` uvicorn trusts. Any other peer's forwarded headers are ignored, so it cannot choose its own client IP. The Docker image defaults to `*` (trust every peer), which is only safe while the proxy is the sole thing that can reach port 8080; `docker-compose.yml` sets `127.0.0.1`. On Fly.io, set it to the range the Fly proxy connects from with `fly secrets set FORWARDED_ALLOW_IPS=...` or an `[env]` entry in `fly.toml` — and check `REMOTE_ADDR` on a running machine first, because a list that leaves out the proxy makes every visitor share its address (and one per-IP rate-limit bucket). HTTPS detection does not depend on it: Django reads `X-Forwarded-Proto` itself via `SECURE_PROXY_SSL_HEADER`.
 
 ### Per-Tenant Configuration
