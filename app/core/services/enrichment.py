@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 from core.models import Company
+from core.services.classification_feedback import carry_over_feedback
 from core.services.logo_storage import get_logo_storage_service
 from core.utils import is_timestamp_fresh
 from django.conf import settings
@@ -136,18 +137,20 @@ class DomainEnrichmentService:
         plugins: List of enabled plugin instances.
     """
 
-    # Cached enrichment is refreshed once it grows older than this many days.
-    # Use refresh_enrichment() to force an immediate update.
-    CACHE_DURATION_DAYS: int | None = 30
+    # Company facts and their classification barely change, so enrichment is
+    # kept forever (None). Use refresh_enrichment() to force an update; human
+    # feedback on the classification survives a refresh.
+    CACHE_DURATION_DAYS: int | None = None
 
-    # Every provider response is cached (Redis in production) so repeat
-    # webhooks, refresh after a failure, and backfills don't pay again.
-    # Domains with no data are cached briefly so they are retried later.
+    # Every provider response is also cached (Redis in production) so
+    # backfills and re-enrichment never pay twice for the same answer.
+    # Responses with data are kept forever (None); LLM answers are keyed by a
+    # hash of their exact input, so changed Brandfetch data or a new model
+    # still gets a fresh answer. Domains with no data are cached briefly so
+    # they are retried later rather than on every webhook.
     RESPONSE_CACHE_PREFIX = "enrichment:response:v1:"
-    RESPONSE_CACHE_SECONDS = 30 * 24 * 3600
-    # LLM answers are keyed by a hash of their exact input, so they can be
-    # kept longer: unchanged Brandfetch data means an unchanged answer.
-    LLM_RESPONSE_CACHE_SECONDS = 90 * 24 * 3600
+    RESPONSE_CACHE_SECONDS: int | None = None
+    LLM_RESPONSE_CACHE_SECONDS: int | None = None
     EMPTY_RESPONSE_CACHE_SECONDS = 6 * 3600
 
     # Cache key for the cross-process round-robin counter over LLM modules.
@@ -218,6 +221,12 @@ class DomainEnrichmentService:
 
             # Check if we already have enrichment data
             if not created and self._has_enrichment(company):
+                # Companies enriched before an LLM module was configured get
+                # their profile once, from the stored Brandfetch data.
+                if self._llm_plugins and not (company.brand_info or {}).get(
+                    "industry_classification"
+                ):
+                    self.classify_company(company)
                 logger.debug(f"Company {domain} already has enrichment data, skipping")
                 return company
 
@@ -443,8 +452,8 @@ class DomainEnrichmentService:
             company.name = blended_data["name"]
             updated_fields.append("name")
 
-        # Store full blended data in brand_info
-        company.brand_info = blended_data
+        # Store full blended data in brand_info, keeping human feedback
+        company.brand_info = carry_over_feedback(company.brand_info, blended_data)
         updated_fields.append("brand_info")
 
         # Save with specific fields for performance
@@ -503,6 +512,7 @@ class DomainEnrichmentService:
                 blended["_sources"][name]["fetched_at"] = entry["fetched_at"]
         if brand_info.get("_blended_at"):
             blended["_blended_at"] = brand_info["_blended_at"]
+        carry_over_feedback(brand_info, blended)
 
         company.brand_info = blended
         update_fields = ["brand_info"]
@@ -540,8 +550,12 @@ class DomainEnrichmentService:
             if not company:
                 return self.enrich_domain(domain, use_cache=False)
 
-            # Clear existing data to force refresh
-            company.brand_info = {}
+            # Mark the data stale to force a refresh. The rest of brand_info
+            # is kept so human feedback on the classification carries over.
+            company.brand_info = {
+                **(company.brand_info or {}),
+                "_blended_at": None,
+            }
             company.save(update_fields=["brand_info"])
 
             # Re-enrich, bypassing cached provider responses

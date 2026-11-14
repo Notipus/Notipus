@@ -765,6 +765,70 @@ class Company(models.Model):
         return url
 
 
+class ClassificationFeedback(models.Model):
+    """A workspace's vote on a company's LLM industry classification.
+
+    Recorded from the 👍 / 👎 links on notifications. One row per company
+    and workspace; voting again replaces the earlier vote. A downvote may
+    carry the correct industry, which then overrides the LLM's answer for
+    that company permanently.
+
+    Attributes:
+        company: The company whose classification was judged.
+        workspace: The workspace that voted (null if it has been deleted).
+        vote: "up" or "down".
+        industry: The industry shown when the vote was cast.
+        provider: LLM module that produced the classification.
+        model: Model that produced the classification.
+        corrected_industry: Industry the voter says is right (downvotes).
+        corrected_sub_industry: Optional sub-industry the voter supplied.
+    """
+
+    VOTE_UP = "up"
+    VOTE_DOWN = "down"
+    VOTE_CHOICES: ClassVar[list[tuple[str, str]]] = [
+        (VOTE_UP, "Correct"),
+        (VOTE_DOWN, "Wrong"),
+    ]
+
+    company: models.ForeignKey = models.ForeignKey(
+        "Company", on_delete=models.CASCADE, related_name="classification_feedback"
+    )
+    workspace: models.ForeignKey = models.ForeignKey(
+        "Workspace",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="classification_feedback",
+    )
+    vote: models.CharField = models.CharField(max_length=4, choices=VOTE_CHOICES)
+    industry: models.CharField = models.CharField(max_length=80, blank=True)
+    provider: models.CharField = models.CharField(max_length=40, blank=True)
+    model: models.CharField = models.CharField(max_length=80, blank=True)
+    corrected_industry: models.CharField = models.CharField(max_length=80, blank=True)
+    corrected_sub_industry: models.CharField = models.CharField(
+        max_length=80, blank=True
+    )
+    created_at: models.DateTimeField = models.DateTimeField(default=timezone.now)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "core"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["company", "workspace"],
+                name="classification_feedback_once_per_workspace",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["vote", "provider"], name="cls_feedback_vote_idx"),
+        ]
+
+    def __str__(self) -> str:
+        """Return a short description of the vote."""
+        return f"{self.vote} on {self.industry or '?'} for {self.company}"
+
+
 class Person(models.Model):
     """Person model for storing enriched contact/person data from Hunter.io.
 

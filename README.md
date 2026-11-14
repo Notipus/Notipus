@@ -662,13 +662,26 @@ filtering are shared in `base_llm.py`, so a new provider is one short file.
 - **Privacy:** only the bare domain and public company metadata are sent.
   Customer email addresses never reach these providers; values that are not a
   plain domain are rejected and email-like text in the metadata is redacted.
-- **Caching:** besides the `Company` record (refreshed after 30 days), every
-  provider response is cached in Redis: Brandfetch responses for 30 days, LLM
-  answers for 90 days keyed by a hash of their exact input (so unchanged
-  Brandfetch data never triggers a second LLM call), and empty responses for
-  6 hours so unknown domains are not re-queried on every webhook. Errors are
-  not cached. `refresh_enrichment()` and `classify_companies --force` bypass
-  the cache.
+- **Caching:** company enrichment is kept **forever**. The `Company` record
+  is never refreshed automatically, and every provider response is also
+  cached in Redis with no expiry. LLM answers are keyed by a hash of their
+  exact input, so changed Brandfetch data or a new model still gets a fresh
+  answer. Empty responses are cached for 6 hours, so unknown domains are
+  retried later rather than on every webhook. Errors are not cached.
+  `refresh_enrichment()` and `classify_companies --force` bypass the cache.
+  Companies enriched before an LLM module was configured are profiled once,
+  automatically, from their stored Brandfetch data.
+- **Feedback:** notifications carry `👍 Industry right` / `👎 Wrong industry`
+  link buttons (Slack, Teams, Telegram; no Slack interactivity setup needed).
+  They open a page under `/feedback/industry/<signed token>/<up|down>/`. The
+  token names the company and the receiving workspace, so no login is
+  needed. Opening the page casts no vote (link prefetchers can't vote); the
+  vote is stored on submit, one per workspace per company, in
+  `ClassificationFeedback` (Django admin, filterable by provider and model).
+  A downvote can name the correct industry. That correction overrides the
+  LLM permanently and survives refreshes and backfills. Downvoted,
+  uncorrected classifications are marked `disputed` and can be re-run with
+  `classify_companies --disputed`.
 - Companies enriched before a module was configured can be backfilled from
   the stored Brandfetch data: `python app/manage.py classify_companies`
   (`--dry-run`, `--limit N`, `--force`).

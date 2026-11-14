@@ -1,0 +1,89 @@
+{% extends "core/base.html.j2" %}
+
+{% block title %}
+    Rate industry - Notipus
+{% endblock title %}
+
+{% block content %}
+    <c-page width="narrow"
+            title="Is this industry right?"
+            subtitle="Your feedback trains how Notipus classifies customers.">
+        <c-card>
+            <div class="flex flex-col gap-stack">
+                <div>
+                    <p class="text-title font-bold text-content">{{ company.name|default:company.domain }}</p>
+                    <p class="text-body text-content-muted">{{ company.domain }}</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <c-badge tone="brand" icon="building">
+                        {{ classification.industry }}
+                    </c-badge>
+                    {% if classification.sub_industry %}<c-badge>{{ classification.sub_industry }}</c-badge>{% endif %}
+                    {% if classification.business_model and classification.business_model != "Unknown" %}
+                        <c-badge>
+                            {{ classification.business_model }}
+                        </c-badge>
+                    {% endif %}
+                    {% if classification.target_market and classification.target_market != "Unknown" %}
+                        <c-badge>
+                            {{ classification.target_market }}
+                        </c-badge>
+                    {% endif %}
+                </div>
+                {% if recorded %}
+                    {% if corrected %}
+                        <c-alert tone="success" title="Thanks, industry updated">
+                            {{ company.name|default:company.domain }} is now classified as {{ classification.industry }}. Future notifications use your answer.
+                        </c-alert>
+                    {% elif vote == "up" %}
+                        <c-alert tone="success" title="Thanks for confirming">
+                            We'll keep this classification.
+                        </c-alert>
+                    {% else %}
+                        <c-alert tone="info" title="Thanks, we've flagged it">
+                            Flagged classifications are reviewed and re-run. Pick the right industry below to fix it straight away.
+                        </c-alert>
+                    {% endif %}
+                {% endif %}
+                {% if error %}<c-alert tone="danger">{{ error }}</c-alert>{% endif %}
+                {% if not recorded or vote == "down" and not corrected %}
+                    {% if vote == "up" %}
+                        <c-form>
+                            <input type="hidden" name="vote" value="up">
+                            <c-slot name="actions">
+                                <c-button href="{% url 'core:industry_feedback' token 'down' %}"
+                                          variant="secondary">
+                                    No, it's wrong
+                                </c-button>
+                                <c-button type="submit" icon="thumb-up">
+                                    Yes, it's right
+                                </c-button>
+                            </c-slot>
+                        </c-form>
+                    {% else %}
+                        <c-form>
+                            <input type="hidden" name="vote" value="down">
+                            <c-select name="industry"
+                                      label="Correct industry"
+                                      help="Leave empty if you're not sure.">
+                                <option value="">Not sure</option>
+                                {% for industry in industries %}
+                                    <option value="{{ industry }}">{{ industry }}</option>
+                                {% endfor %}
+                            </c-select>
+                            <c-input name="sub_industry"
+                                     label="Niche (optional)"
+                                     placeholder="e.g. Payroll software"
+                                     maxlength="80" />
+                            <c-slot name="actions">
+                                <c-button type="submit" icon="thumb-down">
+                                    Send feedback
+                                </c-button>
+                            </c-slot>
+                        </c-form>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </c-card>
+    </c-page>
+{% endblock content %}
