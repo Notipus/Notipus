@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
-from core.models import Company, Integration, UserProfile, Workspace
+from core.models import Company, Integration, UserProfile, Workspace, WorkspaceMember
 from core.services.enrichment import DomainEnrichmentService
 from core.services.stripe import StripeAPI
 from django.test import TestCase
@@ -613,6 +613,9 @@ class DashboardServiceTest(TestCase):
         self.user_profile = UserProfile.objects.create(
             user=self.user,
             workspace=self.workspace,
+        )
+        WorkspaceMember.objects.create(
+            user=self.user, workspace=self.workspace, role="owner"
         )
 
     @patch("core.services.dashboard.rate_limiter")

@@ -38,7 +38,8 @@ ALLOWED_NOTIFICATION_FIELDS: frozenset[str] = frozenset(
 def _get_user_workspace(request: HttpRequest) -> "Workspace":
     """Resolve the workspace for the requesting user.
 
-    Tries WorkspaceMember first, falling back to the legacy UserProfile.
+    Only an active WorkspaceMember counts; the legacy UserProfile link
+    survives removal from a workspace, so it is never used here.
 
     Args:
         request: The HTTP request object.
@@ -53,8 +54,7 @@ def _get_user_workspace(request: HttpRequest) -> "Workspace":
     member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()
     if member:
         return cast(Workspace, member.workspace)
-    user_profile = UserProfile.objects.get(user=request.user)
-    return cast(Workspace, user_profile.workspace)
+    raise UserProfile.DoesNotExist("No active workspace membership")
 
 
 @login_required

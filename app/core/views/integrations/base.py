@@ -12,7 +12,7 @@ from django.contrib.auth.views import redirect_to_login
 from django.http import HttpRequest, HttpResponseRedirect
 from django.shortcuts import redirect
 
-from ...models import UserProfile, Workspace, WorkspaceMember
+from ...models import Workspace, WorkspaceMember
 
 logger = logging.getLogger(__name__)
 
@@ -76,19 +76,14 @@ def get_user_workspace(request: HttpRequest) -> Workspace | None:
     if not request.user.is_authenticated:
         return None
 
-    # Try WorkspaceMember first
+    # Only an active membership grants access. The legacy UserProfile link
+    # is not consulted: it survives removal from the workspace (migration
+    # 0038 gave genuine profile-only users a membership row).
     member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()
     if member:
         workspace: Workspace = member.workspace
         return workspace
-
-    # Fall back to UserProfile for backward compatibility
-    try:
-        user_profile = UserProfile.objects.get(user=request.user)
-        workspace = user_profile.workspace
-        return workspace
-    except UserProfile.DoesNotExist:
-        return None
+    return None
 
 
 def require_workspace(
@@ -152,13 +147,8 @@ def require_admin_role(
     # Get workspace membership
     member = WorkspaceMember.objects.filter(user=request.user, is_active=True).first()
     if member is None:
-        # Fall back to UserProfile for backward compatibility
-        try:
-            user_profile = UserProfile.objects.get(user=request.user)
-            # UserProfile users are treated as owners for backward compatibility
-            return user_profile.workspace, None
-        except UserProfile.DoesNotExist:
-            return None, redirect("core:create_workspace")
+        # No UserProfile fallback: a removed member keeps their profile.
+        return None, redirect("core:create_workspace")
 
     # Check role
     if member.role not in ("owner", "admin"):

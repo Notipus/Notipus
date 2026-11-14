@@ -50,6 +50,7 @@ class TestSlackConnectState:
         )
         workspace = Workspace.objects.create(name="Test Workspace")
         UserProfile.objects.create(user=user, workspace=workspace)
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         return user, workspace
 
     @override_settings(**SLACK_CONNECT_SETTINGS)
