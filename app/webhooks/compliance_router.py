@@ -71,7 +71,9 @@ def _verify_hmac(request: HttpRequest) -> bool:
         return False
 
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
-    return hmac.compare_digest(header, base64.b64encode(digest).decode("utf-8"))
+    # Compare bytes: compare_digest raises TypeError for a str holding
+    # non-ASCII characters, which would surface as a 500, not a 401.
+    return hmac.compare_digest(header.encode("utf-8"), base64.b64encode(digest))
 
 
 def _find_workspace(shop_domain: str | None) -> Workspace | None:
