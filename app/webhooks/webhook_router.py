@@ -303,6 +303,11 @@ def _add_rate_limit_headers(
             response[header_name] = header_value
 
 
+# Retry-After for a redelivery that arrives while the first attempt is
+# still being processed.
+DUPLICATE_IN_PROGRESS_RETRY_AFTER_SECONDS = 30
+
+
 def _get_dedup_key(event_data: Dict[str, Any]) -> str:
     """Build the deduplication key for a parsed webhook event.
 
@@ -371,8 +376,9 @@ def _process_webhook_data(
 
     The dedup key is claimed atomically (``cache.add``) as "in progress"
     before anything slow happens, so a concurrent redelivery of the same
-    event gets a 200 "duplicate in progress" instead of a second
-    notification. The claim is turned into a completed marker only after
+    event gets a 409 with ``Retry-After`` instead of a second
+    notification (a 200 would let the provider drop the event if the
+    first attempt then failed). The claim is turned into a completed marker only after
     the event has been queued or delivered; on failure it is released so
     the provider's retry is processed rather than suppressed.
 
@@ -391,15 +397,31 @@ def _process_webhook_data(
     dedup_key = _get_dedup_key(event_data)
 
     claim = event_consolidation_service.claim_event(workspace_id, dedup_key)
+    if claim == "in_progress":
+        # Not a 2xx: the first attempt may still fail, and a provider that
+        # was told "delivered" never retries. 409 + Retry-After makes it
+        # come back, and the retry gets a 200 once the claim is complete.
+        logger.info(
+            f"Deferring duplicate event {dedup_key} for workspace {workspace_id} "
+            "(in progress)"
+        )
+        response = JsonResponse(
+            {
+                "status": "conflict",
+                "message": f"{provider_name} webhook duplicate in progress",
+            },
+            status=409,
+        )
+        response["Retry-After"] = str(DUPLICATE_IN_PROGRESS_RETRY_AFTER_SECONDS)
+        return response
     if claim != "claimed":
-        in_progress = claim == "in_progress"
         logger.info(
             f"Skipping duplicate event {dedup_key} for workspace {workspace_id}"
-            f"{' (in progress)' if in_progress else ''}"
         )
-        message = "duplicate in progress" if in_progress else "duplicate suppressed"
         return JsonResponse(
-            create_success_response(f"{provider_name} webhook processed ({message})"),
+            create_success_response(
+                f"{provider_name} webhook processed (duplicate suppressed)"
+            ),
             status=200,
         )
 

@@ -2,7 +2,9 @@
 
 Dedup used to be check-then-record around slow synchronous delivery, so
 two concurrent deliveries of one event both passed the check and both
-notified. The key is now claimed with cache.add before processing.
+notified. The key is now claimed with cache.add before processing, and
+a redelivery that arrives mid-attempt gets 409 + Retry-After rather than
+a 200 that would stop the provider retrying if the attempt then failed.
 
 Quota used to be charged for every authenticated request; it is now
 charged only for events that are parsed, pass dedup and get processed.
@@ -92,7 +94,9 @@ def test_concurrent_duplicate_gets_in_progress(
 
     assert first.status_code == 200
     assert mock_deliver.call_count == 1
-    assert inner[0].status_code == 200
+    # Not a 2xx, so the provider retries if the first attempt fails.
+    assert inner[0].status_code == 409
+    assert inner[0]["Retry-After"] == "30"
     assert "duplicate in progress" in json.loads(inner[0].content)["message"]
 
     # Once done, a redelivery is a plain duplicate.
@@ -100,6 +104,32 @@ def test_concurrent_duplicate_gets_in_progress(
         third = _process_webhook_data(_event(), provider, "customer_chargify", None)
     mock_deliver.assert_not_called()
     assert "duplicate suppressed" in json.loads(third.content)["message"]
+
+
+def test_in_progress_duplicate_is_retried_after_a_failure(
+    locmem_cache: None, provider: Mock
+) -> None:
+    """A redelivery deferred mid-attempt is processed once the attempt fails."""
+    inner: list[JsonResponse] = []
+
+    def fail(*args: Any, **kwargs: Any) -> JsonResponse:
+        inner.append(
+            _process_webhook_data(_event(), provider, "customer_chargify", None)
+        )
+        raise RuntimeError("slack down")
+
+    with patch("webhooks.webhook_router._process_immediately", side_effect=fail):
+        with pytest.raises(RuntimeError):
+            _process_webhook_data(_event(), provider, "customer_chargify", None)
+    assert inner[0].status_code == 409
+
+    # The provider's retry (prompted by the 409) delivers the event.
+    with patch(
+        "webhooks.webhook_router._process_immediately", return_value=_ok()
+    ) as mock_deliver:
+        retry = _process_webhook_data(_event(), provider, "customer_chargify", None)
+    mock_deliver.assert_called_once()
+    assert retry.status_code == 200
 
 
 def test_failed_delivery_releases_claim(locmem_cache: None, provider: Mock) -> None:
