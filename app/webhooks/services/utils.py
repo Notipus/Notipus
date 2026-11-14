@@ -59,18 +59,20 @@ def get_display_name(customer_data: dict[str, Any]) -> str:
         return cast(str, company_name)
 
     # Try customer's full name
-    first_name = customer_data.get("first_name", "")
-    last_name = customer_data.get("last_name", "")
+    # "or" rather than a .get default: providers send explicit nulls
+    # (e.g. Shopify "last_name": null), which would render as "Ann None".
+    first_name = customer_data.get("first_name") or ""
+    last_name = customer_data.get("last_name") or ""
     if first_name or last_name:
         return f"{first_name} {last_name}".strip()
 
     # Use full email address as fallback
-    email: str = customer_data.get("email", "")
+    email: str = customer_data.get("email") or ""
     if email and "@" in email:
         return email
 
     # Use customer ID as fallback (e.g., "cus_TremsiHkK4YcSS")
-    customer_id: str = customer_data.get("customer_id", "")
+    customer_id: str = customer_data.get("customer_id") or ""
     if customer_id:
         return customer_id
 

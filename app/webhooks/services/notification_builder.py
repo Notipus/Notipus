@@ -363,9 +363,11 @@ class NotificationBuilder:
         Returns:
             CustomerInfo dataclass.
         """
-        email = customer_data.get("email", "")
-        first_name = customer_data.get("first_name", "")
-        last_name = customer_data.get("last_name", "")
+        # "or" rather than a .get default: providers send explicit nulls,
+        # which would otherwise render as "Ann None".
+        email = customer_data.get("email") or ""
+        first_name = customer_data.get("first_name") or ""
+        last_name = customer_data.get("last_name") or ""
         name = f"{first_name} {last_name}".strip() or None
 
         # Use smart display name fallback (no more "Individual")
