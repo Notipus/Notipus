@@ -7,6 +7,7 @@ format and sends them via the Telegram Bot API.
 import json
 import logging
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import requests
 from plugins.base import PluginCapability, PluginMetadata, PluginType
@@ -26,6 +27,11 @@ logger = logging.getLogger(__name__)
 
 # Default timeout for Telegram API requests (seconds)
 DEFAULT_TIMEOUT = 30
+
+# Inline-keyboard url buttons only accept these schemes; anything else
+# (mailto:, tel:, ...) makes sendMessage fail with BUTTON_URL_INVALID,
+# which drops the whole notification.
+TELEGRAM_BUTTON_SCHEMES = frozenset({"http", "https", "tg"})
 
 # Telegram Bot API base URL
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
@@ -207,6 +213,10 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             if customer_footer:
                 lines.append(customer_footer)
 
+        # Telegram rejects mailto: button URLs, so contact actions render
+        # as text instead (Telegram auto-links the address).
+        lines.extend(self._format_contact_lines(n.actions))
+
         # Attribution footer, last so it never displaces event content.
         lines.append("")
         lines.append(
@@ -219,9 +229,11 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             "parse_mode": "HTML",
         }
 
-        # Action buttons (if present)
-        if n.actions:
-            result["reply_markup"] = self._format_actions(n.actions)
+        # Action buttons (if present). Only schemes Telegram accepts for
+        # url buttons are kept; one invalid button fails the whole send.
+        url_actions = [a for a in n.actions if self._is_button_url(a.url)]
+        if url_actions:
+            result["reply_markup"] = self._format_actions(url_actions)
 
         return result
 
@@ -626,6 +638,59 @@ class TelegramDestinationPlugin(BaseDestinationPlugin):
             buttons.append(row)
 
         return {"inline_keyboard": buttons}
+
+    def _format_contact_lines(self, actions: list[ActionButton]) -> list[str]:
+        """Render mailto: actions as text lines carrying the address.
+
+        Args:
+            actions: Notification action buttons.
+
+        Returns:
+            One HTML line per mailto action, e.g.
+            "📧 Contact Customer: ann@example.com".
+        """
+        lines: list[str] = []
+        for action in actions:
+            contact_email = self._mailto_address(action.url)
+            if contact_email:
+                lines.append(
+                    f"📧 {self._escape_html(action.text)}: "
+                    f"{self._escape_html(contact_email)}"
+                )
+        return lines
+
+    @staticmethod
+    def _is_button_url(url: str | None) -> bool:
+        """Return whether Telegram accepts ``url`` on an inline url button.
+
+        Args:
+            url: Action button URL.
+
+        Returns:
+            True for http(s) and tg:// URLs, False otherwise.
+        """
+        if not url:
+            return False
+        try:
+            scheme = urlsplit(url).scheme.lower()
+        except ValueError:
+            return False
+        return scheme in TELEGRAM_BUTTON_SCHEMES
+
+    @staticmethod
+    def _mailto_address(url: str | None) -> str | None:
+        """Extract the address from a ``mailto:`` URL.
+
+        Args:
+            url: Action button URL.
+
+        Returns:
+            The email address, or None when the URL is not a mailto link.
+        """
+        if not url or not url.lower().startswith("mailto:"):
+            return None
+        address = unquote(url[len("mailto:") :].split("?", 1)[0]).strip()
+        return address or None
 
     @staticmethod
     def _escape_html(text: str) -> str:
