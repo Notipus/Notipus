@@ -1,8 +1,9 @@
-"""Backfill LLM industry classification for already enriched companies.
+"""Backfill the LLM company profile for already enriched companies.
 
-New companies are classified as they are enriched. Companies enriched before
-an LLM module was configured only get classified on their next refresh; this
-command classifies them now, reusing the stored Brandfetch data. Only the
+New companies get an LLM profile (description, firmographics, industry
+classification) as they are enriched. Companies enriched before an LLM module
+was configured only get one on their next refresh; this command adds it now,
+reusing the stored Brandfetch data as input. Only the
 domain and public company metadata are sent to the LLM provider.
 
     python manage.py classify_companies --dry-run
@@ -42,7 +43,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--force",
             action="store_true",
-            help="Reclassify companies that already have a classification",
+            help="Regenerate existing profiles, ignoring cached LLM answers",
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
@@ -70,7 +71,7 @@ class Command(BaseCommand):
             if options["dry_run"]:
                 self.stdout.write(company.domain)
                 continue
-            if service.classify_company(company):
+            if service.classify_company(company, use_cache=not options["force"]):
                 classified += 1
                 industry = company.brand_info["industry_classification"]["industry"]
                 self.stdout.write(f"{company.domain}: {industry}")

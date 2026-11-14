@@ -35,16 +35,20 @@ class DataBlender:
     # Field priority: which source to prefer for each field
     # Order matters - first available source wins
     FIELD_PRIORITIES: dict[str, list[str]] = {
-        "name": ["brandfetch", "clearbit", "openai"],
+        # Brandfetch's name is canonical; the LLM fills it in when missing.
+        "name": ["brandfetch", "clearbit", *LLM_SOURCES],
         "logo_url": ["brandfetch", "clearbit"],  # LLM can't provide logos
-        # LLM is better for descriptions
-        "description": ["openai", "brandfetch", "clearbit"],
+        # The LLM rewrites Brandfetch's description into a short, sales-ready
+        # summary (it receives Brandfetch's text as input).
+        "description": [*LLM_SOURCES, "brandfetch", "clearbit"],
         # LLM classification is grounded in Brandfetch data and maps to a
         # fixed taxonomy, so it is preferred for ICP matching.
         "industry": [*LLM_SOURCES, "brandfetch", "clearbit"],
         "industry_classification": LLM_SOURCES,
-        "year_founded": ["brandfetch", "clearbit"],
-        "employee_count": ["clearbit", "brandfetch"],
+        # Firmographic facts: trust the data provider, LLM fills the gaps.
+        "year_founded": ["brandfetch", "clearbit", *LLM_SOURCES],
+        "employee_count": ["clearbit", "brandfetch", *LLM_SOURCES],
+        "headquarters": ["brandfetch", "clearbit", *LLM_SOURCES],
         "colors": ["brandfetch"],
         "links": ["brandfetch", "clearbit"],
     }
@@ -136,6 +140,16 @@ class DomainEnrichmentService:
     # Use refresh_enrichment() to force an immediate update.
     CACHE_DURATION_DAYS: int | None = 30
 
+    # Every provider response is cached (Redis in production) so repeat
+    # webhooks, refresh after a failure, and backfills don't pay again.
+    # Domains with no data are cached briefly so they are retried later.
+    RESPONSE_CACHE_PREFIX = "enrichment:response:v1:"
+    RESPONSE_CACHE_SECONDS = 30 * 24 * 3600
+    # LLM answers are keyed by a hash of their exact input, so they can be
+    # kept longer: unchanged Brandfetch data means an unchanged answer.
+    LLM_RESPONSE_CACHE_SECONDS = 90 * 24 * 3600
+    EMPTY_RESPONSE_CACHE_SECONDS = 6 * 3600
+
     # Cache key for the cross-process round-robin counter over LLM modules.
     LLM_ROUND_ROBIN_KEY = "enrichment:llm_round_robin"
     # Process-local fallback when the cache backend cannot count.
@@ -177,11 +191,13 @@ class DomainEnrichmentService:
         else:
             logger.warning("No enrichment plugins available")
 
-    def enrich_domain(self, domain: str) -> Company | None:
+    def enrich_domain(self, domain: str, use_cache: bool = True) -> Company | None:
         """Enrich a domain with company information from all available plugins.
 
         Args:
             domain: Domain name to enrich.
+            use_cache: Read cached provider responses. False forces fresh
+                provider calls (the new responses are still cached).
 
         Returns:
             Company instance with enrichment data, or None on failure.
@@ -206,7 +222,7 @@ class DomainEnrichmentService:
                 return company
 
             # Collect data from all plugins
-            source_data = self._collect_from_plugins(domain)
+            source_data = self._collect_from_plugins(domain, use_cache=use_cache)
 
             if source_data:
                 # Blend data from all sources
@@ -244,14 +260,72 @@ class DomainEnrichmentService:
         blended_at = company.brand_info.get("_blended_at")
         return bool(is_timestamp_fresh(blended_at, self.CACHE_DURATION_DAYS))
 
-    def _collect_from_plugins(self, domain: str) -> dict[str, dict[str, Any]]:
+    def _cached_enrich(
+        self,
+        plugin: BaseEnrichmentPlugin,
+        domain: str,
+        context: dict[str, Any] | None = None,
+        use_cache: bool = True,
+    ) -> dict[str, Any]:
+        """Call a plugin, serving and storing its response through the cache.
+
+        Errors are not cached; empty responses are cached briefly.
+
+        Args:
+            plugin: Plugin to call.
+            domain: Domain to enrich.
+            context: Grounding data for LLM modules.
+            use_cache: Whether a cached response may be returned.
+
+        Returns:
+            The plugin's data (possibly from cache), or empty dict.
+        """
+        is_llm = isinstance(plugin, BaseLLMEnrichmentPlugin)
+        key = f"{self.RESPONSE_CACHE_PREFIX}{plugin.cache_key(domain, context)}"
+
+        if use_cache:
+            try:
+                cached = cache.get(key)
+            except Exception as e:
+                logger.debug(f"Enrichment cache read failed: {e}")
+                cached = None
+            if isinstance(cached, dict):
+                logger.debug(f"Enrichment cache hit for {key}")
+                return cached
+
+        if is_llm:
+            data = cast(BaseLLMEnrichmentPlugin, plugin).enrich_domain(
+                domain, context=context
+            )
+        else:
+            data = plugin.enrich_domain(domain)
+        data = data or {}
+
+        if data:
+            ttl = (
+                self.LLM_RESPONSE_CACHE_SECONDS
+                if is_llm
+                else self.RESPONSE_CACHE_SECONDS
+            )
+        else:
+            ttl = self.EMPTY_RESPONSE_CACHE_SECONDS
+        try:
+            cache.set(key, data, timeout=ttl)
+        except Exception as e:
+            logger.debug(f"Enrichment cache write failed: {e}")
+        return data
+
+    def _collect_from_plugins(
+        self, domain: str, use_cache: bool = True
+    ) -> dict[str, dict[str, Any]]:
         """Collect enrichment data from all available plugins.
 
-        Regular providers run first. Then one LLM module classifies the
-        industry, using the regular providers' data as grounding.
+        Regular providers run first. Then one LLM module generates the
+        company profile and industry, using their data as input.
 
         Args:
             domain: Domain to enrich.
+            use_cache: Whether cached provider responses may be used.
 
         Returns:
             Dict mapping plugin names to their enrichment data.
@@ -261,14 +335,14 @@ class DomainEnrichmentService:
         for plugin in self._plugins:
             plugin_name = plugin.get_plugin_name()
             try:
-                data = plugin.enrich_domain(domain)
+                data = self._cached_enrich(plugin, domain, use_cache=use_cache)
                 if data:
                     source_data[plugin_name] = data
                     logger.debug(f"Got data from plugin '{plugin_name}' for {domain}")
             except Exception as e:
                 logger.warning(f"Plugin '{plugin_name}' failed for {domain}: {e}")
 
-        llm_data = self._classify_with_llm(domain, source_data)
+        llm_data = self._classify_with_llm(domain, source_data, use_cache=use_cache)
         if llm_data:
             source_data.update(llm_data)
 
@@ -301,9 +375,12 @@ class DomainEnrichmentService:
         return plugins[start:] + plugins[:start]
 
     def _classify_with_llm(
-        self, domain: str, source_data: dict[str, dict[str, Any]]
+        self,
+        domain: str,
+        source_data: dict[str, dict[str, Any]],
+        use_cache: bool = True,
     ) -> dict[str, dict[str, Any]]:
-        """Classify the domain's industry with one LLM module.
+        """Profile and classify the domain with one LLM module.
 
         Tries modules in round-robin order and stops at the first that
         returns data, so a failing provider falls over to the next one.
@@ -312,6 +389,7 @@ class DomainEnrichmentService:
             domain: Domain to classify. Only the domain is sent, never an
                 email address.
             source_data: Data from regular providers, used as context.
+            use_cache: Whether a cached answer may be used.
 
         Returns:
             ``{plugin_name: data}`` for the module that succeeded, or empty.
@@ -323,7 +401,9 @@ class DomainEnrichmentService:
         for plugin in self._llm_rotation():
             plugin_name = plugin.get_plugin_name()
             try:
-                data = plugin.enrich_domain(domain, context=context)
+                data = self._cached_enrich(
+                    plugin, domain, context=context, use_cache=use_cache
+                )
             except Exception as e:
                 logger.warning(f"LLM module '{plugin_name}' failed for {domain}: {e}")
                 continue
@@ -337,7 +417,7 @@ class DomainEnrichmentService:
         """Pick the grounding data for the LLM.
 
         Brandfetch is preferred; otherwise the first provider with data.
-        The LLM module itself only reads name, description and industry.
+        The LLM module itself only reads the fields in ``CONTEXT_FIELDS``.
 
         Args:
             source_data: Data from regular providers.
@@ -383,46 +463,53 @@ class DomainEnrichmentService:
         """Whether at least one LLM module is configured."""
         return bool(self._llm_plugins)
 
-    def classify_company(self, company: Company) -> bool:
-        """Add an LLM industry classification to an already enriched company.
+    def classify_company(self, company: Company, use_cache: bool = True) -> bool:
+        """Add the LLM profile and classification to an enriched company.
 
         Reuses the provider data stored in ``brand_info["_sources"]`` as
-        context, so Brandfetch is not called again and the record's freshness
-        timestamp is left alone. Used to backfill existing companies.
+        input, so Brandfetch is not called again, then re-blends. The
+        record's freshness timestamps are left alone. Used for backfills.
 
         Args:
-            company: Company to classify.
+            company: Company to profile.
+            use_cache: Whether a cached LLM answer may be used.
 
         Returns:
-            True if a classification was stored.
+            True if a profile was stored.
         """
         if not self._llm_plugins or not company.domain:
             return False
 
         brand_info = dict(company.brand_info or {})
         sources = brand_info.get("_sources") or {}
-        source_data = {
-            name: entry.get("raw") or {}
+        kept_sources = {
+            name: entry
             for name, entry in sources.items()
             if name not in LLM_SOURCES and isinstance(entry, dict)
         }
-        llm_data = self._classify_with_llm(company.domain, source_data)
+        source_data = {
+            name: entry.get("raw") or {} for name, entry in kept_sources.items()
+        }
+        llm_data = self._classify_with_llm(
+            company.domain, source_data, use_cache=use_cache
+        )
         if not llm_data:
             return False
 
-        plugin_name, data = next(iter(llm_data.items()))
-        classification = data["brand_info"]["industry_classification"]
-        brand_info["industry"] = classification["industry"]
-        brand_info["industry_classification"] = classification
-        brand_info["_sources"] = {
-            **{k: v for k, v in sources.items() if k not in LLM_SOURCES},
-            plugin_name: {
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "raw": data,
-            },
-        }
-        company.brand_info = brand_info
-        company.save(update_fields=["brand_info"])
+        blended = self.blender.blend({**source_data, **llm_data})
+        # Keep the original fetch times so cache freshness is unchanged.
+        for name, entry in kept_sources.items():
+            if entry.get("fetched_at"):
+                blended["_sources"][name]["fetched_at"] = entry["fetched_at"]
+        if brand_info.get("_blended_at"):
+            blended["_blended_at"] = brand_info["_blended_at"]
+
+        company.brand_info = blended
+        update_fields = ["brand_info"]
+        if blended.get("name") and blended["name"] != company.name:
+            company.name = blended["name"]
+            update_fields.append("name")
+        company.save(update_fields=update_fields)
         return True
 
     def get_available_plugins(self) -> list[dict[str, Any]]:
@@ -451,14 +538,14 @@ class DomainEnrichmentService:
         try:
             company = Company.objects.filter(domain=domain).first()
             if not company:
-                return self.enrich_domain(domain)
+                return self.enrich_domain(domain, use_cache=False)
 
             # Clear existing data to force refresh
             company.brand_info = {}
             company.save(update_fields=["brand_info"])
 
-            # Re-enrich
-            return self.enrich_domain(domain)
+            # Re-enrich, bypassing cached provider responses
+            return self.enrich_domain(domain, use_cache=False)
 
         except Exception as e:
             logger.error(f"Error refreshing enrichment for {domain}: {e!s}")

@@ -110,6 +110,21 @@ class BaseEnrichmentPlugin(BasePlugin):
         """
         pass
 
+    def cache_key(self, domain: str, context: dict[str, Any] | None = None) -> str:
+        """Identify this plugin's response for caching.
+
+        Override when the response depends on more than the domain (LLM
+        modules include the model and a hash of the prompt).
+
+        Args:
+            domain: Domain being enriched.
+            context: Optional input from other providers.
+
+        Returns:
+            Cache key fragment, unique per plugin and input.
+        """
+        return f"{self.get_plugin_name()}:{domain.lower()}"
+
     def get_capabilities(self) -> set[EnrichmentCapability]:
         """Get the enrichment capabilities of this plugin.
 

@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from core.models import Company
 from core.services.enrichment import DataBlender, DomainEnrichmentService
+from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import override_settings
@@ -30,6 +31,7 @@ from plugins.enrichment.base_llm import (
     BaseLLMEnrichmentPlugin,
     normalize_domain,
 )
+from plugins.enrichment.brandfetch import BrandfetchPlugin
 from plugins.enrichment.llm_anthropic import AnthropicLLMPlugin
 from plugins.enrichment.llm_ollama import OllamaLLMPlugin
 from plugins.enrichment.llm_openai import OpenAILLMPlugin
@@ -37,6 +39,11 @@ from webhooks.models.rich_notification import CompanyInfo
 from webhooks.services.notification_builder import NotificationBuilder
 
 VALID_RESULT: dict[str, Any] = {
+    "name": "Acme",
+    "description": "Acme sells payroll software to mid-sized companies.",
+    "year_founded": 2015,
+    "employee_count": "51-200",
+    "headquarters": "Berlin, Germany",
     "industry": "Software & SaaS",
     "sub_industry": "Developer Tools",
     "business_model": "B2B",
@@ -136,6 +143,7 @@ def brandfetch_plugin(data: dict[str, Any]) -> MagicMock:
     plugin = MagicMock(spec=BaseEnrichmentPlugin)
     plugin.get_plugin_name.return_value = "brandfetch"
     plugin.enrich_domain.return_value = data
+    plugin.cache_key.side_effect = lambda domain, context=None: f"brandfetch:{domain}"
     return plugin
 
 
@@ -343,7 +351,8 @@ class TestServiceRoundRobin:
         assert payload["brand_database"]["description"] == "Payroll for SMBs"
         assert company is not None
         assert company.brand_info["industry"] == "Software & SaaS"
-        assert company.brand_info["description"] == "Payroll for SMBs"
+        # The LLM's rewrite of Brandfetch's description is preferred.
+        assert company.brand_info["description"] == VALID_RESULT["description"]
         assert company.name == "Acme"
 
     def test_llm_alone_when_brandfetch_has_nothing(self) -> None:
@@ -621,6 +630,9 @@ class TestBackfill:
         assert company.brand_info["_blended_at"] == "2026-11-01T00:00:00+00:00"
         assert set(company.brand_info["_sources"]) == {"brandfetch", "openai"}
         assert "Payroll" in llm.calls[0]
+        sources = company.brand_info["_sources"]
+        assert sources["brandfetch"]["fetched_at"] == "2026-11-01T00:00:00+00:00"
+        assert company.brand_info["description"] == VALID_RESULT["description"]
 
     def test_command_classifies_unclassified(self) -> None:
         """The command classifies companies lacking a classification."""
@@ -649,3 +661,219 @@ class TestBackfill:
             pytest.raises(CommandError),
         ):
             call_command("classify_companies")
+
+
+# ============================================================================
+# Company profile generation
+# ============================================================================
+
+LOCMEM_CACHE = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "llm-enrichment-tests",
+    }
+}
+
+BRANDFETCH_FULL: dict[str, Any] = {
+    "name": "Acme",
+    "logo_url": None,
+    "brand_info": {
+        "description": "Acme. The #1 payroll platform! Email hello@acme.com",
+        "long_description": "Founded in Berlin, Acme builds payroll tools.",
+        "industry": "Software › Payroll",
+        "industries": ["Software › Payroll", "Finance"],
+        "year_founded": 2014,
+        "employee_count": None,
+        "headquarters": None,
+        "company_kind": "PRIVATELY_HELD",
+        "links": [{"name": "linkedin", "url": "https://linkedin.com/acme"}],
+        "colors": [{"hex": "#ff0000"}],
+    },
+}
+
+
+class TestBrandfetchFirmographics:
+    """Brandfetch's company object is extracted for blending and LLM input."""
+
+    def test_company_object_is_extracted(self) -> None:
+        """Industries, founding year, headcount band and location are mapped."""
+        plugin = BrandfetchPlugin()
+        plugin.configure({"api_key": "k"})
+        response = MagicMock(status_code=200, headers={})
+        response.json.return_value = {
+            "name": "Acme",
+            "description": "Payroll",
+            "longDescription": "Long payroll text",
+            "logos": [],
+            "company": {
+                "employees": 51,
+                "foundedYear": 2014,
+                "kind": "PRIVATELY_HELD",
+                "location": {"city": "Berlin", "country": "Germany"},
+                "industries": [
+                    {"name": "Payroll", "parent": {"name": "Software"}},
+                    {"name": "Finance", "parent": None},
+                ],
+            },
+        }
+        with patch("plugins.enrichment.brandfetch.requests.get", return_value=response):
+            info = plugin.enrich_domain("acme.com")["brand_info"]
+
+        assert info["industry"] == "Software › Payroll"
+        assert info["industries"] == ["Software › Payroll", "Finance"]
+        assert info["year_founded"] == 2014
+        assert info["employee_count"] == "51-200"
+        assert info["headquarters"] == "Berlin, Germany"
+        assert info["long_description"] == "Long payroll text"
+        assert info["company_kind"] == "PRIVATELY_HELD"
+
+
+@pytest.mark.django_db
+class TestCompanyProfile:
+    """The LLM produces the Brandfetch-style profile, using Brandfetch as input."""
+
+    def test_full_brandfetch_record_is_sent_minus_links_and_emails(self) -> None:
+        """All firmographic fields go in; links, colours and emails do not."""
+        fake = FakeLLM()
+        fake.enrich_domain("acme.com", context=BRANDFETCH_FULL)
+        payload = json.loads(fake.calls[0].split("\n", 1)[1])["brand_database"]
+
+        assert payload["long_description"].startswith("Founded in Berlin")
+        assert payload["year_founded"] == 2014
+        assert payload["industries"] == "Software › Payroll, Finance"
+        assert payload["company_kind"] == "PRIVATELY_HELD"
+        assert "links" not in payload and "colors" not in payload
+        assert "@" not in fake.calls[0]
+
+    def test_profile_blending(self) -> None:
+        """LLM description wins; Brandfetch facts win; LLM fills the gaps."""
+        service = build_service(
+            [brandfetch_plugin(BRANDFETCH_FULL), make_fake("openai")]
+        )
+        company = service.enrich_domain("acme.com")
+        assert company is not None
+        info = company.brand_info
+
+        assert info["description"] == VALID_RESULT["description"]
+        assert info["year_founded"] == 2014  # Brandfetch over LLM's 2015
+        assert info["employee_count"] == "51-200"  # gap filled by LLM
+        assert info["headquarters"] == "Berlin, Germany"  # gap filled by LLM
+        assert info["industry"] == "Software & SaaS"
+
+    def test_unknown_values_are_not_stored(self) -> None:
+        """'Unknown', null and '' never overwrite or fill a field."""
+        fake = FakeLLM(
+            {
+                **VALID_RESULT,
+                "year_founded": None,
+                "employee_count": "Unknown",
+                "headquarters": "",
+            }
+        )
+        info = fake.enrich_domain("acme.com")["brand_info"]
+        assert "year_founded" not in info
+        assert "employee_count" not in info
+        assert "headquarters" not in info
+
+    @pytest.mark.parametrize("year", [1066, 3000, "soon", True])
+    def test_implausible_year_is_dropped(self, year: Any) -> None:
+        """Founding years outside a plausible range are discarded."""
+        fake = FakeLLM({**VALID_RESULT, "year_founded": year})
+        assert "year_founded" not in fake.enrich_domain("acme.com")["brand_info"]
+
+    def test_llm_alone_provides_profile(self) -> None:
+        """Without Brandfetch data the LLM profile is used as-is."""
+        service = build_service([brandfetch_plugin({}), make_fake("anthropic")])
+        company = service.enrich_domain("acme.com")
+        assert company is not None
+        assert company.name == "Acme"
+        assert company.brand_info["year_founded"] == 2015
+
+
+# ============================================================================
+# Caching
+# ============================================================================
+
+
+@pytest.mark.django_db
+class TestResponseCache:
+    """Every provider response is cached."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self, settings: Any) -> Iterator[None]:
+        """Use a real in-memory cache, empty at start and end of each test."""
+        settings.CACHES = LOCMEM_CACHE
+        cache.clear()
+        yield
+        cache.clear()
+
+    def test_provider_and_llm_responses_are_cached(self) -> None:
+        """A second enrichment of the same domain makes no provider calls."""
+        bf = brandfetch_plugin(BRANDFETCH_FULL)
+        llm = make_fake("openai")
+        service = build_service([bf, llm])
+
+        service.enrich_domain("acme.com")
+        Company.objects.all().delete()  # force a second enrichment pass
+        service.enrich_domain("acme.com")
+
+        assert bf.enrich_domain.call_count == 1
+        assert len(llm.calls) == 1
+
+    def test_empty_responses_are_cached_briefly(self) -> None:
+        """A domain with no data is not re-fetched on every webhook."""
+        bf = brandfetch_plugin({})
+        service = build_service([bf])
+        with patch.object(cache, "set", wraps=cache.set) as cache_set:
+            service.enrich_domain("nothing.com")
+            service.enrich_domain("nothing.com")
+
+        assert bf.enrich_domain.call_count == 1
+        assert (
+            cache_set.call_args.kwargs["timeout"]
+            == DomainEnrichmentService.EMPTY_RESPONSE_CACHE_SECONDS
+        )
+
+    def test_errors_are_not_cached(self) -> None:
+        """A provider exception is retried next time."""
+        bf = brandfetch_plugin({})
+        bf.enrich_domain.side_effect = [RuntimeError("down"), {"name": "Acme"}]
+        service = build_service([bf])
+
+        service.enrich_domain("acme.com")
+        company = service.enrich_domain("acme.com")
+
+        assert bf.enrich_domain.call_count == 2
+        assert company is not None and company.name == "Acme"
+
+    def test_llm_cache_key_tracks_input(self) -> None:
+        """Changed Brandfetch data or model means a new LLM call."""
+        fake = FakeLLM()
+        base = fake.cache_key("acme.com", BRANDFETCH_FULL)
+        assert base == fake.cache_key("acme.com", BRANDFETCH_FULL)
+        assert base != fake.cache_key("acme.com", {"name": "Other"})
+        fake.model = "other-model"
+        assert base != fake.cache_key("acme.com", BRANDFETCH_FULL)
+        assert "@" not in base
+
+    def test_refresh_bypasses_cache(self) -> None:
+        """refresh_enrichment always calls the providers again."""
+        bf = brandfetch_plugin({"name": "Acme"})
+        llm = make_fake("openai")
+        service = build_service([bf, llm])
+
+        service.enrich_domain("acme.com")
+        service.refresh_enrichment("acme.com")
+
+        assert bf.enrich_domain.call_count == 2
+        assert len(llm.calls) == 2
+
+    def test_cache_outage_is_tolerated(self) -> None:
+        """If the cache backend fails, enrichment still works."""
+        service = build_service([brandfetch_plugin({"name": "Acme"})])
+        with (
+            patch.object(cache, "get", side_effect=ConnectionError),
+            patch.object(cache, "set", side_effect=ConnectionError),
+        ):
+            company = service.enrich_domain("acme.com")
+        assert company is not None and company.name == "Acme"
