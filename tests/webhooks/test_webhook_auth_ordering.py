@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 from core.models import Integration, Workspace
 from django.test import Client
-from webhooks.services.rate_limiter import RateLimitException, rate_limiter
+from webhooks.services.rate_limiter import rate_limiter
 from webhooks.services.webhook_storage import webhook_storage_service
 
 
@@ -99,14 +99,14 @@ class TestWebhookAuthOrdering:
         assert "SIGLEAKCANARYDEADBEEF" not in _all_captured_log_text(caplog)
 
     @patch("plugins.sources.stripe.StripeSourcePlugin")
-    def test_valid_webhook_consumes_exactly_one_quota_unit(
+    def test_test_ping_consumes_no_quota(
         self,
         mock_provider_class: Any,
         client: Client,
         workspace: Workspace,
         stripe_integration: Integration,
     ) -> None:
-        """An accepted webhook must increment rate-limit usage exactly once."""
+        """A test ping (nothing to process) must not be charged."""
         mock_provider = mock_provider_class.return_value
         mock_provider.validate_webhook.return_value = True
         mock_provider.parse_webhook.return_value = None  # Test webhook
@@ -122,6 +122,42 @@ class TestWebhookAuthOrdering:
             )
 
         assert response.status_code == 200
+        mock_increment.assert_not_called()
+
+    @patch("plugins.sources.stripe.StripeSourcePlugin")
+    def test_processed_event_consumes_exactly_one_quota_unit(
+        self,
+        mock_provider_class: Any,
+        client: Client,
+        workspace: Workspace,
+        stripe_integration: Integration,
+    ) -> None:
+        """An event that is processed increments usage exactly once."""
+        mock_provider = mock_provider_class.return_value
+        mock_provider.validate_webhook.return_value = True
+        mock_provider.parse_webhook.return_value = {
+            "type": "payment_success",
+            "customer_id": "cus_1",
+            "event_id": "evt_quota_1",
+            "idempotency_key": "idem_quota_1",
+            "amount": 10.0,
+        }
+        mock_provider.get_customer_data.return_value = {}
+
+        url = f"/webhook/customer/{workspace.uuid}/stripe/"
+        with (
+            patch.object(
+                rate_limiter, "increment_usage", return_value=1
+            ) as mock_increment,
+            patch("webhooks.webhook_router.pending_event_queue.queue_event"),
+        ):
+            response = client.post(
+                url,
+                data=json.dumps({"type": "invoice.paid"}),
+                content_type="application/json",
+            )
+
+        assert response.status_code == 200
         mock_increment.assert_called_once()
 
     @patch("plugins.sources.stripe.StripeSourcePlugin")
@@ -133,25 +169,28 @@ class TestWebhookAuthOrdering:
         stripe_integration: Integration,
         settings: Any,
     ) -> None:
-        """An authenticated but over-quota request must not be logged/stored."""
+        """A workspace at its hard cap is not logged, stored or charged."""
         settings.LOG_WEBHOOKS = True
 
         mock_provider = mock_provider_class.return_value
         mock_provider.validate_webhook.return_value = True
         mock_provider.parse_webhook.return_value = None  # Test webhook
 
+        capped_info = {
+            "limit": 100,
+            "current_usage": 150,
+            "remaining": 0,
+            "reset_time": datetime.now(timezone.utc) + timedelta(hours=1),
+            "plan": "free",
+            "reason": None,
+        }
         url = f"/webhook/customer/{workspace.uuid}/stripe/"
         with (
             patch.object(
-                rate_limiter,
-                "enforce_rate_limit",
-                side_effect=RateLimitException(
-                    "Rate limit exceeded",
-                    limit=100,
-                    current_usage=100,
-                    reset_time=datetime.now(timezone.utc) + timedelta(hours=1),
-                ),
+                rate_limiter, "check_rate_limit", return_value=(False, capped_info)
             ),
+            patch.object(rate_limiter, "get_hard_limit", return_value=150),
+            patch.object(rate_limiter, "increment_usage") as mock_increment,
             patch.object(webhook_storage_service, "store_webhook") as mock_store,
         ):
             response = client.post(
@@ -162,6 +201,7 @@ class TestWebhookAuthOrdering:
 
         assert response.status_code == 429
         mock_store.assert_not_called()
+        mock_increment.assert_not_called()
 
     @patch("plugins.sources.stripe.StripeSourcePlugin")
     def test_valid_webhook_is_stored_after_validation(
