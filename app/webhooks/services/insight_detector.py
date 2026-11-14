@@ -69,7 +69,7 @@ from typing import Any
 
 from django.core.cache import cache
 from webhooks.models.rich_notification import InsightInfo
-from webhooks.utils.currency import format_money
+from webhooks.utils.currency import format_money, usd_threshold_in
 
 from .utils import interval_suffix
 
@@ -131,6 +131,11 @@ def _get_ltv(customer_data: dict[str, Any]) -> float | None:
 class MilestoneConfig:
     """Configuration for milestone detection.
 
+    Money thresholds are in US dollars. They are scaled to the event's
+    currency with a rough static factor (see
+    webhooks.utils.currency.APPROX_UNITS_PER_USD); for currencies without
+    a factor the money-based insights are skipped.
+
     Attributes:
         ltv_milestones: LTV amounts that trigger celebrations.
         vip_ltv_threshold: LTV amount for VIP status.
@@ -144,6 +149,12 @@ class MilestoneConfig:
     vip_ltv_threshold: float = 10000
     anniversary_months: list[int] = field(default_factory=lambda: [12, 24, 36, 48, 60])
     large_payment_threshold: float = 1000
+    at_risk_ltv_threshold: float = 1000
+
+
+def _event_currency(event_data: dict[str, Any]) -> str:
+    """Return the event's currency code, defaulting to USD."""
+    return str(event_data.get("currency") or "USD")
 
 
 class InsightDetector:
@@ -231,12 +242,21 @@ class InsightDetector:
         if ltv is None:
             return flags
 
-        if ltv >= self.config.vip_ltv_threshold:
+        # Thresholds are USD; skip when the currency cannot be scaled.
+        currency = _event_currency(event_data)
+        vip_threshold = usd_threshold_in(self.config.vip_ltv_threshold, currency)
+        at_risk_threshold = usd_threshold_in(
+            self.config.at_risk_ltv_threshold, currency
+        )
+        if vip_threshold is None or at_risk_threshold is None:
+            return flags
+
+        if ltv >= vip_threshold:
             flags.append("vip")
 
         # At-risk: a payment failure from a high-LTV customer
         event_type = event_data.get("type", "")
-        if event_type == "payment_failure" and ltv >= 1000:
+        if event_type == "payment_failure" and ltv >= at_risk_threshold:
             flags.append("at_risk")
 
         return flags
@@ -548,6 +568,13 @@ class InsightDetector:
         if reported_total is None:
             return None
 
+        # Milestones are USD amounts; scale them to the event currency
+        # (and stay silent for currencies we cannot scale).
+        currency = _event_currency(event_data)
+        milestones = [usd_threshold_in(m, currency) for m in self.config.ltv_milestones]
+        if any(m is None for m in milestones):
+            return None
+
         current_amount = _to_float(event_data.get("amount"))
         # Post-payment (conservative) reading: the reported total is the
         # new LTV; the pre-payment LTV is at least reported - amount,
@@ -559,11 +586,10 @@ class InsightDetector:
         # payment can cross several at once - one Slack message per event).
         crossed = [
             milestone
-            for milestone in self.config.ltv_milestones
-            if previous_ltv < milestone <= new_ltv
+            for milestone in milestones
+            if milestone is not None and previous_ltv < milestone <= new_ltv
         ]
         if crossed:
-            currency = event_data.get("currency") or "USD"
             money = format_money(max(crossed), currency, 0)
             return InsightInfo(
                 icon=self.ICONS["ltv_milestone"],
@@ -718,9 +744,13 @@ class InsightDetector:
         if ltv is None:
             return None
 
-        if ltv >= self.config.vip_ltv_threshold:
-            currency = event_data.get("currency") or "USD"
-            threshold = format_money(self.config.vip_ltv_threshold, currency, 0)
+        currency = _event_currency(event_data)
+        vip_threshold = usd_threshold_in(self.config.vip_ltv_threshold, currency)
+        if vip_threshold is None:
+            return None
+
+        if ltv >= vip_threshold:
+            threshold = format_money(vip_threshold, currency, 0)
             return InsightInfo(
                 icon=self.ICONS["vip_status"],
                 text=f"VIP customer ({threshold}+ LTV)",
@@ -797,8 +827,14 @@ class InsightDetector:
 
         amount = _to_float(event_data.get("amount"))
 
-        # Use configurable threshold for large payment detection
-        if amount >= self.config.large_payment_threshold:
+        # Configurable USD threshold, scaled to the event currency so a
+        # ¥1,500 payment is not "large"; unknown currencies are skipped.
+        threshold = usd_threshold_in(
+            self.config.large_payment_threshold, _event_currency(event_data)
+        )
+        if threshold is None:
+            return None
+        if amount >= threshold:
             return InsightInfo(
                 icon=self.ICONS["large_payment"],
                 text="Large payment received",
