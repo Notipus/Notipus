@@ -5,6 +5,7 @@ and how destination plugins render them (Slack, Telegram).
 """
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from plugins.destinations.slack import SlackDestinationPlugin
@@ -15,6 +16,8 @@ from webhooks.models.rich_notification import (
     PaymentInfo,
     RichNotification,
 )
+from webhooks.services.database_lookup import DatabaseLookupService
+from webhooks.services.event_processor import EventProcessor
 from webhooks.services.insight_detector import InsightDetector
 from webhooks.services.notification_builder import NotificationBuilder
 
@@ -345,3 +348,29 @@ class TestShopifyRefundRendering:
         assert "0.00" not in text
         assert "One-Time" not in text
         assert "Recurring" not in text
+
+
+class TestDashboardStoresAllLifecycleEvents:
+    """Canceled, renewed and refund events reach the recent-activity feed."""
+
+    @pytest.mark.parametrize(
+        ("event_type", "display_type"),
+        [
+            ("subscription_canceled", "subscription"),
+            ("subscription_renewed", "subscription"),
+            ("refund_issued", "payment"),
+        ],
+    )
+    def test_event_is_stored_with_display_type(
+        self, event_type: str, display_type: str
+    ) -> None:
+        """The processor stores the event and it gets a display type."""
+        processor = EventProcessor.__new__(EventProcessor)
+        processor.db_lookup = MagicMock()
+        event = {"type": event_type, "provider": "stripe", "customer_id": "c"}
+
+        processor._store_enriched_record(event, MagicMock(), None)
+
+        processor.db_lookup.store_enriched_record.assert_called_once()
+        lookup = DatabaseLookupService()
+        assert lookup._get_event_display_type(event_type) == display_type
