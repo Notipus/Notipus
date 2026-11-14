@@ -10,8 +10,10 @@
             title="Welcome back{% if user.first_name %}, {{ user.first_name }}{% endif %}"
             subtitle="What's happening across {{ organization.name }}.">
         <c-slot name="actions">
-            {% if organization.subscription_plan == "free" or organization.subscription_status == "trial" %}
-                <c-button href="{% url 'core:upgrade_plan' %}" icon="trending-up">Change plan</c-button>
+            {% if billing_enabled %}
+                {% if organization.subscription_plan == "free" or organization.subscription_status == "trial" %}
+                    <c-button href="{% url 'core:upgrade_plan' %}" icon="trending-up">Change plan</c-button>
+                {% endif %}
             {% endif %}
         </c-slot>
 
@@ -66,9 +68,11 @@
                         Healthy
                     </c-badge>
                 {% endif %}
-                <c-button href="{% url 'core:billing_dashboard' %}"
-                          variant="secondary"
-                          size="sm">Billing</c-button>
+                {% if billing_enabled %}
+                    <c-button href="{% url 'core:billing_dashboard' %}"
+                              variant="secondary"
+                              size="sm">Billing</c-button>
+                {% endif %}
             </c-slot>
 
             <div class="flex flex-col gap-5">
@@ -76,16 +80,20 @@
                     <div class="mb-2 flex items-baseline justify-between gap-2">
                         <span class="text-body font-medium text-content">Events this month</span>
                         <span class="text-body text-content-muted">
-                            {{ rate_limit_info.current_usage|floatformat:0|intcomma }} of
-                            {{ rate_limit_info.limit|floatformat:0|intcomma }}
-                            ({{ usage_percentage|floatformat:1 }}%)
+                            {% if billing_enabled %}
+                                {{ rate_limit_info.current_usage|floatformat:0|intcomma }} of
+                                {{ rate_limit_info.limit|floatformat:0|intcomma }}
+                                ({{ usage_percentage|floatformat:1 }}%)
+                            {% else %}
+                                {{ rate_limit_info.current_usage|floatformat:0|intcomma }}
+                            {% endif %}
                         </span>
                     </div>
                     <c-progress :value="usage_percentage"
                                 label="Monthly event usage"
                                 tone="{% if usage_percentage >= 90 %}danger{% elif usage_percentage >= 75 %}warning{% else %}brand{% endif %}" />
                     <p class="mt-2 text-body text-content-subtle">
-                        {% if organization.subscription_status == "trial" %}
+                        {% if billing_enabled and organization.subscription_status == "trial" %}
                             {{ trial_days_remaining }} day{{ trial_days_remaining|pluralize }} left in your trial.
                         {% else %}
                             Resets {{ rate_limit_info.reset_time|date:"M j" }}.

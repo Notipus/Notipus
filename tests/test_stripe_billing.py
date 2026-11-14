@@ -790,8 +790,12 @@ class TestBillingServiceWebhooks:
             },
         }
 
-        with patch.object(
-            BillingService, "_get_customer_id", return_value="cus_test123"
+        with (
+            patch.object(
+                BillingService, "_get_customer_id", return_value="cus_test123"
+            ),
+            patch.object(BillingService, "sync_workspace_from_stripe"),
+            patch.object(BillingService, "_warn_on_duplicate_live_subscriptions"),
         ):
             with patch("core.models.Workspace.objects.filter") as mock_filter:
                 mock_filter.return_value.update.return_value = 1
@@ -1227,7 +1231,14 @@ class TestStripeAPISubscriptions:
 
         assert stripe_api.has_live_subscription("cus_test123") is False
         statuses = [c.kwargs["status"] for c in mock_list.call_args_list]
-        assert statuses == ["active", "trialing", "past_due"]
+        assert statuses == [
+            "active",
+            "trialing",
+            "past_due",
+            "unpaid",
+            "paused",
+            "incomplete",
+        ]
 
     @patch("core.services.stripe.stripe.Subscription.list")
     def test_has_live_subscription_returns_false_on_error_by_default(
@@ -1629,7 +1640,7 @@ class TestCheckoutBillingInterval:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(
+        response = client.post(
             reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
         )
 
@@ -1660,7 +1671,7 @@ class TestCheckoutBillingInterval:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(
+        response = client.post(
             reverse("core:checkout", args=["pro"]), {"interval": "weekly"}
         )
 
@@ -1691,7 +1702,7 @@ class TestCheckoutBillingInterval:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(
+        response = client.post(
             reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
         )
 
@@ -1722,7 +1733,7 @@ class TestCheckoutBillingInterval:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(
+        response = client.post(
             reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
         )
 
@@ -1760,7 +1771,7 @@ class TestCheckoutBillingInterval:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(
+        response = client.post(
             reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
         )
 
@@ -1791,7 +1802,7 @@ class TestCheckoutBillingInterval:
             "url": "https://checkout.stripe.com/x",
         }
 
-        client.get(reverse("core:checkout", args=["pro"]), {"interval": "yearly"})
+        client.post(reverse("core:checkout", args=["pro"]), {"interval": "yearly"})
 
         metadata = mock_create_session.call_args.kwargs["metadata"]
         assert metadata["interval"] == "yearly"
@@ -1816,7 +1827,7 @@ class TestCheckoutBillingInterval:
         mock_get_or_create.return_value = {"id": "cus_new"}
         mock_get_price.return_value = None
 
-        response = client.get(
+        response = client.post(
             reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
         )
 
@@ -1829,7 +1840,10 @@ class TestCheckoutBillingInterval:
 class TestCheckoutSessionExpiry:
     """A customer never holds two live checkout sessions at once."""
 
-    @patch("core.services.stripe.StripeAPI.expire_open_checkout_sessions")
+    @patch(
+        "core.services.stripe.StripeAPI.reuse_or_expire_open_checkout_sessions",
+        return_value=(None, []),
+    )
     @patch("core.services.stripe.StripeAPI.get_price_by_lookup_key")
     @patch("core.services.stripe.StripeAPI.create_checkout_session")
     @patch("core.services.stripe.StripeAPI.has_live_subscription")
@@ -1866,12 +1880,12 @@ class TestCheckoutSessionExpiry:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(
+        response = client.post(
             reverse("core:checkout", args=["pro"]), {"interval": "yearly"}
         )
 
         assert response.status_code == 302
-        mock_expire.assert_called_once_with("cus_existing")
+        mock_expire.assert_called_once_with("cus_existing", "pro", "yearly")
 
     @patch("core.services.stripe.stripe.checkout.Session")
     def test_expire_open_checkout_sessions_expires_each(
@@ -2176,7 +2190,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
         mock_has_live.return_value = True
         mock_get_price.return_value = {"id": "price_pro_monthly"}
 
-        response = client.get(reverse("core:checkout", args=["pro"]))
+        response = client.post(reverse("core:checkout", args=["pro"]))
 
         assert response.status_code == 302
         assert reverse("core:billing_portal") in response.url
@@ -2206,7 +2220,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(reverse("core:checkout", args=["pro"]))
+        response = client.post(reverse("core:checkout", args=["pro"]))
 
         assert response.status_code == 302
         assert response.url == "https://checkout.stripe.com/x"
@@ -2238,7 +2252,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
         mock_has_live.side_effect = StripeError("Service unavailable")
         mock_get_price.return_value = {"id": "price_pro_monthly"}
 
-        response = client.get(reverse("core:checkout", args=["pro"]))
+        response = client.post(reverse("core:checkout", args=["pro"]))
 
         assert response.status_code == 302
         assert reverse("core:billing_portal") in response.url
@@ -2297,7 +2311,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
             "url": "https://checkout.stripe.com/x",
         }
 
-        response = client.get(reverse("core:checkout", args=["pro"]))
+        response = client.post(reverse("core:checkout", args=["pro"]))
 
         assert response.status_code == 302
         assert response.url == "https://checkout.stripe.com/x"
@@ -2331,7 +2345,7 @@ class TestCheckoutViewActiveSubscriptionGuard:
             "url": "https://checkout.stripe.com/x",
         }
 
-        client.get(reverse("core:checkout", args=["pro"]))
+        client.post(reverse("core:checkout", args=["pro"]))
 
         kwargs = mock_create_session.call_args.kwargs
         idempotency_key = kwargs.get("idempotency_key", "")

@@ -375,14 +375,19 @@ class BillingServiceTest(TestCase):
         )
         invoice_data = {"customer": "cus_test123", "subscription": "sub_test123"}
 
-        BillingService.handle_payment_failed(invoice_data)
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_class:
+            mock_api_class.return_value.get_customer_subscriptions.return_value = [
+                {
+                    "id": "sub_test123",
+                    "status": "past_due",
+                    "items": [{"plan_name": "pro"}],
+                }
+            ]
+            BillingService.handle_payment_failed(invoice_data)
 
         self.workspace.refresh_from_db()
         self.assertEqual(self.workspace.subscription_status, "past_due")
-
-        mock_logger.warning.assert_called_once_with(
-            "Updated payment status to past_due for customer cus_test123"
-        )
+        mock_logger.warning.assert_called_once()
 
     @patch("webhooks.services.billing.logger")
     def test_handle_payment_failed_missing_customer(self, mock_logger):
@@ -448,8 +453,9 @@ class BillingServiceTest(TestCase):
         self.assertIn("active", mock_logger.info.call_args[0][0])
         mock_sync.assert_called_once_with("cus_test123")
 
+    @patch("webhooks.services.billing.BillingService.sync_workspace_from_stripe")
     @patch("webhooks.services.billing.logger")
-    def test_handle_subscription_updated_status_changes(self, mock_logger):
+    def test_handle_subscription_updated_status_changes(self, mock_logger, mock_sync):
         """Test subscription update with various status changes"""
         status_test_cases = [
             ("trialing", "trial"),

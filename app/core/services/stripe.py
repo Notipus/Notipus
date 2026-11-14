@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import stripe
 from django.conf import settings
 from django.db import transaction
+from webhooks.utils.stripe_fields import subscription_period_end
 
 if TYPE_CHECKING:
     from core.models import Workspace
@@ -483,11 +484,7 @@ class StripeAPI:
     def expire_open_checkout_sessions(self, customer_id: str) -> int:
         """Expire all open Checkout Sessions for a customer.
 
-        Called before creating a new checkout session so a customer can
-        never hold two live sessions at once — completing a stale
-        session after paying a newer one would create a second
-        subscription (double-billing). Best-effort: failures are logged
-        and must not block the new checkout.
+        Best-effort: failures are logged and never raised.
 
         Args:
             customer_id: The Stripe customer ID.
@@ -495,7 +492,36 @@ class StripeAPI:
         Returns:
             Number of sessions expired.
         """
-        expired = 0
+        _url, expired = self.reuse_or_expire_open_checkout_sessions(customer_id)
+        return len(expired)
+
+    def reuse_or_expire_open_checkout_sessions(
+        self,
+        customer_id: str,
+        plan_name: str | None = None,
+        interval: str | None = None,
+    ) -> tuple[str | None, list[tuple[str, str]]]:
+        """Keep one open session for this purchase and expire the rest.
+
+        Called before creating a new checkout session so a customer can
+        never hold two live sessions at once — completing a stale
+        session after paying a newer one would create a second
+        subscription (double-billing). An open session for the same plan
+        and interval is kept and its URL returned so the caller can send
+        the customer back to it instead of creating (or replaying) one.
+        Best-effort: failures are logged and must not block the checkout.
+
+        Args:
+            customer_id: The Stripe customer ID.
+            plan_name: Plan being purchased; None expires every session.
+            interval: Billing interval being purchased.
+
+        Returns:
+            (URL of a reusable open session or None, list of the
+            (plan_name, interval) metadata pairs of expired sessions).
+        """
+        reusable_url: str | None = None
+        expired: list[tuple[str, str]] = []
         try:
             sessions = stripe.checkout.Session.list(
                 customer=customer_id, status="open", limit=100, api_key=self.api_key
@@ -507,8 +533,25 @@ class StripeAPI:
                 if not session_id:
                     continue
                 try:
+                    metadata = _metadata_to_dict(_safe_getattr(session, "metadata"))
+                except (TypeError, ValueError):
+                    metadata = {}
+                session_plan = str(metadata.get("plan_name") or "")
+                session_interval = str(metadata.get("interval") or "")
+                url = _safe_getattr(session, "url")
+                if (
+                    reusable_url is None
+                    and plan_name is not None
+                    and session_plan == plan_name
+                    and session_interval == interval
+                    and isinstance(url, str)
+                    and url
+                ):
+                    reusable_url = url
+                    continue
+                try:
                     stripe.checkout.Session.expire(session_id, api_key=self.api_key)
-                    expired += 1
+                    expired.append((session_plan, session_interval))
                 except stripe.StripeError as e:
                     logger.warning(
                         f"Could not expire checkout session {session_id}: {e!s}"
@@ -520,8 +563,10 @@ class StripeAPI:
         except Exception as e:
             logger.error(f"Unexpected error expiring checkout sessions: {e!s}")
         if expired:
-            logger.info(f"Expired {expired} open checkout session(s) for {customer_id}")
-        return expired
+            logger.info(
+                f"Expired {len(expired)} open checkout session(s) for {customer_id}"
+            )
+        return reusable_url, expired
 
     def create_portal_session(
         self,
@@ -762,7 +807,11 @@ class StripeAPI:
     ) -> bool:
         """Return True if the customer has any live subscription on Stripe.
 
-        "Live" = active, trialing, or past_due. Queries each live status
+        "Live" = any status a subscription can still recover from without
+        a new checkout: active, trialing, past_due, unpaid, paused, and
+        incomplete. Creating a second subscription for an unpaid, paused
+        or incomplete one would double-bill once the first is settled, so
+        those customers belong in the billing portal. Queries each status
         with limit=1 and short-circuits on the first hit, so a customer
         with a long history of canceled subscriptions doesn't force the
         caller to paginate the entire history just to answer yes/no.
@@ -782,10 +831,16 @@ class StripeAPI:
                 API call fails. Default callers continue to receive False
                 on error.
         """
-        live_statuses: tuple[Literal["active", "trialing", "past_due"], ...] = (
+        live_statuses: tuple[
+            Literal["active", "trialing", "past_due", "unpaid", "paused", "incomplete"],
+            ...,
+        ] = (
             "active",
             "trialing",
             "past_due",
+            "unpaid",
+            "paused",
+            "incomplete",
         )
         try:
             for status in live_statuses:
@@ -870,7 +925,8 @@ class StripeAPI:
                     "id": sub.id,
                     "status": sub.status,
                     "current_period_start": _safe_getattr(sub, "current_period_start"),
-                    "current_period_end": _safe_getattr(sub, "current_period_end"),
+                    # Top-level on legacy API versions, per item on clover.
+                    "current_period_end": subscription_period_end(sub),
                     # trial_end can diverge from current_period_end (support
                     # extends a trial, custom billing_cycle_anchor), so callers
                     # that compute trial expiry must get the real field.

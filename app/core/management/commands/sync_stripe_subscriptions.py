@@ -13,6 +13,7 @@ from core.models import Workspace
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from webhooks.services.billing import map_stripe_status
+from webhooks.utils.stripe_fields import subscription_period_end
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +360,7 @@ class Command(BaseCommand):
 
         # Keep the billing cycle anchor in sync (the next renewal timestamp),
         # matching the model contract; the prior BillingService path wrote it.
-        billing_anchor = self._safe_get(sub, "current_period_end")
+        billing_anchor = subscription_period_end(sub)
         if billing_anchor is not None:
             update_data["billing_cycle_anchor"] = billing_anchor
 

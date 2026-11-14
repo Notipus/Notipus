@@ -467,6 +467,7 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.workspace_role",
                 "core.context_processors.analytics",
+                "core.context_processors.billing",
             ],
             # Security: Only enable template debug in development
             "debug": DEBUG,

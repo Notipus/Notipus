@@ -28,6 +28,10 @@ from core.services.usage_alerts import send_trial_ending_alert
 from django.core.cache import cache
 from django.db.models import Q
 from webhooks.utils.currency import format_money, from_minor_units
+from webhooks.utils.stripe_fields import (
+    invoice_subscription_id,
+    subscription_period_end,
+)
 from webhooks.utils.subscriptions import (
     subscription_currency,
     subscription_recurring_amount_cents,
@@ -91,6 +95,9 @@ def map_stripe_status(stripe_status: str) -> str:
 _SYNC_LOCK_TIMEOUT_SECONDS = 30
 _SYNC_LOCK_BLOCKING_SECONDS = 10
 
+# Stripe statuses that mean the subscription is still billing.
+_LIVE_STATUSES = frozenset({"active", "trialing", "past_due"})
+
 # Plan keys accepted for Workspace.subscription_plan.
 _VALID_PLAN_KEYS = frozenset(key for key, _label in Workspace.STRIPE_PLANS)
 
@@ -126,6 +133,53 @@ def _first_ga4_delivery(dedup_key: str) -> bool:
     except Exception:
         logger.warning(f"GA4 dedup cache unavailable for {dedup_key}", exc_info=True)
         return True
+
+
+# Billing handlers run inside the Stripe plugin's parse_webhook, before
+# the router's event-level dedup, and only receive the event's data
+# object (not the evt_... id). Side effects that are not idempotent
+# (emails, one-shot analytics) are therefore deduplicated here on a key
+# derived from the object itself. Same TTL as GA4 dedup: it must outlive
+# Stripe's ~3-day redelivery window.
+_SIDE_EFFECT_DEDUP_TTL_SECONDS = 60 * 60 * 24 * 7
+
+
+def _side_effect_done(dedup_key: str) -> bool:
+    """Return whether a billing side effect already ran for this key.
+
+    Fails open (returns False) when the cache is unavailable: a repeated
+    email beats a dropped one, and the cache must never 5xx a webhook.
+
+    Args:
+        dedup_key: Stable identifier of the side effect occurrence.
+
+    Returns:
+        True when the side effect was recorded as done.
+    """
+    try:
+        return bool(cache.get(f"billing_side_effect:{dedup_key}"))
+    except Exception:
+        logger.warning(f"Billing dedup cache unavailable for {dedup_key}")
+        return False
+
+
+def _mark_side_effect_done(dedup_key: str) -> None:
+    """Record that a billing side effect completed.
+
+    Called only after the side effect succeeded, so a failed attempt is
+    retried on redelivery.
+
+    Args:
+        dedup_key: Stable identifier of the side effect occurrence.
+    """
+    try:
+        cache.set(
+            f"billing_side_effect:{dedup_key}",
+            1,
+            timeout=_SIDE_EFFECT_DEDUP_TTL_SECONDS,
+        )
+    except Exception:
+        logger.warning(f"Could not record billing side effect {dedup_key}")
 
 
 class StripeSyncLockTimeout(Exception):
@@ -223,20 +277,53 @@ class BillingService:
     """
 
     @staticmethod
-    def _get_active_subscription(subscriptions: list[dict[str, Any]]) -> dict[str, Any]:
-        """Get the most relevant subscription from a list.
+    def _get_active_subscription(
+        subscriptions: list[dict[str, Any]], stored_id: str = ""
+    ) -> dict[str, Any]:
+        """Get the subscription the workspace's billing state derives from.
 
-        Prefers active/trialing subscriptions over cancelled ones.
+        In order of preference:
+
+        1. The workspace's stored primary subscription, while it is live.
+        2. A live subscription whose product maps to a known plan (a
+           resubscribe after the stored one ended).
+        3. With no stored id (legacy workspaces), any live subscription.
+        4. The stored subscription even though it has ended, so cancelling
+           the primary plan isn't masked by a live add-on (e.g. extra seats).
+        5. Any live subscription, then any plan subscription, then the first.
+
+        Liveness is decided before plan mapping: a live subscription whose
+        product could not be mapped (a failed Product.retrieve, a renamed
+        product) must never lose to a cancelled one.
 
         Args:
-            subscriptions: List of subscription dictionaries.
+            subscriptions: Non-empty list of subscription dictionaries.
+            stored_id: The workspace's recorded stripe_subscription_id.
 
         Returns:
             The most relevant subscription dictionary.
         """
-        for sub in subscriptions:
-            if sub["status"] in ("active", "trialing", "past_due"):
-                return sub
+
+        def maps_to_plan(sub: dict[str, Any]) -> bool:
+            return bool(
+                BillingService._extract_plan_name_from_subscription(sub, warn=False)
+            )
+
+        live = [sub for sub in subscriptions if sub.get("status") in _LIVE_STATUSES]
+        stored = [
+            sub for sub in subscriptions if stored_id and sub.get("id") == stored_id
+        ]
+
+        for group in (
+            [sub for sub in stored if sub in live],
+            [sub for sub in live if maps_to_plan(sub)],
+            [] if stored_id else live,
+            stored,
+            live,
+            [sub for sub in subscriptions if maps_to_plan(sub)],
+        ):
+            if group:
+                return group[0]
         return subscriptions[0]
 
     @staticmethod
@@ -249,13 +336,16 @@ class BillingService:
         to a past timestamp after a ``subscription.updated`` already wrote
         the future one.
 
+        On clover API versions the field moved from the subscription to
+        its items (``items.data[].current_period_end``); both are read.
+
         Args:
             sub_data: Subscription data from a Stripe webhook or API call.
 
         Returns:
             Unix timestamp of the period end, or None if absent.
         """
-        return cast(int | None, sub_data.get("current_period_end"))
+        return cast(int | None, subscription_period_end(sub_data))
 
     @staticmethod
     def _normalize_plan_name(raw_plan_name: str) -> str | None:
@@ -282,7 +372,7 @@ class BillingService:
 
     @staticmethod
     def _extract_plan_name_from_subscription(
-        subscription: dict[str, Any],
+        subscription: dict[str, Any], warn: bool = True
     ) -> str | None:
         """Extract plan name from subscription items.
 
@@ -293,6 +383,7 @@ class BillingService:
 
         Args:
             subscription: Subscription dictionary with items.
+            warn: Log unrecognized plan names (off when only probing).
 
         Returns:
             Plan name string or None.
@@ -309,10 +400,11 @@ class BillingService:
             plan_name = BillingService._normalize_plan_name(raw_name)
             if plan_name:
                 return plan_name
-            logger.warning(
-                f"Unrecognized plan name {raw_name!r} on subscription "
-                f"{subscription.get('id')}; ignoring"
-            )
+            if warn:
+                logger.warning(
+                    f"Unrecognized plan name {raw_name!r} on subscription "
+                    f"{subscription.get('id')}; ignoring"
+                )
 
         return None
 
@@ -331,10 +423,12 @@ class BillingService:
             True if sync was successful, False otherwise.
 
         Raises:
+            stripe.StripeError: Stripe API errors propagate so webhook
+                callers return 5xx and Stripe retries, instead of an
+                outage being logged as "no subscriptions" and treated as
+                a successful sync.
             Exception: Unexpected errors (e.g. database failures) propagate
-                so webhook callers return 5xx and Stripe retries. Only
-                Stripe API errors are swallowed (the sync is best-effort
-                refinement after the primary update already succeeded).
+                for the same reason.
         """
         workspace = Workspace.objects.filter(stripe_customer_id=customer_id).first()
 
@@ -342,20 +436,32 @@ class BillingService:
             logger.warning(f"No workspace found for customer {customer_id} during sync")
             return False
 
+        # raise_on_error: a Stripe outage must not read as "no
+        # subscriptions" and report success. The error propagates so the
+        # webhook returns 5xx and Stripe redelivers the event.
+        stripe_api = StripeAPI()
         try:
-            stripe_api = StripeAPI()
             subscriptions = stripe_api.get_customer_subscriptions(
-                customer_id, status="all"
+                customer_id, status="all", raise_on_error=True
             )
-        except stripe.StripeError as e:
-            logger.error(f"Error syncing workspace from Stripe: {e!s}")
+        except stripe.InvalidRequestError as e:
+            # A permanent 4xx (e.g. the customer was deleted in Stripe) won't
+            # succeed on redelivery; retrying would just 5xx the same event
+            # for days. Transient errors (connection, rate limit, 5xx) still
+            # propagate so Stripe retries them.
+            logger.error(
+                f"Stripe rejected the subscription lookup for customer "
+                f"{customer_id}: {type(e).__name__} (status {e.http_status})"
+            )
             return False
 
         if not subscriptions:
             logger.info(f"No subscriptions found for customer {customer_id}")
             return True
 
-        active_sub = BillingService._get_active_subscription(subscriptions)
+        active_sub = BillingService._get_active_subscription(
+            subscriptions, workspace.stripe_subscription_id
+        )
         stripe_status = active_sub.get("status", "active")
         internal_status = map_stripe_status(stripe_status)
         plan_name = BillingService._extract_plan_name_from_subscription(active_sub)
@@ -376,9 +482,7 @@ class BillingService:
         if stripe_status == "trialing":
             # trial_end is authoritative; current_period_end only usually
             # coincides with it (support-extended trials diverge).
-            trial_end = active_sub.get("trial_end") or active_sub.get(
-                "current_period_end"
-            )
+            trial_end = active_sub.get("trial_end") or billing_anchor
             if trial_end:
                 update_data["trial_end_date"] = datetime.fromtimestamp(
                     trial_end, tz=timezone.utc
@@ -587,11 +691,14 @@ class BillingService:
             Workspace.objects.filter(id=workspace.id).update(
                 subscription_status="cancelled"
             )
-            analytics.track_workspace_event(
-                workspace,
-                "subscription_cancelled",
-                {"plan": workspace.subscription_plan},
-            )
+            # A subscription is deleted once; a redelivered deletion event
+            # must not count a second cancellation.
+            if _first_ga4_delivery(f"subscription_cancelled:{deleted_sub_id}"):
+                analytics.track_workspace_event(
+                    workspace,
+                    "subscription_cancelled",
+                    {"plan": workspace.subscription_plan},
+                )
             logger.info(f"Marked subscription as cancelled for customer {customer_id}")
             # Reconcile: if another live subscription exists on Stripe
             # (e.g. the recorded id was stale), sync restores it.
@@ -735,27 +842,34 @@ class BillingService:
     def _extract_invoice_subscription_id(invoice: dict[str, Any]) -> str | None:
         """Extract the subscription id an invoice belongs to, if any.
 
+        Reads both the legacy top-level ``subscription`` field and the
+        clover location (``parent.subscription_details.subscription``) —
+        on the configured API version only the latter is populated.
+
         Args:
-            invoice: Invoice data from Stripe webhook. The ``subscription``
-                field may be an id string, an expanded object, or absent
-                (one-off invoices).
+            invoice: Invoice data from Stripe webhook. The subscription may
+                be an id string, an expanded object, or absent (one-off
+                invoices).
 
         Returns:
             Subscription id string, or None for one-off invoices.
         """
-        invoice_sub = invoice.get("subscription")
-        if isinstance(invoice_sub, dict):
-            invoice_sub = invoice_sub.get("id")
-        return cast(str | None, invoice_sub) or None
+        return cast(str | None, invoice_subscription_id(invoice))
 
     @staticmethod
     def handle_payment_failed(invoice: dict[str, Any]) -> None:
         """Handle failed payment event.
 
-        Only marks the workspace past_due when the failed invoice belongs
-        to the workspace's own subscription. One-off (ad-hoc/portal)
-        invoices are ignored — nothing would ever restore "active" when
-        such an invoice is later paid, voided, or forgotten.
+        Only acts when the failed invoice belongs to the workspace's own
+        subscription. One-off (ad-hoc/portal) invoices are ignored —
+        nothing would ever restore "active" when such an invoice is later
+        paid, voided, or forgotten.
+
+        The status is re-synced from Stripe rather than written as
+        past_due from the event: a failure event redelivered (or retried)
+        after the customer has since paid would otherwise suspend a
+        workspace whose subscription is active again. When the failure is
+        current, Stripe already reports the subscription as past_due.
 
         Args:
             invoice: Invoice data from Stripe webhook.
@@ -800,12 +914,11 @@ class BillingService:
                 )
                 return
 
-            Workspace.objects.filter(id=workspace.id).update(
-                subscription_status="past_due"
-            )
             logger.warning(
-                f"Updated payment status to past_due for customer {customer_id}"
+                f"Payment failed for customer {customer_id} on subscription "
+                f"{invoice_sub_id}; re-syncing status from Stripe"
             )
+            BillingService.sync_workspace_from_stripe(customer_id)
             BillingService._track_payment_failed(workspace, invoice)
 
     @staticmethod
@@ -859,13 +972,15 @@ class BillingService:
         workspace_id = metadata.get("workspace_id") or metadata.get("organization_id")
         raw_plan_name = metadata.get("plan_name")
 
-        subscription_id = session.get("subscription")
+        subscription = session.get("subscription")
+        subscription_id = (
+            subscription.get("id") if isinstance(subscription, dict) else subscription
+        )
 
-        # Update workspace with new subscription status
-        update_data: dict[str, Any] = {
-            "subscription_status": "active",
-            "payment_method_added": True,
-        }
+        update_data: dict[str, Any] = {"payment_method_added": True}
+        session_status = BillingService._checkout_subscription_status(session)
+        if session_status:
+            update_data["subscription_status"] = session_status
 
         # Checkout metadata is client-influenced: normalize through the
         # STRIPE_PLANS choices and refuse anything unrecognized instead
@@ -939,6 +1054,29 @@ class BillingService:
                 )
 
     @staticmethod
+    def _checkout_subscription_status(session: dict[str, Any]) -> str | None:
+        """Derive the internal status a completed checkout proves, if any.
+
+        Uses the subscription's real status when the session carries an
+        expanded subscription; otherwise a paid session proves "active".
+        A trial checkout (payment_status "no_payment_required") proves
+        nothing on its own, so None is returned and the sync derives the
+        status from Stripe instead of granting "active".
+
+        Args:
+            session: Checkout session data from Stripe webhook.
+
+        Returns:
+            Internal status string, or None when the session doesn't say.
+        """
+        subscription = session.get("subscription")
+        if isinstance(subscription, dict) and subscription.get("status"):
+            return map_stripe_status(str(subscription["status"]))
+        if session.get("payment_status") == "paid":
+            return "active"
+        return None
+
+    @staticmethod
     def _warn_on_duplicate_live_subscriptions(customer_id: str) -> None:
         """Log an error when a customer ends up with 2+ live subscriptions.
 
@@ -1000,6 +1138,17 @@ class BillingService:
             logger.warning(f"Trial ending for unknown customer {customer_id}")
             return
 
+        # customer.subscription.trial_will_end fires once per trial end,
+        # so (subscription, trial_end) identifies the occurrence: a
+        # redelivery of the same event must not email admins again.
+        dedup_key = f"trial_ending:{subscription.get('id') or customer_id}:{trial_end}"
+        if _side_effect_done(dedup_key):
+            logger.info(
+                f"Trial-ending email already sent for customer {customer_id} "
+                f"(trial_end: {trial_end}); skipping redelivered event"
+            )
+            return
+
         logger.info(
             f"Trial ending soon for workspace {ws.name} "
             f"(customer: {customer_id}), trial_end: {trial_end}"
@@ -1012,6 +1161,7 @@ class BillingService:
             # "false") must not send the "delivery will stop" variant.
             will_cancel=subscription.get("cancel_at_period_end") is True,
         )
+        _mark_side_effect_done(dedup_key)
         # TODO: Trigger Slack notification if configured
 
     @staticmethod

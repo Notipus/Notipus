@@ -156,6 +156,9 @@ class RateLimiter:
         "enterprise": 1000000,  # 1 million events/month
     }
 
+    # Monthly limit used when settings.DISABLE_BILLING is on.
+    UNLIMITED: ClassVar[int] = 2**62
+
     def __init__(self) -> None:
         """Initialize the rate limiter."""
         self.cache_timeout = 60 * 60 * 24 * 31  # 31 days for monthly limits
@@ -203,6 +206,10 @@ class RateLimiter:
         Returns:
             Monthly event limit for the organization's plan.
         """
+        if settings.DISABLE_BILLING:
+            # Self-hosted without Notipus billing: there is no plan to
+            # upgrade to, so the monthly quota is effectively unlimited.
+            return self.UNLIMITED
         plan = organization.subscription_plan
         return self.PLAN_LIMITS.get(plan, 20)  # Default to free plan limit
 

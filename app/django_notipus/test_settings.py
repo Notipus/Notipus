@@ -16,7 +16,9 @@ DEBUG = True
 MIDDLEWARE = [m for m in MIDDLEWARE if "whitenoise" not in m]
 
 # Override settings for tests
-DISABLE_BILLING = True
+# Exercise the hosted (billing-enabled) behaviour by default; tests for
+# self-hosted deployments opt in with settings.DISABLE_BILLING = True.
+DISABLE_BILLING = False
 
 # Keep GA4 off in tests regardless of the developer's environment;
 # individual tests opt in via override_settings.

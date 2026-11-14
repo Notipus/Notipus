@@ -13,6 +13,7 @@ Non-admins are redirected to the dashboard (the permission-denied UX used by
 ``require_admin_role`` elsewhere in the codebase), never served the page.
 """
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -29,6 +30,24 @@ GATED_VIEWS: list[tuple[str, list[str]]] = [
     ("core:checkout", ["pro"]),
     ("core:workspace_settings", []),
 ]
+
+# Gated views that only accept POST (state-changing, CSRF-protected).
+POST_ONLY_VIEWS = {"core:checkout"}
+
+
+def _fetch(client: Client, view_name: str, args: list[str]) -> Any:
+    """Request a gated view with the HTTP method it accepts.
+
+    Args:
+        client: Logged-in test client.
+        view_name: URL name of the view.
+        args: Positional reverse() arguments.
+
+    Returns:
+        The response.
+    """
+    url = reverse(view_name, args=args)
+    return client.post(url) if view_name in POST_ONLY_VIEWS else client.get(url)
 
 
 @pytest.mark.django_db
@@ -49,7 +68,7 @@ class TestBillingAndSettingsRequireAdmin:
             view_name: The URL name of the gated view under test.
             args: Positional reverse() arguments for the view.
         """
-        response = authenticated_user_client.get(reverse(view_name, args=args))
+        response = _fetch(authenticated_user_client, view_name, args)
 
         assert response.status_code == 302
         assert response.url == reverse("core:dashboard")
@@ -76,7 +95,7 @@ class TestBillingAndSettingsRequireAdmin:
             "core.services.stripe.StripeAPI.get_or_create_customer",
             return_value=None,
         ):
-            response = authenticated_admin_client.get(reverse(view_name, args=args))
+            response = _fetch(authenticated_admin_client, view_name, args)
 
         # The permission gate redirects denied users to the dashboard; an
         # admin must land anywhere but there (200, or a redirect elsewhere
@@ -104,7 +123,7 @@ class TestBillingAndSettingsRequireAdmin:
             "core.services.stripe.StripeAPI.get_or_create_customer",
             return_value=None,
         ):
-            response = authenticated_owner_client.get(reverse(view_name, args=args))
+            response = _fetch(authenticated_owner_client, view_name, args)
 
         if response.status_code == 302:
             assert response.url != reverse("core:dashboard")
