@@ -7,7 +7,14 @@ and how destination plugins render them (Slack, Telegram).
 from typing import Any
 
 import pytest
+from plugins.destinations.slack import SlackDestinationPlugin
 from plugins.destinations.telegram import TelegramDestinationPlugin
+from webhooks.models.rich_notification import (
+    NotificationSeverity,
+    NotificationType,
+    PaymentInfo,
+    RichNotification,
+)
 from webhooks.services.insight_detector import InsightDetector
 from webhooks.services.notification_builder import NotificationBuilder
 
@@ -214,3 +221,127 @@ class TestFirstOrderConservative:
 
         assert insight is not None
         assert insight.text == "First payment from this customer"
+
+
+def _slack_text(formatted: dict[str, Any]) -> str:
+    """Concatenate every text in a Slack attachment's blocks."""
+    parts: list[str] = []
+    for block in formatted["attachments"][0]["blocks"]:
+        text = block.get("text")
+        if isinstance(text, dict):
+            parts.append(text["text"])
+        for element in block.get("elements", []):
+            if isinstance(element, dict) and isinstance(element.get("text"), str):
+                parts.append(element["text"])
+        for fld in block.get("fields", []):
+            parts.append(fld["text"])
+    return "\n".join(parts)
+
+
+def _order(currency: str, line_items: list[dict[str, Any]]) -> RichNotification:
+    """Return an order notification in ``currency``."""
+    return RichNotification(
+        type=NotificationType.ORDER_CREATED,
+        severity=NotificationSeverity.SUCCESS,
+        headline="New order",
+        headline_icon="cart",
+        provider="shopify",
+        provider_display="Shopify",
+        payment=PaymentInfo(
+            amount=1500.0,
+            currency=currency,
+            order_number="1001",
+            line_items=line_items,
+        ),
+    )
+
+
+class TestEcommerceMoneyFormatting:
+    """Order totals and line items go through format_money."""
+
+    def test_slack_yen_order(self) -> None:
+        """Yen totals and prices render with ¥ and no decimals."""
+        n = _order("JPY", [{"name": "Tea", "quantity": 2, "price": "750"}])
+
+        text = _slack_text(SlackDestinationPlugin().format(n))
+
+        assert "*Amount:* ¥1,500" in text
+        assert "• 2x Tea (¥750)" in text
+        assert "$" not in text
+
+    def test_telegram_yen_order(self) -> None:
+        """Telegram uses the same currency formatting."""
+        n = _order("JPY", [{"name": "Tea", "quantity": 2, "price": "750"}])
+
+        text = TelegramDestinationPlugin().format(n)["text"]
+
+        assert "<b>Amount:</b> ¥1,500" in text
+        assert "• 2x Tea (¥750)" in text
+
+
+def _shopify_refund_event() -> dict[str, Any]:
+    """Return a refund_issued event as the Shopify parser emits it."""
+    return {
+        "type": "refund_issued",
+        "provider": "shopify",
+        "customer_id": "order_820982911946154508",
+        "amount": 25.0,
+        "currency": "USD",
+        "metadata": {
+            "refund_id": 929361462,
+            "order_id": 820982911946154508,
+            "order_ref": "820982911946154508",
+            "line_items": [{"name": "Shirt", "sku": "", "quantity": 1}],
+        },
+    }
+
+
+class TestShopifyRefundRendering:
+    """Refunds get a refund headline, an order ref and no payment badges."""
+
+    def test_refund_headline(self) -> None:
+        """The headline states the formatted refunded amount."""
+        n = _build(_shopify_refund_event(), {"customer_id": "order_1"})
+
+        assert n.headline == "$25.00 refunded for order #820982911946154508"
+
+    def test_refund_headline_without_order(self) -> None:
+        """Without an order reference the headline is just the amount."""
+        event = _shopify_refund_event()
+        event["metadata"] = {}
+        n = _build(event, {"customer_id": "order_1"})
+
+        assert n.headline == "$25.00 refunded"
+
+    def test_refund_order_ref_used_as_order_number(self) -> None:
+        """order_ref fills in for the missing order_number."""
+        n = _build(_shopify_refund_event(), {"customer_id": "order_1"})
+
+        assert n.payment is not None
+        assert n.payment.order_number == "820982911946154508"
+
+    def test_slack_refund_rendering(self) -> None:
+        """Slack shows the order ref, no $0.00 price and no payment badge."""
+        n = _build(_shopify_refund_event(), {"customer_id": "order_1"})
+
+        text = _slack_text(SlackDestinationPlugin().format(n))
+
+        assert "Order #820982911946154508" in text
+        assert "N/A" not in text
+        assert "• 1x Shirt" in text
+        assert "$0.00" not in text
+        assert "One-Time" not in text
+        assert "Recurring" not in text
+
+    def test_telegram_refund_rendering(self) -> None:
+        """Telegram shows the order ref, no $0.00 price and no payment badge."""
+        n = _build(_shopify_refund_event(), {"customer_id": "order_1"})
+
+        text = TelegramDestinationPlugin().format(n)["text"]
+
+        assert "Order #820982911946154508" in text
+        assert "N/A" not in text
+        assert "• 1x Shirt" in text
+        assert "0.00" not in text
+        assert "One-Time" not in text
+        assert "Recurring" not in text

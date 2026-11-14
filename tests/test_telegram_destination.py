@@ -440,7 +440,8 @@ class TestTelegramFormatEcommerceNotification:
             ),
         )
         result = plugin.format(notification)
-        assert "EUR 50.00" in result["text"]
+        assert "1x Widget (€50.00)" in result["text"]
+        assert "$" not in result["text"]
 
 
 class TestTelegramFormatInsight:

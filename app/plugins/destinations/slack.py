@@ -131,6 +131,27 @@ def _coerce_float(value: Any, default: float = 0.0) -> float:
     return result
 
 
+def _coerce_optional_float(value: Any) -> float | None:
+    """Coerce a payload amount to a finite float, or None when absent/invalid.
+
+    Used where a missing value must be omitted rather than shown as 0
+    (e.g. refund line items carry no price).
+
+    Args:
+        value: The value to coerce.
+
+    Returns:
+        The finite float, or None.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 def _truncate_mrkdwn(text: str, max_length: int) -> str:
     """Truncate mrkdwn text without breaking link syntax.
 
@@ -463,6 +484,9 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
             # Check for trial events - show "Trial" badge instead of payment type
             if n.type in TRIAL_NOTIFICATION_TYPES:
                 elements.append("Trial")
+            # A refund is neither a recurring nor a one-time payment
+            elif n.type == NotificationType.REFUND_ISSUED:
+                pass
             # Add payment type (recurring/one-time)
             elif n.is_recurring:
                 if n.billing_interval:
@@ -592,9 +616,12 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         )
         lines = [f":shopping_trolley: *Order #{order_display}*"]
 
-        # Amount (coerce defensively; some providers send amounts as strings)
+        # Amount (coerce defensively; some providers send amounts as strings).
+        # Sanitized because format_money falls back to the raw payload
+        # currency code for unknown currencies.
         amount = _coerce_float(payment.amount)
-        lines.append(f"*Amount:* {safe_mrkdwn(payment.currency)} {amount:,.2f}")
+        money = format_money(amount, payment.currency)
+        lines.append(f"*Amount:* {safe_mrkdwn(money)}")
 
         # Line items (max 5)
         has_many_items = False
@@ -604,10 +631,15 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
                 # qty/price come raw from the webhook and may be strings.
                 qty = _coerce_float(item.get("quantity", 1), default=1.0)
                 name = safe_mrkdwn(str(item.get("name", "Item")))
-                price = _coerce_float(item.get("price", 0))
                 # Render whole quantities without a trailing ".0".
-                qty_display = f"{qty:g}"
-                lines.append(f"• {qty_display}x {name} (${price:.2f})")
+                line = f"• {qty:g}x {name}"
+                # Omit a missing price (refund line items carry none)
+                # rather than claiming the item cost 0.
+                price = _coerce_optional_float(item.get("price"))
+                if price is not None:
+                    item_money = format_money(price, payment.currency)
+                    line += f" ({safe_mrkdwn(item_money)})"
+                lines.append(line)
 
             if len(payment.line_items) > 5:
                 remaining = len(payment.line_items) - 5
