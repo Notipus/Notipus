@@ -289,14 +289,15 @@ class WebhookLoggingTest(TestCase):
         # Check the log message format
         assert "WEBHOOK_LOG [stripe]" in call_args[0][0]
         assert "workspace=test-uuid" in call_args[0][0]
-        # Check extra data contains body
-        assert "body" in call_args[1]["extra"]
-        assert "payment_success" in call_args[1]["extra"]["body"]
+        # The body is customer PII: only its size reaches the log record
+        assert "body" not in call_args[1]["extra"]
+        assert call_args[1]["extra"]["body_size"] == len(request.body)
+        assert "payment_success" not in str(call_args)
 
     @override_settings(LOG_WEBHOOKS=True)
     @patch("webhooks.webhook_router.logger")
     def test_logging_enabled_logs_form_payload(self, mock_logger: Mock) -> None:
-        """Test that form data payloads are logged when enabled."""
+        """Test that form webhooks are logged without their body."""
         payload = b"event=payment_success&customer_id=67890"
         request = self._create_mock_request(
             payload, content_type="application/x-www-form-urlencoded"
@@ -307,8 +308,7 @@ class WebhookLoggingTest(TestCase):
         mock_logger.info.assert_called_once()
         call_args = mock_logger.info.call_args
         assert "WEBHOOK_LOG [chargify]" in call_args[0][0]
-        # Form data is logged as-is since it's not JSON
-        assert "payment_success" in call_args[1]["extra"]["body"]
+        assert "payment_success" not in str(call_args)
 
     @override_settings(LOG_WEBHOOKS=True)
     @patch("webhooks.webhook_router.logger")
@@ -325,20 +325,22 @@ class WebhookLoggingTest(TestCase):
     @override_settings(LOG_WEBHOOKS=True)
     @patch("webhooks.webhook_router.logger")
     def test_logging_handles_decode_errors_gracefully(self, mock_logger: Mock) -> None:
-        """Test that invalid UTF-8 data doesn't break logging."""
-        # Invalid UTF-8 sequence
+        """Test that invalid UTF-8 data doesn't break logging.
+
+        The body is no longer decoded for the log line, so a non-UTF-8
+        body is logged (by size) like any other.
+        """
         request = Mock(spec=HttpRequest)
         request.body = b"\xff\xfe"  # Invalid UTF-8
         request.method = "POST"
         request.path = "/webhook/test/"
         request.headers = {}
 
-        # Should not raise, just log a warning
+        # Should not raise
         _log_webhook_payload(request, "stripe", "test-uuid")
 
-        # Should have logged a warning about failure
-        mock_logger.warning.assert_called_once()
-        assert "Failed to log webhook payload" in mock_logger.warning.call_args[0][0]
+        mock_logger.info.assert_called_once()
+        assert mock_logger.info.call_args[1]["extra"]["body_size"] == 2
 
     @override_settings(LOG_WEBHOOKS=True)
     @patch("webhooks.webhook_router.logger")
