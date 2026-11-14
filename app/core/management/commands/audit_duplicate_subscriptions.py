@@ -18,6 +18,7 @@ import stripe
 from core.models import Workspace
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from webhooks.utils.currency import from_minor_units
 
 LIVE_STATUSES = ("active", "trialing", "past_due")
 
@@ -208,14 +209,21 @@ class Command(BaseCommand):
         """
         amount: str = "?"
         try:
-            items = getattr(sub, "items", None)
-            data = getattr(items, "data", []) if items else []
+            # Key access, not attributes: ``sub.items`` is the dict-style
+            # items() method on Stripe objects, not the subscription items.
+            data = sub["items"]["data"] if "items" in sub else []
             if data:
-                price = getattr(data[0], "price", None)
-                unit = getattr(price, "unit_amount", None) if price else None
-                currency = (getattr(price, "currency", "usd") or "usd").upper()
+                price = data[0]["price"] if "price" in data[0] else None
+                unit = (
+                    price["unit_amount"] if price and "unit_amount" in price else None
+                )
+                currency = str(
+                    (price["currency"] if price and "currency" in price else None)
+                    or "usd"
+                ).upper()
                 if unit is not None:
-                    amount = f"{unit / 100:.2f} {currency}"
+                    # Zero-decimal currencies (JPY) aren't divided by 100.
+                    amount = f"{from_minor_units(unit, currency)} {currency}"
         except Exception:
             amount = "?"
 

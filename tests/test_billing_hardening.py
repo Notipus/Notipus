@@ -812,3 +812,55 @@ class TestDisableBilling:
         response = client.get(reverse("core:dashboard"))
         assert response.status_code == 200
         assert reverse("core:billing_dashboard") in response.content.decode()
+
+
+class TestAuditCommandAmount:
+    """audit_duplicate_subscriptions prints the subscription's real amount."""
+
+    def _sdk_sub(self, unit_amount: int, currency: str) -> Any:
+        """Build a Stripe SDK subscription with one priced item.
+
+        Args:
+            unit_amount: Price in minor units.
+            currency: Lower-case currency code.
+
+        Returns:
+            A stripe.Subscription object.
+        """
+        return stripe.Subscription.construct_from(
+            {
+                "id": "sub_dup",
+                "status": "active",
+                "created": 1700000000,
+                "items": {
+                    "object": "list",
+                    "data": [
+                        {
+                            "id": "si_1",
+                            "price": {
+                                "id": "price_1",
+                                "unit_amount": unit_amount,
+                                "currency": currency,
+                            },
+                        }
+                    ],
+                },
+            },
+            "sk_test",
+        )
+
+    def test_amount_is_read_from_items(self) -> None:
+        """A USD price prints in major units, not "?"."""
+        from core.management.commands.audit_duplicate_subscriptions import Command
+
+        assert Command._compact_sub(self._sdk_sub(2900, "usd"))["amount"] == (
+            "29.00 USD"
+        )
+
+    def test_zero_decimal_currency(self) -> None:
+        """JPY amounts are not divided by 100."""
+        from core.management.commands.audit_duplicate_subscriptions import Command
+
+        assert Command._compact_sub(self._sdk_sub(1000, "jpy"))["amount"] == (
+            "1000 JPY"
+        )
