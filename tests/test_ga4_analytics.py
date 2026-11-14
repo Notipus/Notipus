@@ -845,7 +845,7 @@ class TestWebhookIdentityLinking:
                 "id": "cs_1",
                 "url": "https://checkout.stripe.com/x",
             }
-            response = logged_in_client.get(reverse("core:checkout", args=["pro"]))
+            response = logged_in_client.post(reverse("core:checkout", args=["pro"]))
 
         assert response.status_code == 302
         metadata = mock_api.create_checkout_session.call_args.kwargs["metadata"]

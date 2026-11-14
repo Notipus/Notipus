@@ -42,17 +42,21 @@
                              :featured="plan.recommended"
                              current="{% if plan.id == current_plan %}1{% endif %}">
                     <c-slot name="actions">
-                        <c-button href="{% url 'core:checkout' plan_name=plan.id %}{% if plan.price_yearly %}?interval=yearly{% endif %}"
-                                  variant="{% if plan.recommended %}primary{% else %}secondary{% endif %}"
-                                  block
-                                  class="checkout-link"
-                                  data-checkout-base="{% url 'core:checkout' plan_name=plan.id %}">
-                            {% if plan.is_downgrade %}
-                                Move to {{ plan.name }}
-                            {% else %}
-                                Choose {{ plan.name }}
-                            {% endif %}
-                        </c-button>
+                        <c-form action="{% url 'core:checkout' plan_name=plan.id %}">
+                            <input type="hidden"
+                                   name="interval"
+                                   value="{% if plan.price_yearly %}yearly{% else %}monthly{% endif %}"
+                                   data-checkout-interval>
+                            <c-button type="submit"
+                                      variant="{% if plan.recommended %}primary{% else %}secondary{% endif %}"
+                                      block>
+                                {% if plan.is_downgrade %}
+                                    Move to {{ plan.name }}
+                                {% else %}
+                                    Choose {{ plan.name }}
+                                {% endif %}
+                            </c-button>
+                        </c-form>
                     </c-slot>
                     <c-slot name="features">
                         {% for feature in plan.features %}<c-plan-card.feature>{{ feature }}</c-plan-card.feature>{% endfor %}
@@ -121,8 +125,8 @@
                 document.querySelectorAll("[data-interval-block]").forEach(function(block) {
                     block.classList.toggle("hidden", block.dataset.intervalBlock !== interval);
                 });
-                document.querySelectorAll(".checkout-link[data-checkout-base]").forEach(function(link) {
-                    link.href = link.dataset.checkoutBase + "?interval=" + interval;
+                document.querySelectorAll("[data-checkout-interval]").forEach(function(input) {
+                    input.value = interval;
                 });
             }
 

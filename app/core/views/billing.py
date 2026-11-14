@@ -15,6 +15,7 @@ from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.shortcuts import redirect, render
 from django.utils import timezone
+from django.views.decorators.http import require_POST
 from webhooks.services.rate_limiter import rate_limiter
 
 from .. import analytics
@@ -711,15 +712,20 @@ def _create_checkout_session(
 
 
 @login_required
+@require_POST
 def checkout(
     request: HttpRequest, plan_name: str
 ) -> HttpResponse | HttpResponseRedirect:
     """Create Stripe Checkout Session and redirect to Stripe-hosted checkout.
 
+    POST-only (and therefore CSRF-protected): it creates a Stripe
+    customer and session and expires other open sessions, so a link or
+    image on another site must not be able to trigger it.
+
     Args:
-        request: The HTTP request object. An optional ``interval`` query
-            parameter of "yearly" bills annually; anything else falls
-            back to monthly.
+        request: The HTTP request object. An optional ``interval`` form
+            field of "yearly" bills annually; anything else falls back
+            to monthly.
         plan_name: Name of the plan to checkout (basic, pro, enterprise).
 
     Returns:
@@ -734,7 +740,7 @@ def checkout(
         return redirect_response
     assert workspace is not None
 
-    interval = request.GET.get("interval", "monthly")
+    interval = request.POST.get("interval", "monthly")
     if interval not in ("monthly", "yearly"):
         interval = "monthly"
 

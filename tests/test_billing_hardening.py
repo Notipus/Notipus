@@ -452,7 +452,7 @@ def start_checkout(client: Any, plan: str, interval: str = "monthly") -> Any:
     """
     from django.urls import reverse
 
-    return client.get(reverse("core:checkout", args=[plan]), {"interval": interval})
+    return client.post(reverse("core:checkout", args=[plan]), {"interval": interval})
 
 
 @pytest.fixture
@@ -632,3 +632,53 @@ class TestDuplicateSubscriptionGuard:
         assert response.status_code == 302
         assert response.url.endswith("/billing/portal/")
         create.assert_not_called()
+
+
+class TestCheckoutRequiresPost:
+    """Checkout is a state-changing POST protected by CSRF."""
+
+    def test_get_is_rejected(
+        self, checkout_client: tuple[Any, Workspace], checkout_stripe: MagicMock
+    ) -> None:
+        """A GET (link, image, prefetch) can't start a checkout."""
+        from django.urls import reverse
+
+        client, _ws = checkout_client
+        response = client.get(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 405
+        checkout_stripe.return_value.get_or_create_customer.assert_not_called()
+
+    def test_post_without_csrf_token_is_rejected(
+        self, checkout_client: tuple[Any, Workspace], checkout_stripe: MagicMock
+    ) -> None:
+        """A cross-site POST without the CSRF token is refused."""
+        from django.test import Client
+        from django.urls import reverse
+
+        _client, ws = checkout_client
+        user = ws.members.get().user
+        strict = Client(enforce_csrf_checks=True)
+        strict.force_login(user)
+
+        response = strict.post(reverse("core:checkout", args=["pro"]))
+
+        assert response.status_code == 403
+        checkout_stripe.return_value.get_or_create_customer.assert_not_called()
+
+    def test_upgrade_page_posts_checkout_form(
+        self, checkout_client: tuple[Any, Workspace], checkout_stripe: MagicMock
+    ) -> None:
+        """The upgrade page renders checkout as a POST form with a token."""
+        from django.urls import reverse
+
+        client, _ws = checkout_client
+        checkout_stripe.return_value.list_prices.return_value = []
+        html = client.get(reverse("core:upgrade_plan")).content.decode()
+
+        action = reverse("core:checkout", args=["pro"])
+        assert f'action="{action}"' in html
+        assert 'method="post"' in html
+        assert "csrfmiddlewaretoken" in html
+        assert 'name="interval"' in html
+        assert f'href="{action}' not in html
