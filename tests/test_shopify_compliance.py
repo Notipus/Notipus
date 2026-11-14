@@ -207,7 +207,11 @@ class TestRedaction:
     ) -> None:
         """shop/redact clears stored data and stops future delivery."""
         webhook_key = f"webhook:{workspace.uuid}:order:123"
-        store_record(str(workspace.uuid), webhook_key, {"customer_id": "42"})
+        store_record(
+            str(workspace.uuid),
+            webhook_key,
+            {"customer_id": "42", "provider": "shopify"},
+        )
 
         response = post(
             client, "shopify_shop_redact", "shop/redact", {"shop_domain": SHOP}
@@ -491,3 +495,91 @@ class TestShopDomainCasing:
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
         assert cache.get(webhook_key) is None
+
+
+@pytest.mark.django_db
+class TestShopRedactScope:
+    """shop/redact erases the shop's data, not the whole workspace."""
+
+    def test_other_providers_records_and_people_survive(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """Stripe/Chargify records and unrelated people are kept."""
+        from core.models import Person
+
+        shopify_key = f"webhook:{workspace.uuid}:order:shop"
+        stripe_key = f"webhook:{workspace.uuid}:payment:stripe"
+        store_record(
+            str(workspace.uuid),
+            shopify_key,
+            {
+                "provider": "shopify",
+                "customer_id": "42",
+                "customer_email": "Shopper@Example.com",
+            },
+        )
+        store_record(
+            str(workspace.uuid),
+            stripe_key,
+            {
+                "provider": "stripe",
+                "customer_id": "cus_1",
+                "customer_email": "payer@example.com",
+            },
+        )
+        Person.objects.create(workspace=workspace, email="shopper@example.com")
+        Person.objects.create(workspace=workspace, email="payer@example.com")
+
+        response = post(
+            client, "shopify_shop_redact", "shop/redact", {"shop_domain": SHOP}
+        )
+
+        assert response.status_code == 200
+        assert cache.get(shopify_key) is None
+        assert cache.get(stripe_key) is not None
+        remaining = set(
+            Person.objects.filter(workspace=workspace).values_list("email", flat=True)
+        )
+        assert remaining == {"payer@example.com"}
+
+    def test_every_workspace_connected_to_the_shop_is_erased(
+        self, client: Client, workspace: Workspace
+    ) -> None:
+        """A shop connected to two workspaces is erased from both."""
+        second = Workspace.objects.create(name="Second")
+        Integration.objects.create(
+            workspace=second,
+            integration_type="shopify",
+            oauth_credentials={},
+            integration_settings={"shop_domain": SHOP},
+            is_active=False,
+        )
+        first_key = f"webhook:{workspace.uuid}:order:1"
+        second_key = f"webhook:{second.uuid}:order:2"
+        store_record(str(workspace.uuid), first_key, {"provider": "shopify"})
+        store_record(str(second.uuid), second_key, {"provider": "shopify"})
+
+        response = post(
+            client, "shopify_shop_redact", "shop/redact", {"shop_domain": SHOP}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["workspaces"] == 2
+        assert cache.get(first_key) is None
+        assert cache.get(second_key) is None
+
+    def test_workspaces_resolve_active_first(self, workspace: Workspace) -> None:
+        """Resolution order is deterministic: active integrations first."""
+        from webhooks.compliance_router import _find_workspaces
+
+        Integration.objects.filter(workspace=workspace).update(is_active=False)
+        active = Workspace.objects.create(name="Active")
+        Integration.objects.create(
+            workspace=active,
+            integration_type="shopify",
+            oauth_credentials={},
+            integration_settings={"shop_domain": SHOP},
+            is_active=True,
+        )
+
+        assert _find_workspaces(SHOP) == [active, workspace]

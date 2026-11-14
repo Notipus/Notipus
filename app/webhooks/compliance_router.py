@@ -76,8 +76,8 @@ def _verify_hmac(request: HttpRequest) -> bool:
     return hmac.compare_digest(header.encode("utf-8"), base64.b64encode(digest))
 
 
-def _find_workspace(shop_domain: str | None) -> Workspace | None:
-    """Resolve the workspace for a shop domain.
+def _find_workspaces(shop_domain: str | None) -> list[Workspace]:
+    """Resolve every workspace connected to a shop domain.
 
     Compliance webhooks arrive on a single app-level endpoint, so the
     tenant has to come from the payload. Inactive integrations are
@@ -85,22 +85,35 @@ def _find_workspace(shop_domain: str | None) -> Workspace | None:
     by which point the integration is no longer active but its data
     still needs erasing.
 
+    A shop can be connected to more than one workspace (reconnected
+    elsewhere, or two workspaces for one store). Picking one with an
+    unordered ``.first()`` left the others' data behind; every match is
+    returned instead, workspaces with an active integration first, then
+    in creation order, so the result is deterministic.
+
     Args:
         shop_domain: The myshopify.com domain from the payload.
 
     Returns:
-        The workspace, or None when the shop is unknown.
+        The matching workspaces, possibly empty.
     """
     if not shop_domain:
-        return None
+        return []
     # Lowercased to match: connect stores the normalised domain, so a
     # mixed-case value would find nothing and an erasure request would be
     # acknowledged as having no data while the data still exists.
-    integration = Integration.objects.filter(
-        integration_type="shopify",
-        integration_settings__shop_domain=shop_domain.lower(),
-    ).first()
-    return integration.workspace if integration else None
+    integrations = (
+        Integration.objects.filter(
+            integration_type="shopify",
+            integration_settings__shop_domain=shop_domain.lower(),
+        )
+        .select_related("workspace")
+        .order_by("-is_active", "id")
+    )
+    workspaces: dict[Any, Workspace] = {}
+    for integration in integrations:
+        workspaces.setdefault(integration.workspace_id, integration.workspace)
+    return list(workspaces.values())
 
 
 def _payload(request: HttpRequest) -> dict[str, Any]:
@@ -147,9 +160,9 @@ def shopify_compliance_webhook(request: HttpRequest) -> JsonResponse:
     shop_domain = data.get("shop_domain") or request.headers.get(
         "X-Shopify-Shop-Domain"
     )
-    workspace = _find_workspace(shop_domain)
+    workspaces = _find_workspaces(shop_domain)
 
-    if workspace is None:
+    if not workspaces:
         # Nothing stored for a shop that never connected. Acknowledge so
         # Shopify stops retrying.
         logger.info(
@@ -163,6 +176,41 @@ def shopify_compliance_webhook(request: HttpRequest) -> JsonResponse:
     customer_id = customer.get("id")
     email = customer.get("email")
 
+    # Counts are summed across workspaces; flags (e.g. "delivered") are
+    # true only when true for every workspace.
+    totals: dict[str, Any] = {}
+    for workspace in workspaces:
+        result = _handle_topic(topic, workspace, data, customer_id, email)
+        for name, value in result.items():
+            if isinstance(value, bool):
+                totals[name] = totals.get(name, True) and value
+            else:
+                totals[name] = totals.get(name, 0) + int(value)
+
+    return JsonResponse(
+        {"status": "ok", "workspaces": len(workspaces), **totals}, status=200
+    )
+
+
+def _handle_topic(
+    topic: str,
+    workspace: Workspace,
+    data: dict[str, Any],
+    customer_id: Any,
+    email: str | None,
+) -> dict[str, Any]:
+    """Act on one compliance topic for one workspace.
+
+    Args:
+        topic: The compliance topic.
+        workspace: The workspace to act on.
+        data: The decoded payload.
+        customer_id: Shopify customer id from the payload, if any.
+        email: Customer email from the payload, if any.
+
+    Returns:
+        Counts describing what was done.
+    """
     if topic == APP_UNINSTALLED:
         # The access token dies with the uninstall, so keeping the
         # integration active would leave Notipus calling a store it can
@@ -176,23 +224,20 @@ def shopify_compliance_webhook(request: HttpRequest) -> JsonResponse:
             workspace.uuid,
             deactivated,
         )
-        result = {"integrations": deactivated}
-    elif topic == SHOP_REDACT:
-        result = redact_shop(workspace)
-    elif topic == CUSTOMER_REDACT:
-        result = redact_customer(
+        return {"integrations": deactivated}
+    if topic == SHOP_REDACT:
+        return redact_shop(workspace)
+    if topic == CUSTOMER_REDACT:
+        return redact_customer(
             workspace, str(customer_id) if customer_id else None, email
         )
-    else:
-        # Emailed to the merchant, who is the controller and the only
-        # party able to verify who asked. Failure is logged loudly rather
-        # than returned as an error: a non-2xx would make Shopify retry a
-        # webhook whose problem is on our side, not theirs.
-        result = fulfil_data_request(
-            workspace,
-            str(customer_id) if customer_id else None,
-            email,
-            (data.get("data_request") or {}).get("id"),
-        )
-
-    return JsonResponse({"status": "ok", **result}, status=200)
+    # Emailed to the merchant, who is the controller and the only party
+    # able to verify who asked. Failure is logged loudly rather than
+    # returned as an error: a non-2xx would make Shopify retry a webhook
+    # whose problem is on our side, not theirs.
+    return fulfil_data_request(
+        workspace,
+        str(customer_id) if customer_id else None,
+        email,
+        (data.get("data_request") or {}).get("id"),
+    )
