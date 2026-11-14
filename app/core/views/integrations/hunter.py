@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from core.permissions import has_plan_or_higher
+from core.services.email_enrichment import get_hunter_api_key, set_hunter_api_key
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
@@ -69,7 +70,7 @@ def integrate_hunter(request: HttpRequest) -> HttpResponse | HttpResponseRedirec
     is_connected = bool(
         existing_integration
         and existing_integration.is_active
-        and existing_integration.integration_settings.get("api_key")
+        and get_hunter_api_key(existing_integration)
     )
 
     context: dict[str, Any] = {
@@ -119,19 +120,20 @@ def _handle_hunter_connect(
 
     if existing_integration:
         # Update existing integration (reactivate if needed)
-        existing_integration.integration_settings["api_key"] = api_key
+        set_hunter_api_key(existing_integration, api_key)
         existing_integration.is_active = True
         existing_integration.save()
         logger.info(f"Hunter integration updated for workspace {workspace.name}")
         messages.success(request, "Hunter.io integration connected successfully!")
     else:
-        # Create new integration
-        Integration.objects.create(
+        # Create new integration; the key goes in the encrypted credentials.
+        integration = Integration(
             workspace=workspace,
             integration_type=INTEGRATION_TYPE,
-            integration_settings={"api_key": api_key},
             is_active=True,
         )
+        set_hunter_api_key(integration, api_key)
+        integration.save()
         logger.info(f"Hunter integration created for workspace {workspace.name}")
         messages.success(request, "Hunter.io integration connected successfully!")
 

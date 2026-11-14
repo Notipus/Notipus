@@ -332,6 +332,122 @@ class TestHunterPluginAPICall:
             hunter_plugin.enrich_email("user@some-company.com", "test-api-key")
 
 
+def _hunter_http_error(url: str, status: int) -> Any:
+    """Build a real requests HTTPError whose message embeds ``url``.
+
+    Args:
+        url: The request URL, including any query parameters.
+        status: The HTTP status code of the failed response.
+
+    Returns:
+        A ``requests`` response whose ``raise_for_status`` raises.
+    """
+    import requests
+
+    prepared = requests.Request("GET", url).prepare()
+    response = requests.Response()
+    response.status_code = status
+    response.reason = "Bad Gateway"
+    response.url = prepared.url or url
+    response.request = prepared
+    response.headers = requests.structures.CaseInsensitiveDict()
+    return response
+
+
+class TestHunterPluginSecretHandling:
+    """The Hunter key and customer email stay out of URLs, logs and the UI."""
+
+    @patch("plugins.enrichment.hunter.requests.get")
+    def test_enrich_email_sends_key_as_header(
+        self,
+        mock_get: Mock,
+        hunter_plugin: HunterPlugin,
+        mock_hunter_response: dict,
+    ) -> None:
+        """The API key goes in X-API-KEY, never in the query string."""
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = mock_hunter_response
+        mock_get.return_value.headers = {}
+
+        hunter_plugin.enrich_email("john@example.com", "test-api-key")
+
+        kwargs = mock_get.call_args.kwargs
+        assert "api_key" not in kwargs["params"]
+        assert kwargs["headers"] == {"X-API-KEY": "test-api-key"}
+
+    @patch("plugins.enrichment.hunter.requests.get")
+    def test_verify_api_key_sends_key_as_header(
+        self, mock_get: Mock, hunter_plugin: HunterPlugin
+    ) -> None:
+        """verify_api_key also authenticates via the X-API-KEY header."""
+        mock_get.return_value.status_code = 401
+
+        hunter_plugin.verify_api_key("test-api-key")
+
+        kwargs = mock_get.call_args.kwargs
+        assert "api_key" not in (kwargs.get("params") or {})
+        assert kwargs["headers"] == {"X-API-KEY": "test-api-key"}
+
+    @patch("plugins.enrichment.hunter.requests.get")
+    def test_enrich_email_error_log_omits_url(
+        self,
+        mock_get: Mock,
+        hunter_plugin: HunterPlugin,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A failing API call logs only the error type and status code."""
+        mock_get.return_value = _hunter_http_error(
+            "https://api.hunter.io/v2/people/find"
+            "?email=jane%40example.com&api_key=SECRETKEY123",
+            502,
+        )
+
+        with caplog.at_level("DEBUG", logger="plugins.enrichment.hunter"):
+            result = hunter_plugin.enrich_email("jane@example.com", "SECRETKEY123")
+
+        assert result == {}
+        assert "HTTPError (status 502)" in caplog.text
+        assert "SECRETKEY123" not in caplog.text
+        assert "jane" not in caplog.text
+
+    @patch("plugins.enrichment.hunter.requests.get")
+    def test_verify_api_key_error_message_omits_url(
+        self,
+        mock_get: Mock,
+        hunter_plugin: HunterPlugin,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The message shown in the UI and the log never echo the URL."""
+        mock_get.return_value = _hunter_http_error(
+            "https://api.hunter.io/v2/account?api_key=SECRETKEY123", 502
+        )
+
+        with caplog.at_level("DEBUG", logger="plugins.enrichment.hunter"):
+            ok, message = hunter_plugin.verify_api_key("SECRETKEY123")
+
+        assert ok is False
+        assert message == "Connection error: HTTPError (status 502)"
+        assert "SECRETKEY123" not in caplog.text
+
+    @patch("plugins.enrichment.hunter.requests.get")
+    def test_enrich_email_timeout_log_masks_email(
+        self,
+        mock_get: Mock,
+        hunter_plugin: HunterPlugin,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Timeout warnings keep the domain but not the local part."""
+        import requests
+
+        mock_get.side_effect = requests.exceptions.Timeout()
+
+        with caplog.at_level("DEBUG", logger="plugins.enrichment.hunter"):
+            hunter_plugin.enrich_email("jane.doe@example.com", "test-api-key")
+
+        assert "@example.com" in caplog.text
+        assert "jane.doe" not in caplog.text
+
+
 # ============================================================================
 # PersonInfo Dataclass Tests
 # ============================================================================

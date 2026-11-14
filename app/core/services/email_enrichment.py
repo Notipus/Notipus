@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 from core.models import Integration, Person
 from core.permissions import has_plan_or_higher
 from core.utils import is_timestamp_fresh
+from core.utils.log_privacy import mask_email
 from plugins.enrichment.base_email import (
     EmailNotFoundError,
     GDPRClaimedError,
@@ -33,6 +34,49 @@ if TYPE_CHECKING:
     from core.models import Workspace
 
 logger = logging.getLogger(__name__)
+
+# Key under which the Hunter.io API key is stored in the encrypted
+# Integration.oauth_credentials field.
+HUNTER_API_KEY_FIELD = "api_key"
+
+
+def get_hunter_api_key(integration: Integration) -> str | None:
+    """Return the Hunter.io API key stored on an integration.
+
+    The key lives in the encrypted ``oauth_credentials`` field. Keys saved
+    before that change sat in the plaintext ``integration_settings`` JSON;
+    they are moved by a data migration, but are still read from there as a
+    fallback in case the migration has not run yet.
+
+    Args:
+        integration: The ``hunter_enrichment`` integration.
+
+    Returns:
+        The API key, or None if none is stored.
+    """
+    credentials = integration.oauth_credentials or {}
+    api_key = credentials.get(HUNTER_API_KEY_FIELD)
+    if not api_key:
+        api_key = (integration.integration_settings or {}).get(HUNTER_API_KEY_FIELD)
+    return cast("str | None", api_key) or None
+
+
+def set_hunter_api_key(integration: Integration, api_key: str) -> None:
+    """Store a Hunter.io API key in the integration's encrypted credentials.
+
+    Also removes any legacy plaintext copy from ``integration_settings``.
+    The caller is responsible for saving the integration.
+
+    Args:
+        integration: The ``hunter_enrichment`` integration.
+        api_key: The verified Hunter.io API key.
+    """
+    credentials = dict(integration.oauth_credentials or {})
+    credentials[HUNTER_API_KEY_FIELD] = api_key
+    integration.oauth_credentials = credentials
+    settings_data = dict(integration.integration_settings or {})
+    settings_data.pop(HUNTER_API_KEY_FIELD, None)
+    integration.integration_settings = settings_data
 
 
 class EmailEnrichmentService:
@@ -120,7 +164,7 @@ class EmailEnrichmentService:
             # Check for cached data (scoped to this workspace only)
             person = Person.objects.filter(workspace=workspace, email=email).first()
             if person and self._is_fresh(person):
-                logger.debug(f"Using cached person data for {email}")
+                logger.debug("Using cached person data for %s", mask_email(email))
                 return person
 
             # Call Hunter.io API
@@ -129,23 +173,30 @@ class EmailEnrichmentService:
             if data:
                 # Store/update Person record
                 person = self._update_person(workspace, email, data)
-                logger.info(f"Enriched email {email} from Hunter.io")
+                logger.info("Enriched email %s from Hunter.io", mask_email(email))
                 return person
             else:
-                logger.debug(f"No enrichment data found for {email}")
+                logger.debug("No enrichment data found for %s", mask_email(email))
                 return None
 
         except EmailNotFoundError:
-            logger.debug(f"Hunter.io: No data found for {email}")
+            logger.debug("Hunter.io: No data found for %s", mask_email(email))
             return None
         except GDPRClaimedError:
-            logger.info(f"Hunter.io: GDPR claimed for {email}, not caching")
+            logger.info(
+                "Hunter.io: GDPR claimed for %s, not caching", mask_email(email)
+            )
             return None
         except RateLimitError as e:
             logger.warning(f"Hunter.io rate limit exceeded: {e}")
             return None
         except Exception as e:
-            logger.error(f"Error enriching email {email}: {e!s}", exc_info=True)
+            logger.error(
+                "Error enriching email %s: %s",
+                mask_email(email),
+                type(e).__name__,
+                exc_info=True,
+            )
             return None
 
     def _check_tier(self, workspace: "Workspace") -> bool:
@@ -174,7 +225,7 @@ class EmailEnrichmentService:
                 integration_type="hunter_enrichment",
                 is_active=True,
             )
-            return cast("str | None", integration.integration_settings.get("api_key"))
+            return get_hunter_api_key(integration)
         except Integration.DoesNotExist:
             return None
 
@@ -244,7 +295,7 @@ class EmailEnrichmentService:
         )
 
         action = "Created" if created else "Updated"
-        logger.debug(f"{action} person record for {email}")
+        logger.debug("%s person record for %s", action, mask_email(email))
         return person
 
     def _fit_to_column(self, field_name: str, value: Any) -> str:
@@ -317,7 +368,11 @@ class EmailEnrichmentService:
             return self.enrich_email(email, workspace)
 
         except Exception as e:
-            logger.error(f"Error refreshing enrichment for {email}: {e!s}")
+            logger.error(
+                "Error refreshing enrichment for %s: %s",
+                mask_email(email),
+                type(e).__name__,
+            )
             return None
 
     def get_cached_person(self, email: str, workspace: "Workspace") -> Person | None:
