@@ -17,7 +17,7 @@ from django.utils import timezone
 from django.utils.html import format_html
 
 from . import analytics
-from .models import Company
+from .models import ClassificationFeedback, Company
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -56,6 +56,26 @@ class UserAdmin(DjangoUserAdmin):
     def ga4_user_id(self, obj: User) -> str:
         """Return the GA4 user_id hash this user appears as in reports."""
         return analytics.hashed_user_id(obj)
+
+
+@admin.register(ClassificationFeedback)
+class ClassificationFeedbackAdmin(admin.ModelAdmin):
+    """Votes on LLM industry classifications, to judge providers and models."""
+
+    list_display = [
+        "company",
+        "workspace",
+        "vote",
+        "industry",
+        "corrected_industry",
+        "provider",
+        "model",
+        "updated_at",
+    ]
+    list_filter = ["vote", "provider", "model", "industry"]
+    search_fields = ["company__domain", "company__name", "corrected_industry"]
+    raw_id_fields = ["company", "workspace"]
+    readonly_fields = ["created_at", "updated_at"]
 
 
 @admin.register(Company)

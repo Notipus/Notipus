@@ -9,6 +9,11 @@ domain and public company metadata are sent to the LLM provider.
     python manage.py classify_companies --dry-run
     python manage.py classify_companies --limit 50
     python manage.py classify_companies --force
+    python manage.py classify_companies --disputed
+
+``--disputed`` re-runs companies whose classification got more 👎 than 👍
+votes in notifications and has not been corrected by hand. Human
+corrections are never overwritten.
 """
 
 from typing import Any
@@ -45,6 +50,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Regenerate existing profiles, ignoring cached LLM answers",
         )
+        parser.add_argument(
+            "--disputed",
+            action="store_true",
+            help="Re-run only classifications voted down in notifications",
+        )
 
     def handle(self, *args: Any, **options: Any) -> None:
         """Run the command.
@@ -61,7 +71,13 @@ class Command(BaseCommand):
             )
 
         companies = Company.objects.exclude(domain="").order_by("id")
-        if not options["force"]:
+        bypass_cache = options["force"]
+        if options["disputed"]:
+            companies = companies.filter(
+                brand_info__industry_classification__disputed=True
+            )
+            bypass_cache = True
+        elif not options["force"]:
             companies = companies.exclude(brand_info__has_key="industry_classification")
         if options["limit"]:
             companies = companies[: options["limit"]]
@@ -71,7 +87,7 @@ class Command(BaseCommand):
             if options["dry_run"]:
                 self.stdout.write(company.domain)
                 continue
-            if service.classify_company(company, use_cache=not options["force"]):
+            if service.classify_company(company, use_cache=not bypass_cache):
                 classified += 1
                 industry = company.brand_info["industry_classification"]["industry"]
                 self.stdout.write(f"{company.domain}: {industry}")

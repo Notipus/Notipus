@@ -82,27 +82,19 @@ class TestIsTimestampFresh:
 class TestDomainEnrichmentCacheTTL:
     """Tests that DomainEnrichmentService honors CACHE_DURATION_DAYS."""
 
-    def test_fresh_enrichment_is_not_stale(self) -> None:
-        """Recently blended company data is considered enriched."""
+    def test_company_enrichment_never_expires(self) -> None:
+        """Company enrichment is cached forever (no TTL)."""
+        assert DomainEnrichmentService.CACHE_DURATION_DAYS is None
+
+    @pytest.mark.parametrize("days_ago", [1, 31, 3650])
+    def test_old_enrichment_is_still_fresh(self, days_ago: int) -> None:
+        """Blended company data stays valid however old it is."""
         service = DomainEnrichmentService()
-        ttl = service.CACHE_DURATION_DAYS
-        assert ttl is not None
         company = Company(
-            domain="fresh.com",
-            brand_info={"name": "Fresh", "_blended_at": _iso_days_ago(ttl - 1)},
+            domain="old.com",
+            brand_info={"name": "Old", "_blended_at": _iso_days_ago(days_ago)},
         )
         assert service._has_enrichment(company) is True
-
-    def test_stale_enrichment_needs_refresh(self) -> None:
-        """Company data older than the TTL is treated as needing refresh."""
-        service = DomainEnrichmentService()
-        ttl = service.CACHE_DURATION_DAYS
-        assert ttl is not None
-        company = Company(
-            domain="stale.com",
-            brand_info={"name": "Stale", "_blended_at": _iso_days_ago(ttl + 1)},
-        )
-        assert service._has_enrichment(company) is False
 
     def test_missing_timestamp_needs_refresh(self) -> None:
         """Company data without a blended timestamp needs refresh."""

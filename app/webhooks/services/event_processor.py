@@ -135,7 +135,7 @@ class EventProcessor:
 
         # Build target-agnostic notification
         notification = self.notification_builder.build(
-            enriched_event_data, customer_data, company, person
+            enriched_event_data, customer_data, company, person, workspace=workspace
         )
 
         # Store enriched record for dashboard display
@@ -191,7 +191,7 @@ class EventProcessor:
         person = self._enrich_person(customer_data, workspace)
 
         notification: RichNotification = self.notification_builder.build(
-            enriched_event_data, customer_data, company, person
+            enriched_event_data, customer_data, company, person, workspace=workspace
         )
 
         # Store enriched record for dashboard display

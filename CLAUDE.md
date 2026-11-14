@@ -62,7 +62,7 @@ BasePlugin (abstract)
 - **Sources** (`plugins/sources/`): Webhook providers - validate signatures, parse into normalized events
 - **Destinations** (`plugins/destinations/`): Notification targets - format and deliver
 - **Enrichment** (`plugins/enrichment/`): Domain data enrichment
-- **LLM modules** (`plugins/enrichment/llm_*.py`): OpenAI / Anthropic / Ollama. Subclass `BaseLLMEnrichmentPlugin` and implement only `complete_json()`. The service runs them after the regular providers, round-robin, one per domain, with Brandfetch's data as input. Provider responses go through `DomainEnrichmentService._cached_enrich`; a plugin whose output depends on more than the domain overrides `cache_key()`. Never pass emails to them — domain and public metadata only.
+- **LLM modules** (`plugins/enrichment/llm_*.py`): OpenAI / Anthropic / Ollama. Subclass `BaseLLMEnrichmentPlugin` and implement only `complete_json()`. The service runs them after the regular providers, round-robin, one per domain, with Brandfetch's data as input. Provider responses go through `DomainEnrichmentService._cached_enrich`; a plugin whose output depends on more than the domain overrides `cache_key()`. Never pass emails to them — domain and public metadata only. Company enrichment is cached forever (`CACHE_DURATION_DAYS = None`). Human feedback (`ClassificationFeedback`, `core/services/classification_feedback.py`) must survive regeneration — route new blends through `carry_over_feedback()`.
 
 **Configuration:** Global enablement via `PLUGINS` setting in Django settings. Source and destination plugins also have per-workspace credentials stored in the `Integration` model.
 
