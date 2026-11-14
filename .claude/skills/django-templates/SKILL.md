@@ -103,6 +103,12 @@ against whatever the page has in scope. Django's `{% block %}` tag puts a truthy
 
 `tests/test_design_tokens.py::test_components_bind_every_declared_prop` enforces this.
 
+Named slots leak the same way: inside the component `actions` is just a
+context variable, so an unfilled `<c-slot name="actions">` resolves against
+the page. Declare every named slot with an empty default
+(`<c-vars title="" actions="" footer="" />`); slot content still overrides it.
+`test_components_declare_every_named_slot` enforces this.
+
 ### `:prop="…"` resolves plain variables only
 
 Cotton's dynamic binding does a `Variable` lookup then a literal eval. Filters

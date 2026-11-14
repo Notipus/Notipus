@@ -17,7 +17,7 @@ row after a divider:
       <c-slot name="actions"><c-button type="submit">Save changes</c-button></c-slot>
   </c-form>
 {% endcomment %}
-<c-vars action="" method="post" gap="normal" class="" />
+<c-vars action="" method="post" gap="normal" actions="" class="" />
 
 <form {% if action %}action="{{ action }}"{% endif %}
       method="{{ method }}"
