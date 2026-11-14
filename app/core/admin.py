@@ -224,6 +224,13 @@ class CompanyAdmin(admin.ModelAdmin):
             return None
 
         if request.POST.get("confirm_purge") == "yes":
+            from core.services.enrichment import DomainEnrichmentService
+
+            # Re-enrichment after a purge must fetch fresh data rather than
+            # replay cached provider responses. Human corrections live in
+            # ClassificationFeedback and are re-applied on re-enrichment.
+            for domain in queryset.values_list("domain", flat=True):
+                DomainEnrichmentService.request_refresh(domain)
             count = queryset.update(
                 name="",
                 brand_info={},
@@ -268,6 +275,12 @@ class CompanyAdmin(admin.ModelAdmin):
         # Bulk update to avoid N+1 queries
         if companies_to_update:
             Company.objects.bulk_update(companies_to_update, ["brand_info"])
+
+        # The next enrichment must fetch fresh data, not cached responses.
+        from core.services.enrichment import DomainEnrichmentService
+
+        for company in companies_to_update:
+            DomainEnrichmentService.request_refresh(company.domain)
 
         self.message_user(
             request,

@@ -50,9 +50,13 @@ def industry_feedback(request: HttpRequest, token: str, vote: str) -> HttpRespon
     )
     if company is None or not isinstance(classification, dict):
         raise Http404("Nothing to rate")
+    # Votes always belong to the workspace that received the notification;
+    # links for a deleted workspace stop working.
     workspace = (
         Workspace.objects.filter(pk=workspace_id).first() if workspace_id else None
     )
+    if workspace is None:
+        raise Http404("Invalid or expired link")
 
     context: dict[str, Any] = {
         "company": company,

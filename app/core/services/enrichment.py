@@ -15,6 +15,7 @@ from core.services.logo_storage import get_logo_storage_service
 from core.utils import is_timestamp_fresh
 from django.conf import settings
 from django.core.cache import cache
+from django.db import transaction
 from plugins import PluginRegistry, PluginType
 from plugins.enrichment import BaseEnrichmentPlugin
 from plugins.enrichment.base_llm import BaseLLMEnrichmentPlugin
@@ -152,6 +153,12 @@ class DomainEnrichmentService:
     RESPONSE_CACHE_SECONDS: int | None = None
     LLM_RESPONSE_CACHE_SECONDS: int | None = None
     EMPTY_RESPONSE_CACHE_SECONDS = 6 * 3600
+    # A profile built without any data provider (e.g. Brandfetch was down)
+    # is not kept forever: the providers are retried after this many days.
+    INCOMPLETE_RETRY_DAYS = 1
+    # Set by admin "refresh"/"purge" so the next enrichment of a domain
+    # bypasses cached provider responses.
+    REFRESH_REQUEST_PREFIX = "enrichment:refresh-requested:"
 
     # Cache key for the cross-process round-robin counter over LLM modules.
     LLM_ROUND_ROBIN_KEY = "enrichment:llm_round_robin"
@@ -219,8 +226,11 @@ class DomainEnrichmentService:
                 logger.warning("No plugins available for domain enrichment")
                 return company
 
+            forced = self._consume_refresh_request(domain)
+            use_cache = use_cache and not forced
+
             # Check if we already have enrichment data
-            if not created and self._has_enrichment(company):
+            if not created and not forced and self._has_enrichment(company):
                 # Companies enriched before an LLM module was configured get
                 # their profile once, from the stored Brandfetch data.
                 if self._llm_plugins and not (company.brand_info or {}).get(
@@ -230,12 +240,23 @@ class DomainEnrichmentService:
                 logger.debug(f"Company {domain} already has enrichment data, skipping")
                 return company
 
-            # Collect data from all plugins
-            source_data = self._collect_from_plugins(domain, use_cache=use_cache)
+            # Collect data from all plugins. Data a provider returned before
+            # is reused if it fails now, so a transient outage during a
+            # refresh never throws good data away.
+            previous_sources = (company.brand_info or {}).get("_sources") or {}
+            source_data = self._collect_from_plugins(
+                domain, use_cache=use_cache, previous_sources=previous_sources
+            )
 
             if source_data:
                 # Blend data from all sources
                 blended = self.blender.blend(source_data)
+                for name, entry in previous_sources.items():
+                    reused = isinstance(entry, dict) and source_data.get(
+                        name
+                    ) is entry.get("raw")
+                    if reused and entry.get("fetched_at"):
+                        blended["_sources"][name]["fetched_at"] = entry["fetched_at"]
                 self._update_company(company, blended)
                 logger.info(
                     f"Enriched {domain} from {len(source_data)} sources: "
@@ -267,7 +288,52 @@ class DomainEnrichmentService:
             return False
 
         blended_at = company.brand_info.get("_blended_at")
-        return bool(is_timestamp_fresh(blended_at, self.CACHE_DURATION_DAYS))
+        if not is_timestamp_fresh(blended_at, self.CACHE_DURATION_DAYS):
+            return False
+
+        # An LLM-only profile (no data provider answered) is retried daily
+        # rather than cached forever, so Brandfetch data and logos arrive
+        # once the provider is back or learns the domain.
+        sources = company.brand_info.get("_sources") or {}
+        has_provider_data = any(name not in LLM_SOURCES for name in sources)
+        if self._plugins and not has_provider_data:
+            return bool(is_timestamp_fresh(blended_at, self.INCOMPLETE_RETRY_DAYS))
+        return True
+
+    @classmethod
+    def request_refresh(cls, domain: str) -> None:
+        """Make the next enrichment of ``domain`` skip cached responses.
+
+        Used by the admin refresh and purge actions.
+
+        Args:
+            domain: Company domain.
+        """
+        try:
+            cache.set(f"{cls.REFRESH_REQUEST_PREFIX}{domain}", True, timeout=None)
+        except Exception as e:
+            logger.warning(f"Could not record refresh request for {domain}: {e}")
+
+    def _consume_refresh_request(self, domain: str) -> bool:
+        """Return and clear a pending refresh request for ``domain``."""
+        key = f"{self.REFRESH_REQUEST_PREFIX}{domain}"
+        try:
+            if cache.get(key):
+                cache.delete(key)
+                return True
+        except Exception as e:
+            logger.debug(f"Refresh request lookup failed: {e}")
+        return False
+
+    @staticmethod
+    def _cache_get(key: str) -> dict[str, Any] | None:
+        """Read a cached provider response, tolerating cache outages."""
+        try:
+            cached = cache.get(key)
+        except Exception as e:
+            logger.debug(f"Enrichment cache read failed: {e}")
+            return None
+        return cached if isinstance(cached, dict) else None
 
     def _cached_enrich(
         self,
@@ -278,7 +344,9 @@ class DomainEnrichmentService:
     ) -> dict[str, Any]:
         """Call a plugin, serving and storing its response through the cache.
 
-        Errors are not cached; empty responses are cached briefly.
+        A provider that raises (``ProviderUnavailableError`` for timeouts,
+        rate limits and outages) is not cached; an empty answer ("no data
+        for this domain") is cached briefly.
 
         Args:
             plugin: Plugin to call.
@@ -293,12 +361,8 @@ class DomainEnrichmentService:
         key = f"{self.RESPONSE_CACHE_PREFIX}{plugin.cache_key(domain, context)}"
 
         if use_cache:
-            try:
-                cached = cache.get(key)
-            except Exception as e:
-                logger.debug(f"Enrichment cache read failed: {e}")
-                cached = None
-            if isinstance(cached, dict):
+            cached = self._cache_get(key)
+            if cached is not None:
                 logger.debug(f"Enrichment cache hit for {key}")
                 return cached
 
@@ -325,7 +389,10 @@ class DomainEnrichmentService:
         return data
 
     def _collect_from_plugins(
-        self, domain: str, use_cache: bool = True
+        self,
+        domain: str,
+        use_cache: bool = True,
+        previous_sources: dict[str, Any] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Collect enrichment data from all available plugins.
 
@@ -335,11 +402,14 @@ class DomainEnrichmentService:
         Args:
             domain: Domain to enrich.
             use_cache: Whether cached provider responses may be used.
+            previous_sources: The company's stored ``_sources``; a provider
+                that fails now falls back to its previous answer.
 
         Returns:
             Dict mapping plugin names to their enrichment data.
         """
         source_data: dict[str, dict[str, Any]] = {}
+        previous_sources = previous_sources or {}
 
         for plugin in self._plugins:
             plugin_name = plugin.get_plugin_name()
@@ -350,6 +420,10 @@ class DomainEnrichmentService:
                     logger.debug(f"Got data from plugin '{plugin_name}' for {domain}")
             except Exception as e:
                 logger.warning(f"Plugin '{plugin_name}' failed for {domain}: {e}")
+                previous = previous_sources.get(plugin_name)
+                if isinstance(previous, dict) and previous.get("raw"):
+                    source_data[plugin_name] = previous["raw"]
+                    logger.info(f"Kept previous '{plugin_name}' data for {domain}")
 
         llm_data = self._classify_with_llm(domain, source_data, use_cache=use_cache)
         if llm_data:
@@ -407,6 +481,16 @@ class DomainEnrichmentService:
             return {}
 
         context = self._llm_context(source_data)
+
+        # An answer cached from any module for this exact input is reused
+        # before the rotation picks a module to pay for a new one.
+        if use_cache:
+            for plugin in self._llm_plugins:
+                key = self.RESPONSE_CACHE_PREFIX + plugin.cache_key(domain, context)
+                cached = self._cache_get(key)
+                if cached:
+                    return {plugin.get_plugin_name(): cached}
+
         for plugin in self._llm_rotation():
             plugin_name = plugin.get_plugin_name()
             try:
@@ -445,19 +529,7 @@ class DomainEnrichmentService:
             company: Company model instance to update.
             blended_data: Blended data from DataBlender.
         """
-        updated_fields: list[str] = []
-
-        # Update basic fields from blended data
-        if blended_data.get("name"):
-            company.name = blended_data["name"]
-            updated_fields.append("name")
-
-        # Store full blended data in brand_info, keeping human feedback
-        company.brand_info = carry_over_feedback(company.brand_info, blended_data)
-        updated_fields.append("brand_info")
-
-        # Save with specific fields for performance
-        company.save(update_fields=updated_fields)
+        self._save_brand_info(company, blended_data)
 
         # Download and store logo if available
         logo_url = blended_data.get("logo_url")
@@ -466,6 +538,29 @@ class DomainEnrichmentService:
             logo_service.download_and_store(company, logo_url)
 
         logger.debug(f"Updated company {company.domain} with blended enrichment data")
+
+    @staticmethod
+    def _save_brand_info(company: Company, blended: dict[str, Any]) -> None:
+        """Save regenerated ``brand_info`` without losing concurrent feedback.
+
+        The row is locked and human feedback is re-applied from the
+        ``ClassificationFeedback`` rows inside the same transaction, so a vote
+        cast while providers were being called is never overwritten.
+
+        Args:
+            company: Company to update (refreshed in place).
+            blended: Newly blended ``brand_info``.
+        """
+        with transaction.atomic():
+            locked = Company.objects.select_for_update().get(pk=company.pk)
+            update_fields = ["brand_info"]
+            locked.brand_info = carry_over_feedback(locked.pk, blended)
+            if blended.get("name") and blended["name"] != locked.name:
+                locked.name = blended["name"]
+                update_fields.append("name")
+            locked.save(update_fields=update_fields)
+        company.brand_info = locked.brand_info
+        company.name = locked.name
 
     @property
     def has_llm_modules(self) -> bool:
@@ -512,14 +607,8 @@ class DomainEnrichmentService:
                 blended["_sources"][name]["fetched_at"] = entry["fetched_at"]
         if brand_info.get("_blended_at"):
             blended["_blended_at"] = brand_info["_blended_at"]
-        carry_over_feedback(brand_info, blended)
 
-        company.brand_info = blended
-        update_fields = ["brand_info"]
-        if blended.get("name") and blended["name"] != company.name:
-            company.name = blended["name"]
-            update_fields.append("name")
-        company.save(update_fields=update_fields)
+        self._save_brand_info(company, blended)
         return True
 
     def get_available_plugins(self) -> list[dict[str, Any]]:

@@ -29,7 +29,7 @@ from abc import abstractmethod
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from plugins.enrichment.base import BaseEnrichmentPlugin
+from plugins.enrichment.base import BaseEnrichmentPlugin, ProviderUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -279,8 +279,24 @@ def _clean_text(value: Any, limit: int = MAX_CONTEXT_FIELD_CHARS) -> str | None:
         text = str(value.get("name") or value.get("label") or "")
     else:
         text = str(value)
-    text = redact_emails(" ".join(text.split()))[:limit]
+    # Angle brackets are dropped so stored text can never form a Slack
+    # link or mention, whatever a prompt-injected model or a user sends.
+    text = redact_emails(" ".join(text.split())).replace("<", "").replace(">", "")
+    text = text[:limit]
     return text or None
+
+
+def clean_text(value: Any, limit: int = MAX_CONTEXT_FIELD_CHARS) -> str | None:
+    """Public alias of the free-text cleaner used for model and user input.
+
+    Args:
+        value: Untrusted text.
+        limit: Maximum number of characters to keep.
+
+    Returns:
+        Whitespace-collapsed text without emails or angle brackets, or None.
+    """
+    return _clean_text(value, limit)
 
 
 class BaseLLMEnrichmentPlugin(BaseEnrichmentPlugin):
@@ -403,7 +419,8 @@ class BaseLLMEnrichmentPlugin(BaseEnrichmentPlugin):
                 clean_domain,
                 type(e).__name__,
             )
-            return {}
+            # Transient: the service fails over and does not cache this.
+            raise ProviderUnavailableError(type(e).__name__) from e
 
         profile = self.validate_classification(raw)
         if not profile:

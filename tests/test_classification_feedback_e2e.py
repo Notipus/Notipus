@@ -167,7 +167,8 @@ class TestFeedbackEndToEnd:
 
         assert len(slack_posts) == 1
         first = slack_posts[0]
-        assert "Software & SaaS" in message_text(first)
+        # Slack mrkdwn escapes "&" (displayed as "&" in Slack).
+        assert "Software &amp; SaaS" in message_text(first)
         links = buttons(first)
         assert {"👍 Industry right", "👎 Wrong industry"} <= set(links)
 
@@ -208,7 +209,7 @@ class TestFeedbackEndToEnd:
 
         assert len(slack_posts) == 2
         second = slack_posts[1]
-        assert "Financial Services & Fintech › Payroll" in message_text(second)
+        assert "Financial Services &amp; Fintech › Payroll" in message_text(second)
         assert "👎 Wrong industry" not in buttons(second)
         assert len(llm.calls) == 1
 
