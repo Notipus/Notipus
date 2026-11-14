@@ -175,18 +175,72 @@ class TestCrossTenantMisattribution:
         response = deliver_to_workspace(client, workspace, SHOP_A.upper())
         assert response.status_code == 200
 
-    def test_absent_header_does_not_block_delivery(self, client: Client) -> None:
-        """Not every sender sets the header.
+    def test_absent_header_rejects_app_signed_delivery(self, client: Client) -> None:
+        """An app-signed body without a shop header cannot be bound.
 
-        With nothing to compare, the address alone decides - which is the
-        behaviour that existed before the check was added.
+        Every installed store shares the app secret, so without the header
+        a body captured from any store would be accepted here.
         """
         workspace = make_workspace("A", SHOP_A)
         response = deliver_to_workspace(client, workspace, None)
+        assert response.status_code == 403
+
+    def test_absent_header_allowed_with_merchant_secret(self, client: Client) -> None:
+        """The merchant's own secret already binds the body to the tenant."""
+        workspace = make_workspace("A", SHOP_A, secret="merchant-own-secret")
+        response = deliver_to_workspace(
+            client, workspace, None, secret="merchant-own-secret"
+        )
         assert response.status_code == 200
 
-    def test_unconfigured_shop_does_not_block_delivery(self, client: Client) -> None:
+    def test_signed_body_from_another_shop_is_rejected(self, client: Client) -> None:
+        """A forged header cannot launder another store's signed body."""
+        workspace_b = make_workspace("B", SHOP_B)
+        order = {
+            **ORDER,
+            "order_status_url": f"https://{SHOP_A}/123/orders/abc/authenticate",
+        }
+        raw = json.dumps(order).encode()
+        digest = base64.b64encode(
+            hmac.new(SECRET.encode(), raw, hashlib.sha256).digest()
+        ).decode()
+        response = client.post(
+            reverse(
+                "webhooks:customer_shopify_webhook",
+                kwargs={"organization_uuid": str(workspace_b.uuid)},
+            ),
+            data=raw,
+            content_type="application/json",
+            headers={
+                "x-shopify-topic": "orders/create",
+                "x-shopify-hmac-sha256": digest,
+                "x-shopify-shop-domain": SHOP_B,
+            },
+        )
+        assert response.status_code == 403
+
+    def test_unconfigured_shop_with_merchant_secret_is_delivered(
+        self, client: Client
+    ) -> None:
         """A merchant-registered webhook may have no shop recorded."""
+        workspace = Workspace.objects.create(name="No shop recorded")
+        Integration.objects.create(
+            workspace=workspace,
+            integration_type="shopify",
+            oauth_credentials={},
+            webhook_secret="merchant-own-secret",
+            integration_settings={"enabled_categories": ["orders"]},
+            is_active=True,
+        )
+        response = deliver_to_workspace(
+            client, workspace, SHOP_A, secret="merchant-own-secret"
+        )
+        assert response.status_code == 200
+
+    def test_unconfigured_shop_rejects_app_signed_delivery(
+        self, client: Client
+    ) -> None:
+        """With no secret and no shop, nothing binds an app-signed body."""
         workspace = Workspace.objects.create(name="No shop recorded")
         Integration.objects.create(
             workspace=workspace,
@@ -197,4 +251,4 @@ class TestCrossTenantMisattribution:
             is_active=True,
         )
         response = deliver_to_workspace(client, workspace, SHOP_A)
-        assert response.status_code == 200
+        assert response.status_code == 403
