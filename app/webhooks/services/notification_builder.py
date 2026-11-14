@@ -260,6 +260,24 @@ EVENT_ICON_MAP: dict[str, str] = {
 }
 
 
+def _as_text(value: Any) -> str | None:
+    """Return ``value`` as a string, or None when it is empty.
+
+    Webhook payloads carry identifiers as numbers or strings depending on
+    the provider, while the notification model and every destination
+    formatter treat them as text.
+
+    Args:
+        value: Raw value from event metadata.
+
+    Returns:
+        The value as a string, or None for None or an empty string.
+    """
+    if value is None or value == "":
+        return None
+    return value if isinstance(value, str) else str(value)
+
+
 class NotificationBuilder:
     """Builds RichNotification objects from raw event/customer data.
 
@@ -435,13 +453,15 @@ class NotificationBuilder:
             amount=amount,
             currency=currency,
             interval=interval,
-            plan_name=metadata.get("plan_name"),
-            subscription_id=metadata.get("subscription_id"),
+            plan_name=_as_text(metadata.get("plan_name")),
+            subscription_id=_as_text(metadata.get("subscription_id")),
             payment_method=payment_method,
             card_last4=card_last4,
-            order_number=metadata.get("order_number"),
+            # Providers send some of these as numbers (Shopify's
+            # order_number is an integer); destinations expect text.
+            order_number=_as_text(metadata.get("order_number")),
             line_items=metadata.get("line_items", []),
-            failure_reason=metadata.get("failure_reason"),
+            failure_reason=_as_text(metadata.get("failure_reason")),
         )
 
     def _build_company_info(self, company: Company) -> CompanyInfo:
