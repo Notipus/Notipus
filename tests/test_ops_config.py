@@ -6,9 +6,12 @@ in them would otherwise only surface in deployment.
 
 import re
 from pathlib import Path
+from typing import Any
 
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def test_dockerfile_takes_trusted_proxies_from_the_environment() -> None:
     """uvicorn's trusted proxies are configurable, not hard-coded to "*".
