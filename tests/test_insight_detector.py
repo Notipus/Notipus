@@ -882,7 +882,7 @@ class TestInitialPaymentFailureDetection:
         result = detector._detect_initial_payment_failure(event, {})
 
         assert result is not None
-        assert "attempt #2" in result.text
+        assert "(retry #1)" in result.text
         assert "Next retry" in result.text
 
     def test_no_failure_insight_without_flag(self, detector: InsightDetector) -> None:
@@ -1196,7 +1196,7 @@ class TestFailedAttemptsWithAttemptCount:
     """Test failed attempt detection using Stripe's attempt_count metadata."""
 
     def test_attempt_count_2_shows_retry(self, detector: InsightDetector) -> None:
-        """Test that attempt_count >= 2 shows 'Retry #N'."""
+        """Test that attempt_count 2 (first retry) shows 'Retry #1'."""
         event: dict = {
             "type": "payment_failure",
             "amount": 53.20,
@@ -1210,12 +1210,12 @@ class TestFailedAttemptsWithAttemptCount:
         result = detector.detect(event, customer)
 
         assert result is not None
-        assert "Retry #2" in result.text
+        assert "Retry #1" in result.text
         assert "Next attempt" in result.text
         assert result.icon == "warning"
 
     def test_attempt_count_3_shows_retry(self, detector: InsightDetector) -> None:
-        """Test that attempt_count 3 shows 'Retry #3'."""
+        """Test that attempt_count 3 (second retry) shows 'Retry #2'."""
         event: dict = {
             "type": "payment_failure",
             "amount": 53.20,
@@ -1226,7 +1226,7 @@ class TestFailedAttemptsWithAttemptCount:
         result = detector.detect(event, customer)
 
         assert result is not None
-        assert "Retry #3" in result.text
+        assert "Retry #2" in result.text
 
     def test_attempt_count_1_with_next_retry(self, detector: InsightDetector) -> None:
         """Test attempt_count 1 with next_payment_attempt shows retry date."""
@@ -1297,7 +1297,7 @@ class TestFailedAttemptsWithAttemptCount:
         result = detector.detect(event, customer)
 
         assert result is not None
-        assert "Retry #2" in result.text
+        assert "Retry #1" in result.text
         assert "Next attempt Feb 22" in result.text
 
     def test_invalid_next_attempt_timestamp_does_not_crash(
@@ -1317,7 +1317,7 @@ class TestFailedAttemptsWithAttemptCount:
         result = detector.detect(event, customer)
 
         assert result is not None
-        assert "Retry #2" in result.text
+        assert "Retry #1" in result.text
         assert "Next attempt" not in result.text
 
     def test_invalid_timestamp_attempt_1_falls_back_to_reason(
