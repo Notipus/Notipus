@@ -35,6 +35,49 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Key under which the Hunter.io API key is stored in the encrypted
+# Integration.oauth_credentials field.
+HUNTER_API_KEY_FIELD = "api_key"
+
+
+def get_hunter_api_key(integration: Integration) -> str | None:
+    """Return the Hunter.io API key stored on an integration.
+
+    The key lives in the encrypted ``oauth_credentials`` field. Keys saved
+    before that change sat in the plaintext ``integration_settings`` JSON;
+    they are moved by a data migration, but are still read from there as a
+    fallback in case the migration has not run yet.
+
+    Args:
+        integration: The ``hunter_enrichment`` integration.
+
+    Returns:
+        The API key, or None if none is stored.
+    """
+    credentials = integration.oauth_credentials or {}
+    api_key = credentials.get(HUNTER_API_KEY_FIELD)
+    if not api_key:
+        api_key = (integration.integration_settings or {}).get(HUNTER_API_KEY_FIELD)
+    return cast("str | None", api_key) or None
+
+
+def set_hunter_api_key(integration: Integration, api_key: str) -> None:
+    """Store a Hunter.io API key in the integration's encrypted credentials.
+
+    Also removes any legacy plaintext copy from ``integration_settings``.
+    The caller is responsible for saving the integration.
+
+    Args:
+        integration: The ``hunter_enrichment`` integration.
+        api_key: The verified Hunter.io API key.
+    """
+    credentials = dict(integration.oauth_credentials or {})
+    credentials[HUNTER_API_KEY_FIELD] = api_key
+    integration.oauth_credentials = credentials
+    settings_data = dict(integration.integration_settings or {})
+    settings_data.pop(HUNTER_API_KEY_FIELD, None)
+    integration.integration_settings = settings_data
+
 
 class EmailEnrichmentService:
     """Service for enriching email addresses with person data.
@@ -182,7 +225,7 @@ class EmailEnrichmentService:
                 integration_type="hunter_enrichment",
                 is_active=True,
             )
-            return cast("str | None", integration.integration_settings.get("api_key"))
+            return get_hunter_api_key(integration)
         except Integration.DoesNotExist:
             return None
 
