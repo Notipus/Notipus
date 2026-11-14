@@ -21,6 +21,7 @@ from plugins.sources.base import (
     mask_sensitive_headers,
     signed_content_hash,
 )
+from webhooks.utils.billing_period import billing_period_from_interval
 from webhooks.utils.currency import from_minor_units
 
 logger = logging.getLogger(__name__)
@@ -682,8 +683,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         card_type = data.get("payload[transaction][card_type]", "")
         card_last4 = data.get("payload[transaction][card_last_four]", "")
 
-        # Determine billing period from product handle or interval
-        billing_period = data.get("payload[subscription][product][interval]", "monthly")
+        billing_period = self._billing_period(data)
 
         return {
             "type": "payment_success",
@@ -706,6 +706,27 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             },
             "customer_data": customer_data,
         }
+
+    @staticmethod
+    def _billing_period(data: dict[str, Any]) -> str:
+        """Derive the billing period from the product interval fields.
+
+        Chargify's ``product[interval]`` is a NUMBER of units and
+        ``product[interval_unit]`` the unit ("month" or "day"), so a
+        quarterly product is interval=3, interval_unit=month. Using the
+        number alone rendered "Recurring (1)".
+
+        Args:
+            data: Form data dictionary.
+
+        Returns:
+            Billing period such as "monthly", "quarterly" or "6 months";
+            "monthly" when the payload does not describe the interval.
+        """
+        count = data.get("payload[subscription][product][interval]")
+        # Chargify's default unit is month.
+        unit = data.get("payload[subscription][product][interval_unit]") or "month"
+        return billing_period_from_interval(unit, count) or "monthly"
 
     def _parse_payment_failure(self, data: dict[str, Any]) -> dict[str, Any]:
         """Parse payment_failure webhook data.
@@ -733,8 +754,7 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         card_type = data.get("payload[transaction][card_type]", "")
         card_last4 = data.get("payload[transaction][card_last_four]", "")
 
-        # Determine billing period
-        billing_period = data.get("payload[subscription][product][interval]", "monthly")
+        billing_period = self._billing_period(data)
 
         # Subscription fields are optional: a payment failure for a
         # one-off charge has no subscription id or product name, and

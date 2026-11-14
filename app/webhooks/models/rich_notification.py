@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from webhooks.utils.billing_period import period_months, period_suffix
 from webhooks.utils.currency import format_money
 
 
@@ -247,16 +248,24 @@ class PaymentInfo:
     def get_arr(self) -> float | None:
         """Calculate Annual Recurring Revenue if applicable.
 
+        Uses the real billing period length, so a quarterly or
+        "6 months" interval annualizes by 4 or 2 rather than 12.
+
         Returns:
-            ARR value or None if not a recurring payment.
+            ARR value or None if not a recurring payment with a
+            whole-month period.
         """
-        if self.interval == "monthly":
-            return self.amount * 12
-        elif self.interval == "annual":
-            return self.amount
-        elif self.interval == "quarterly":
-            return self.amount * 4
-        return None
+        months: int | None = period_months(self.interval)
+        if months is None:
+            return None
+        arr: float
+        if 12 % months == 0:
+            # Integer multiplier keeps Decimal amounts working and plain
+            # monthly/annual output identical (amount * 12, amount * 1).
+            arr = self.amount * (12 // months)
+        else:
+            arr = float(self.amount) * 12 / months
+        return arr
 
     def format_amount_with_arr(self) -> str:
         """Format amount with ARR if applicable.
@@ -272,13 +281,12 @@ class PaymentInfo:
         # get_arr() returns None only when the interval is not recurring;
         # an ARR of 0 is still applicable (e.g. a $0 monthly plan), so
         # check for None rather than truthiness.
-        if self.interval == "monthly" and arr is not None:
-            return f"{amount_str}/mo = {format_money(arr, self.currency, 0)} ARR"
-        elif self.interval == "annual" and arr is not None:
-            return f"{amount_str}/yr ARR"
-        elif self.interval == "quarterly" and arr is not None:
-            return f"{amount_str}/qtr = {format_money(arr, self.currency, 0)} ARR"
-        return amount_str
+        if arr is None:
+            return amount_str
+        suffix = period_suffix(self.interval) or ""
+        if period_months(self.interval) == 12:
+            return f"{amount_str}{suffix} ARR"
+        return f"{amount_str}{suffix} = {format_money(arr, self.currency, 0)} ARR"
 
 
 @dataclass

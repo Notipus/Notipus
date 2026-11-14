@@ -20,6 +20,7 @@ from plugins.sources.base import (
     InvalidDataError,
     mask_sensitive_headers,
 )
+from webhooks.utils.billing_period import billing_period_from_interval
 from webhooks.utils.currency import from_minor_units
 from webhooks.utils.subscriptions import (
     subscription_recurring_amount_cents,
@@ -731,13 +732,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         plan = data.get("plan") or {}
         interval = plan.get("interval")
         if interval:
-            interval_map = {
-                "month": "monthly",
-                "year": "annual",
-                "week": "weekly",
-                "day": "daily",
-            }
-            metadata["billing_period"] = interval_map.get(interval, interval)
+            # interval_count matters: month x 3 is quarterly, not monthly.
+            metadata["billing_period"] = billing_period_from_interval(
+                interval, plan.get("interval_count")
+            ) or self.INTERVAL_MAP.get(interval, interval)
 
         # Add plan name if available
         plan_name = plan.get("nickname") or plan.get("name")
@@ -764,9 +762,9 @@ class StripeSourcePlugin(BaseSourcePlugin):
                 metadata["previous_currency"] = currency
                 prev_interval = prev_plan.get("interval")
                 if prev_interval:
-                    metadata["previous_billing_period"] = self.INTERVAL_MAP.get(
-                        prev_interval, prev_interval
-                    )
+                    metadata["previous_billing_period"] = billing_period_from_interval(
+                        prev_interval, prev_plan.get("interval_count")
+                    ) or self.INTERVAL_MAP.get(prev_interval, prev_interval)
 
     def _get_name_from_structured_fields(self, item: dict[str, Any]) -> str | None:
         """Try to get plan name from structured Stripe line item fields.
@@ -914,7 +912,8 @@ class StripeSourcePlugin(BaseSourcePlugin):
         """Extract billing period from structured line item fields.
 
         Checks the old API shape (``plan.interval``) and the prices API
-        shape (``price.recurring.interval``).
+        shape (``price.recurring.interval``), combining the interval with
+        its ``interval_count`` (month x 3 is "quarterly").
 
         Args:
             item: A single line item dict from lines.data[].
@@ -926,7 +925,10 @@ class StripeSourcePlugin(BaseSourcePlugin):
         if isinstance(plan, dict):
             interval = plan.get("interval")
             if interval and interval in self.INTERVAL_MAP:
-                return self.INTERVAL_MAP[interval]
+                return (
+                    billing_period_from_interval(interval, plan.get("interval_count"))
+                    or self.INTERVAL_MAP[interval]
+                )
 
         price = item.get("price")
         if isinstance(price, dict):
@@ -934,7 +936,12 @@ class StripeSourcePlugin(BaseSourcePlugin):
             if isinstance(recurring, dict):
                 interval = recurring.get("interval")
                 if interval and interval in self.INTERVAL_MAP:
-                    return self.INTERVAL_MAP[interval]
+                    return (
+                        billing_period_from_interval(
+                            interval, recurring.get("interval_count")
+                        )
+                        or self.INTERVAL_MAP[interval]
+                    )
 
         return None
 
