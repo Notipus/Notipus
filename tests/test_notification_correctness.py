@@ -644,3 +644,73 @@ class TestActivityIndexAppend:
         records = service.get_recent_webhook_activity("ws-1", days=1)
 
         assert {r["customer_id"] for r in records} == {"cus_0", "cus_1"}
+
+
+class TestSlackTextLimits:
+    """Payload-derived text is truncated to Slack's Block Kit limits."""
+
+    @staticmethod
+    def _long_notification() -> RichNotification:
+        """Build a payment failure with oversized payload-derived text."""
+        return _build(
+            {
+                "type": "subscription_updated",
+                "provider": "stripe",
+                "amount": 10.0,
+                "currency": "USD",
+                "customer_id": "cus_1",
+                "metadata": {
+                    "change_direction": "upgrade",
+                    "plan_name": "Plan " + "x" * 400,
+                    "subscription_id": "sub_" + "9" * 2500,
+                    "failure_reason": "declined " * 500,
+                },
+            },
+            {"email": "ann@example.com"},
+        )
+
+    def test_header_truncated_to_150(self) -> None:
+        """The header plain_text stays within 150 chars and ends in an ellipsis."""
+        blocks = SlackDestinationPlugin().format(self._long_notification())[
+            "attachments"
+        ][0]["blocks"]
+
+        header = blocks[0]
+        assert header["type"] == "header"
+        assert len(header["text"]["text"]) <= 150
+        assert header["text"]["text"].endswith("…")
+
+    def test_section_and_field_limits(self) -> None:
+        """Section text stays <= 3000 and fields <= 2000 characters."""
+        blocks = SlackDestinationPlugin().format(self._long_notification())[
+            "attachments"
+        ][0]["blocks"]
+
+        sections = [b for b in blocks if b["type"] == "section"]
+        fields = [f for b in sections for f in b.get("fields", [])]
+        assert fields
+        assert any(f["text"].endswith("…") for f in fields)
+        assert all(len(f["text"]) <= 2000 for f in fields)
+        texts = [b["text"]["text"] for b in sections if "text" in b]
+        assert any(t.endswith("…") for t in texts)
+        assert all(len(t) <= 3000 for t in texts)
+
+    def test_button_text_limit(self) -> None:
+        """Button labels are capped at 75 characters."""
+        from webhooks.models.rich_notification import ActionButton
+
+        n = _order("USD", [])
+        n.actions = [ActionButton(text="B" * 100, url="https://example.com/")]
+
+        blocks = SlackDestinationPlugin().format(n)["attachments"][0]["blocks"]
+
+        (actions,) = [b for b in blocks if b["type"] == "actions"]
+        assert len(actions["elements"][0]["text"]["text"]) == 75
+
+    def test_short_text_unchanged(self) -> None:
+        """Text within the limits is left exactly as it was."""
+        n = _build(_payment_failure_event(), {"email": "ann@example.com"})
+
+        blocks = SlackDestinationPlugin().format(n)["attachments"][0]["blocks"]
+
+        assert blocks[0]["text"]["text"] == ":x: $49.00 payment failed (retry #1)"

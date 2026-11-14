@@ -180,6 +180,85 @@ def _truncate_mrkdwn(text: str, max_length: int) -> str:
     return cut.rstrip() + "…"
 
 
+# Block Kit text limits (https://api.slack.com/reference/block-kit). A
+# payload over any of them is rejected outright with invalid_blocks, so
+# payload-derived text (plan names, failure reasons, line items) is
+# truncated before sending.
+SLACK_HEADER_TEXT_LIMIT = 150
+SLACK_SECTION_TEXT_LIMIT = 3000
+SLACK_FIELD_TEXT_LIMIT = 2000
+SLACK_CONTEXT_TEXT_LIMIT = 3000
+SLACK_BUTTON_TEXT_LIMIT = 75
+SLACK_ALT_TEXT_LIMIT = 2000
+
+
+def _truncate_plain(text: str, max_length: int) -> str:
+    """Truncate plain text to ``max_length`` characters with an ellipsis.
+
+    Args:
+        text: Plain text.
+        max_length: Maximum length of the result, including the ellipsis.
+
+    Returns:
+        The text unchanged if it fits, otherwise cut and ending in "…".
+    """
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def _limit_text_object(obj: Any, max_length: int) -> None:
+    """Truncate a Block Kit text object in place.
+
+    Args:
+        obj: A text object dict ({"type": "mrkdwn"|"plain_text", "text"}).
+        max_length: Slack's limit for this text object.
+    """
+    if not isinstance(obj, dict) or not isinstance(obj.get("text"), str):
+        return
+    if obj.get("type") == "mrkdwn":
+        obj["text"] = _truncate_mrkdwn(obj["text"], max_length)
+    else:
+        obj["text"] = _truncate_plain(obj["text"], max_length)
+
+
+def _limit_section(block: dict[str, Any]) -> None:
+    """Truncate a section block's text, fields and image alt text in place.
+
+    Args:
+        block: A Slack section block.
+    """
+    _limit_text_object(block.get("text"), SLACK_SECTION_TEXT_LIMIT)
+    for fld in block.get("fields", []):
+        _limit_text_object(fld, SLACK_FIELD_TEXT_LIMIT)
+    accessory = block.get("accessory")
+    if isinstance(accessory, dict) and isinstance(accessory.get("alt_text"), str):
+        accessory["alt_text"] = _truncate_plain(
+            accessory["alt_text"], SLACK_ALT_TEXT_LIMIT
+        )
+
+
+def _enforce_block_limits(blocks: list[dict[str, Any]]) -> None:
+    """Truncate every text in ``blocks`` to its Block Kit limit, in place.
+
+    Args:
+        blocks: Slack blocks about to be sent.
+    """
+    for block in blocks:
+        block_type = block.get("type")
+        if block_type == "header":
+            _limit_text_object(block.get("text"), SLACK_HEADER_TEXT_LIMIT)
+        elif block_type == "section":
+            _limit_section(block)
+        elif block_type == "context":
+            for element in block.get("elements", []):
+                _limit_text_object(element, SLACK_CONTEXT_TEXT_LIMIT)
+        elif block_type == "actions":
+            for element in block.get("elements", []):
+                if isinstance(element, dict):
+                    _limit_text_object(element.get("text"), SLACK_BUTTON_TEXT_LIMIT)
+
+
 # Severity to color mapping
 SEVERITY_COLORS: dict[NotificationSeverity, str] = {
     NotificationSeverity.SUCCESS: "#28a745",  # Green
@@ -277,6 +356,10 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
         # Attribution footer, last so it never pushes content below
         # Slack's "Show more" fold.
         blocks.append(self._format_attribution())
+
+        # Payload-derived text can exceed Block Kit limits, which makes
+        # Slack reject the whole message.
+        _enforce_block_limits(blocks)
 
         # Use attachments format for colored sidebar
         # Top-level "color" is invalid for incoming webhooks
