@@ -30,6 +30,11 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from ..services.email_quota import (
+    DAILY_EMAIL_CAP,
+    INVITATION,
+    consume_daily_email_quota,
+)
 from ..services.mail import send_email
 
 logger = logging.getLogger(__name__)
@@ -142,6 +147,30 @@ def members_list(request: HttpRequest) -> HttpResponse:
     return render(request, "core/members.html.j2", context)
 
 
+def _invite_form_error(
+    email: str, role: str, current_member: WorkspaceMember
+) -> str | None:
+    """Validate the invite form fields.
+
+    Args:
+        email: Normalised invitee email.
+        role: Requested role.
+        current_member: The inviting member.
+
+    Returns:
+        An error message, or None if the fields are valid.
+    """
+    if not email:
+        return "Please enter an email address."
+    valid_roles = [r[0] for r in WorkspaceMember.ROLE_CHOICES]
+    if role not in valid_roles:
+        return "Invalid role selected."
+    # Admins cannot invite owners
+    if role == "owner" and current_member.role != "owner":
+        return "Only owners can invite new owners."
+    return None
+
+
 @login_required
 @admin_required
 @require_POST
@@ -160,20 +189,9 @@ def invite_member(request: HttpRequest) -> HttpResponse:
     email = request.POST.get("email", "").strip().lower()
     role = request.POST.get("role", "user")
 
-    # Validate email
-    if not email:
-        messages.error(request, "Please enter an email address.")
-        return redirect("core:members_list")
-
-    # Validate role
-    valid_roles = [r[0] for r in WorkspaceMember.ROLE_CHOICES]
-    if role not in valid_roles:
-        messages.error(request, "Invalid role selected.")
-        return redirect("core:members_list")
-
-    # Admins cannot invite owners
-    if role == "owner" and current_member.role != "owner":
-        messages.error(request, "Only owners can invite new owners.")
+    form_error = _invite_form_error(email, role, current_member)
+    if form_error:
+        messages.error(request, form_error)
         return redirect("core:members_list")
 
     # Check plan limits
@@ -206,6 +224,16 @@ def invite_member(request: HttpRequest) -> HttpResponse:
             )
             return redirect("core:members_list")
         existing_invitation.delete()
+
+    # Cap invitation emails per workspace per day so the invite form
+    # cannot be used to send mail to arbitrary addresses at volume.
+    if not consume_daily_email_quota(workspace.id, INVITATION):
+        messages.error(
+            request,
+            f"Your workspace has reached today's limit of {DAILY_EMAIL_CAP} "
+            f"invitations. Please try again tomorrow.",
+        )
+        return redirect("core:members_list")
 
     # Create invitation. The DB constraint guards against a concurrent
     # duplicate slipping past the check above.
