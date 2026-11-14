@@ -431,7 +431,9 @@ ACCOUNT_SIGNUP_FIELDS = ["email*", "username*"]
 ACCOUNT_RATE_LIMITS = {"login_failed": "5/300s"}
 
 # Session and logout settings
-ACCOUNT_LOGOUT_ON_GET = True
+# Logout is POST-only (CSRF-protected forms in the nav), so a cross-site
+# link or image cannot sign users out. A GET shows allauth's confirm page.
+ACCOUNT_LOGOUT_ON_GET = False
 ACCOUNT_SESSION_REMEMBER = True
 
 # Login/logout URLs

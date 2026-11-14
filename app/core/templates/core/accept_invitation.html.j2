@@ -36,11 +36,12 @@
                             You are signed in as {{ user.email }}, but the invitation was sent to {{ invitation.email }}.
                             Sign out and sign back in as {{ invitation.email }} to accept it.
                         </c-alert>
-                        <c-button href="{% url 'account_logout' %}?next={{ request.path }}"
-                                  variant="secondary"
-                                  block>
-                            Sign out and use another account
-                        </c-button>
+                        <c-form action="{% url 'account_logout' %}">
+                            <input type="hidden" name="next" value="{{ request.path }}">
+                            <c-button type="submit" variant="secondary" block>
+                                Sign out and use another account
+                            </c-button>
+                        </c-form>
                     {% endif %}
                 {% else %}
                     <c-button href="{% url 'account_login' %}?next={{ request.path }}"
