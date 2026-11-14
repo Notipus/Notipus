@@ -43,7 +43,7 @@ uv run python app/manage.py build_design_tokens --check   # CI gate
 
 ### Core Flow
 ```
-Webhook → Validation (HMAC) → Parsing → Enrichment (Brandfetch) → Formatting → Slack Delivery
+Webhook → Validation (HMAC) → Parsing → Enrichment (Brandfetch, then one LLM module for industry) → Formatting → Slack Delivery
 ```
 
 ### Plugin System (ADR-001)
@@ -62,6 +62,7 @@ BasePlugin (abstract)
 - **Sources** (`plugins/sources/`): Webhook providers - validate signatures, parse into normalized events
 - **Destinations** (`plugins/destinations/`): Notification targets - format and deliver
 - **Enrichment** (`plugins/enrichment/`): Domain data enrichment
+- **LLM modules** (`plugins/enrichment/llm_*.py`): OpenAI / Anthropic / Ollama. Subclass `BaseLLMEnrichmentPlugin` and implement only `complete_json()`. The service runs them after the regular providers, round-robin, one per domain. Never pass emails to them — domain and public metadata only.
 
 **Configuration:** Global enablement via `PLUGINS` setting in Django settings. Source and destination plugins also have per-workspace credentials stored in the `Integration` model.
 

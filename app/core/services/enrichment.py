@@ -4,6 +4,7 @@ This module provides services for enriching company domain data
 with brand information from multiple plugin-based providers.
 """
 
+import itertools
 import logging
 from datetime import datetime, timezone
 from typing import Any, cast
@@ -12,10 +13,16 @@ from core.models import Company
 from core.services.logo_storage import get_logo_storage_service
 from core.utils import is_timestamp_fresh
 from django.conf import settings
+from django.core.cache import cache
 from plugins import PluginRegistry, PluginType
 from plugins.enrichment import BaseEnrichmentPlugin
+from plugins.enrichment.base_llm import BaseLLMEnrichmentPlugin
 
 logger = logging.getLogger(__name__)
+
+# LLM modules, in the order their data is preferred when blending. Only one
+# runs per domain (round-robin), so the order rarely matters in practice.
+LLM_SOURCES: list[str] = ["openai", "anthropic", "ollama"]
 
 
 class DataBlender:
@@ -32,7 +39,10 @@ class DataBlender:
         "logo_url": ["brandfetch", "clearbit"],  # LLM can't provide logos
         # LLM is better for descriptions
         "description": ["openai", "brandfetch", "clearbit"],
-        "industry": ["brandfetch", "clearbit", "openai"],
+        # LLM classification is grounded in Brandfetch data and maps to a
+        # fixed taxonomy, so it is preferred for ICP matching.
+        "industry": [*LLM_SOURCES, "brandfetch", "clearbit"],
+        "industry_classification": LLM_SOURCES,
         "year_founded": ["brandfetch", "clearbit"],
         "employee_count": ["clearbit", "brandfetch"],
         "colors": ["brandfetch"],
@@ -126,11 +136,17 @@ class DomainEnrichmentService:
     # Use refresh_enrichment() to force an immediate update.
     CACHE_DURATION_DAYS: int | None = 30
 
+    # Cache key for the cross-process round-robin counter over LLM modules.
+    LLM_ROUND_ROBIN_KEY = "enrichment:llm_round_robin"
+    # Process-local fallback when the cache backend cannot count.
+    _local_counter = itertools.count()
+
     def __init__(self) -> None:
         """Initialize the enrichment service with plugin registry."""
         self.registry = PluginRegistry.instance()
         self.blender = DataBlender()
         self._plugins: list[BaseEnrichmentPlugin] = []
+        self._llm_plugins: list[BaseLLMEnrichmentPlugin] = []
         self._initialize()
 
     def _initialize(self) -> None:
@@ -141,13 +157,22 @@ class DomainEnrichmentService:
 
         # Get enabled and available enrichment plugins
         # Registry returns BasePlugin but ENRICHMENT type returns BaseEnrichmentPlugin
-        self._plugins = cast(
+        enabled = cast(
             list[BaseEnrichmentPlugin],
             self.registry.get_enabled(PluginType.ENRICHMENT),
         )
+        # LLM modules are not called like regular providers: they run after
+        # them, take their output as context, and share one call per domain.
+        self._llm_plugins = [
+            p for p in enabled if isinstance(p, BaseLLMEnrichmentPlugin)
+        ]
+        self._plugins = [
+            p for p in enabled if not isinstance(p, BaseLLMEnrichmentPlugin)
+        ]
 
-        if self._plugins:
-            plugin_names = [p.get_plugin_name() for p in self._plugins]
+        all_plugins = [*self._plugins, *self._llm_plugins]
+        if all_plugins:
+            plugin_names = [p.get_plugin_name() for p in all_plugins]
             logger.info(f"Initialized enrichment service with plugins: {plugin_names}")
         else:
             logger.warning("No enrichment plugins available")
@@ -171,7 +196,7 @@ class DomainEnrichmentService:
                 domain=domain, defaults={"name": "", "logo_url": "", "brand_info": {}}
             )
 
-            if not self._plugins:
+            if not self._plugins and not self._llm_plugins:
                 logger.warning("No plugins available for domain enrichment")
                 return company
 
@@ -222,6 +247,9 @@ class DomainEnrichmentService:
     def _collect_from_plugins(self, domain: str) -> dict[str, dict[str, Any]]:
         """Collect enrichment data from all available plugins.
 
+        Regular providers run first. Then one LLM module classifies the
+        industry, using the regular providers' data as grounding.
+
         Args:
             domain: Domain to enrich.
 
@@ -240,7 +268,86 @@ class DomainEnrichmentService:
             except Exception as e:
                 logger.warning(f"Plugin '{plugin_name}' failed for {domain}: {e}")
 
+        llm_data = self._classify_with_llm(domain, source_data)
+        if llm_data:
+            source_data.update(llm_data)
+
         return source_data
+
+    def _llm_rotation(self) -> list[BaseLLMEnrichmentPlugin]:
+        """Return LLM modules ordered for this call (round-robin).
+
+        The starting module advances on every call. A shared cache counter
+        spreads load across worker processes; if the cache cannot count
+        (e.g. the dummy backend) a process-local counter is used.
+
+        Returns:
+            All LLM modules, rotated so the next one in turn comes first.
+        """
+        plugins = self._llm_plugins
+        if len(plugins) <= 1:
+            return list(plugins)
+
+        turn: int | None = None
+        try:
+            cache.add(self.LLM_ROUND_ROBIN_KEY, 0, timeout=None)
+            turn = cache.incr(self.LLM_ROUND_ROBIN_KEY)
+        except Exception:
+            turn = None
+        if turn is None:
+            turn = next(self._local_counter)
+
+        start = turn % len(plugins)
+        return plugins[start:] + plugins[:start]
+
+    def _classify_with_llm(
+        self, domain: str, source_data: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Classify the domain's industry with one LLM module.
+
+        Tries modules in round-robin order and stops at the first that
+        returns data, so a failing provider falls over to the next one.
+
+        Args:
+            domain: Domain to classify. Only the domain is sent, never an
+                email address.
+            source_data: Data from regular providers, used as context.
+
+        Returns:
+            ``{plugin_name: data}`` for the module that succeeded, or empty.
+        """
+        if not self._llm_plugins:
+            return {}
+
+        context = self._llm_context(source_data)
+        for plugin in self._llm_rotation():
+            plugin_name = plugin.get_plugin_name()
+            try:
+                data = plugin.enrich_domain(domain, context=context)
+            except Exception as e:
+                logger.warning(f"LLM module '{plugin_name}' failed for {domain}: {e}")
+                continue
+            if data:
+                logger.debug(f"Classified {domain} with LLM module '{plugin_name}'")
+                return {plugin_name: data}
+        return {}
+
+    @staticmethod
+    def _llm_context(source_data: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+        """Pick the grounding data for the LLM.
+
+        Brandfetch is preferred; otherwise the first provider with data.
+        The LLM module itself only reads name, description and industry.
+
+        Args:
+            source_data: Data from regular providers.
+
+        Returns:
+            One provider's data, or None if no provider returned anything.
+        """
+        if "brandfetch" in source_data:
+            return source_data["brandfetch"]
+        return next(iter(source_data.values()), None)
 
     def _update_company(self, company: Company, blended_data: dict[str, Any]) -> None:
         """Update company record with blended enrichment data.
@@ -270,6 +377,53 @@ class DomainEnrichmentService:
             logo_service.download_and_store(company, logo_url)
 
         logger.debug(f"Updated company {company.domain} with blended enrichment data")
+
+    @property
+    def has_llm_modules(self) -> bool:
+        """Whether at least one LLM module is configured."""
+        return bool(self._llm_plugins)
+
+    def classify_company(self, company: Company) -> bool:
+        """Add an LLM industry classification to an already enriched company.
+
+        Reuses the provider data stored in ``brand_info["_sources"]`` as
+        context, so Brandfetch is not called again and the record's freshness
+        timestamp is left alone. Used to backfill existing companies.
+
+        Args:
+            company: Company to classify.
+
+        Returns:
+            True if a classification was stored.
+        """
+        if not self._llm_plugins or not company.domain:
+            return False
+
+        brand_info = dict(company.brand_info or {})
+        sources = brand_info.get("_sources") or {}
+        source_data = {
+            name: entry.get("raw") or {}
+            for name, entry in sources.items()
+            if name not in LLM_SOURCES and isinstance(entry, dict)
+        }
+        llm_data = self._classify_with_llm(company.domain, source_data)
+        if not llm_data:
+            return False
+
+        plugin_name, data = next(iter(llm_data.items()))
+        classification = data["brand_info"]["industry_classification"]
+        brand_info["industry"] = classification["industry"]
+        brand_info["industry_classification"] = classification
+        brand_info["_sources"] = {
+            **{k: v for k, v in sources.items() if k not in LLM_SOURCES},
+            plugin_name: {
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "raw": data,
+            },
+        }
+        company.brand_info = brand_info
+        company.save(update_fields=["brand_info"])
+        return True
 
     def get_available_plugins(self) -> list[dict[str, Any]]:
         """Get information about available plugins.

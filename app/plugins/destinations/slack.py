@@ -698,8 +698,10 @@ class SlackDestinationPlugin(BaseDestinationPlugin):
 
         # Company details line
         details: list[str] = []
-        if company.industry:
-            details.append(company.industry)
+        if company.industry_label:
+            details.append(company.industry_label)
+        if company.segment_label:
+            details.append(company.segment_label)
         if company.year_founded:
             details.append(f"Founded {company.year_founded}")
         if company.employee_count:

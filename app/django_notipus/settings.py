@@ -947,6 +947,35 @@ PLUGINS: dict = {
                 "timeout": 10,  # Request timeout in seconds
             },
         },
+        # LLM modules - industry classification for ICP prioritisation.
+        # Each is available once its key/URL is set; when several are
+        # available they are used round-robin, one call per domain. Only the
+        # domain and public Brandfetch metadata are sent, never emails.
+        "openai": {
+            "enabled": True,
+            "config": {
+                "api_key": os.environ.get("OPENAI_API_KEY", ""),
+                "model": os.environ.get("OPENAI_ENRICHMENT_MODEL", ""),
+                "timeout": 20,
+            },
+        },
+        "anthropic": {
+            "enabled": True,
+            "config": {
+                "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+                "model": os.environ.get("ANTHROPIC_ENRICHMENT_MODEL", ""),
+                "timeout": 20,
+            },
+        },
+        "ollama": {
+            "enabled": True,
+            "config": {
+                "base_url": os.environ.get("OLLAMA_BASE_URL", ""),
+                "api_key": os.environ.get("OLLAMA_API_KEY", ""),
+                "model": os.environ.get("OLLAMA_ENRICHMENT_MODEL", ""),
+                "timeout": 60,
+            },
+        },
         # Future enrichment plugins:
         # "clearbit": {"enabled": False, "priority": 80, "config": {...}},
         # "apollo": {"enabled": False, "priority": 70, "config": {...}},

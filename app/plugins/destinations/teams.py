@@ -228,9 +228,16 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
             facts.extend(self._payment_facts(n.payment))
         if n.company:
             facts.append({"title": "Company", "value": _escape_md(n.company.name)})
-            if n.company.industry:
+            if n.company.industry_label:
                 facts.append(
-                    {"title": "Industry", "value": _escape_md(n.company.industry)}
+                    {
+                        "title": "Industry",
+                        "value": _escape_md(n.company.industry_label),
+                    }
+                )
+            if n.company.segment_label:
+                facts.append(
+                    {"title": "Segment", "value": _escape_md(n.company.segment_label)}
                 )
         if n.customer:
             facts.extend(self._customer_facts(n.customer))

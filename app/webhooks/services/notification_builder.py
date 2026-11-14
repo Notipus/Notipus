@@ -469,10 +469,21 @@ class NotificationBuilder:
                 linkedin_url = link.get("url")
                 break
 
+        classification = brand_info.get("industry_classification") or {}
+        if not isinstance(classification, dict):
+            classification = {}
+
+        industry = brand_info.get("industry")
+        if not isinstance(industry, str):
+            industry = None
+
         return CompanyInfo(
             name=brand_info.get("name") or company.name or company.domain,
             domain=company.domain,
-            industry=brand_info.get("industry"),
+            industry=industry,
+            sub_industry=classification.get("sub_industry") or None,
+            business_model=classification.get("business_model") or None,
+            target_market=classification.get("target_market") or None,
             year_founded=brand_info.get("year_founded"),
             employee_count=brand_info.get("employee_count"),
             description=brand_info.get("description"),
