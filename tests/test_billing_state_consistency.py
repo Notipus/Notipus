@@ -805,22 +805,25 @@ class TestPaymentFailedScoping:
     def test_failed_invoice_for_own_subscription_sets_past_due(
         self, workspace: Workspace
     ) -> None:
-        """The workspace's own subscription invoice failing does mark it
-        past_due."""
+        """The workspace's own subscription invoice failing marks it
+        past_due — via the re-sync, which sees Stripe report past_due."""
         Workspace.objects.filter(id=workspace.id).update(
             stripe_subscription_id="sub_main"
         )
 
-        BillingService.handle_payment_failed(
-            {"customer": CUSTOMER_ID, "subscription": "sub_main"}
-        )
+        with _mock_stripe_api(
+            [{"id": "sub_main", "status": "past_due", "items": [{"plan_name": "pro"}]}]
+        ):
+            BillingService.handle_payment_failed(
+                {"customer": CUSTOMER_ID, "subscription": "sub_main"}
+            )
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "past_due"
 
     @pytest.mark.django_db
     def test_past_due_is_a_valid_status_choice(self, workspace: Workspace) -> None:
-        """past_due is written by handle_payment_failed and must be a
+        """past_due is written on a payment failure and must be a
         valid STATUS_CHOICES entry, or any later full_clean()/save() on
         the workspace would raise. It deliberately does NOT grant
         access: dunning suspends the workspace until payment succeeds."""
@@ -828,9 +831,12 @@ class TestPaymentFailedScoping:
             stripe_subscription_id="sub_main"
         )
 
-        BillingService.handle_payment_failed(
-            {"customer": CUSTOMER_ID, "subscription": "sub_main"}
-        )
+        with _mock_stripe_api(
+            [{"id": "sub_main", "status": "past_due", "items": [{"plan_name": "pro"}]}]
+        ):
+            BillingService.handle_payment_failed(
+                {"customer": CUSTOMER_ID, "subscription": "sub_main"}
+            )
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "past_due"
@@ -847,9 +853,12 @@ class TestPaymentFailedScoping:
             stripe_subscription_id="sub_main"
         )
 
-        BillingService.handle_payment_failed(
-            {"customer": CUSTOMER_ID, "subscription": {"id": "sub_main"}}
-        )
+        with _mock_stripe_api(
+            [{"id": "sub_main", "status": "past_due", "items": [{"plan_name": "pro"}]}]
+        ):
+            BillingService.handle_payment_failed(
+                {"customer": CUSTOMER_ID, "subscription": {"id": "sub_main"}}
+            )
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "past_due"

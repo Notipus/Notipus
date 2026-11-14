@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import stripe
 from django.conf import settings
 from django.db import transaction
+from webhooks.utils.stripe_fields import subscription_period_end
 
 if TYPE_CHECKING:
     from core.models import Workspace
@@ -870,7 +871,8 @@ class StripeAPI:
                     "id": sub.id,
                     "status": sub.status,
                     "current_period_start": _safe_getattr(sub, "current_period_start"),
-                    "current_period_end": _safe_getattr(sub, "current_period_end"),
+                    # Top-level on legacy API versions, per item on clover.
+                    "current_period_end": subscription_period_end(sub),
                     # trial_end can diverge from current_period_end (support
                     # extends a trial, custom billing_cycle_anchor), so callers
                     # that compute trial expiry must get the real field.

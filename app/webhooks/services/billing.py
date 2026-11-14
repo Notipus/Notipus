@@ -28,6 +28,10 @@ from core.services.usage_alerts import send_trial_ending_alert
 from django.core.cache import cache
 from django.db.models import Q
 from webhooks.utils.currency import format_money, from_minor_units
+from webhooks.utils.stripe_fields import (
+    invoice_subscription_id,
+    subscription_period_end,
+)
 from webhooks.utils.subscriptions import (
     subscription_currency,
     subscription_recurring_amount_cents,
@@ -249,13 +253,16 @@ class BillingService:
         to a past timestamp after a ``subscription.updated`` already wrote
         the future one.
 
+        On clover API versions the field moved from the subscription to
+        its items (``items.data[].current_period_end``); both are read.
+
         Args:
             sub_data: Subscription data from a Stripe webhook or API call.
 
         Returns:
             Unix timestamp of the period end, or None if absent.
         """
-        return cast(int | None, sub_data.get("current_period_end"))
+        return cast(int | None, subscription_period_end(sub_data))
 
     @staticmethod
     def _normalize_plan_name(raw_plan_name: str) -> str | None:
@@ -376,9 +383,7 @@ class BillingService:
         if stripe_status == "trialing":
             # trial_end is authoritative; current_period_end only usually
             # coincides with it (support-extended trials diverge).
-            trial_end = active_sub.get("trial_end") or active_sub.get(
-                "current_period_end"
-            )
+            trial_end = active_sub.get("trial_end") or billing_anchor
             if trial_end:
                 update_data["trial_end_date"] = datetime.fromtimestamp(
                     trial_end, tz=timezone.utc
@@ -735,27 +740,34 @@ class BillingService:
     def _extract_invoice_subscription_id(invoice: dict[str, Any]) -> str | None:
         """Extract the subscription id an invoice belongs to, if any.
 
+        Reads both the legacy top-level ``subscription`` field and the
+        clover location (``parent.subscription_details.subscription``) —
+        on the configured API version only the latter is populated.
+
         Args:
-            invoice: Invoice data from Stripe webhook. The ``subscription``
-                field may be an id string, an expanded object, or absent
-                (one-off invoices).
+            invoice: Invoice data from Stripe webhook. The subscription may
+                be an id string, an expanded object, or absent (one-off
+                invoices).
 
         Returns:
             Subscription id string, or None for one-off invoices.
         """
-        invoice_sub = invoice.get("subscription")
-        if isinstance(invoice_sub, dict):
-            invoice_sub = invoice_sub.get("id")
-        return cast(str | None, invoice_sub) or None
+        return cast(str | None, invoice_subscription_id(invoice))
 
     @staticmethod
     def handle_payment_failed(invoice: dict[str, Any]) -> None:
         """Handle failed payment event.
 
-        Only marks the workspace past_due when the failed invoice belongs
-        to the workspace's own subscription. One-off (ad-hoc/portal)
-        invoices are ignored — nothing would ever restore "active" when
-        such an invoice is later paid, voided, or forgotten.
+        Only acts when the failed invoice belongs to the workspace's own
+        subscription. One-off (ad-hoc/portal) invoices are ignored —
+        nothing would ever restore "active" when such an invoice is later
+        paid, voided, or forgotten.
+
+        The status is re-synced from Stripe rather than written as
+        past_due from the event: a failure event redelivered (or retried)
+        after the customer has since paid would otherwise suspend a
+        workspace whose subscription is active again. When the failure is
+        current, Stripe already reports the subscription as past_due.
 
         Args:
             invoice: Invoice data from Stripe webhook.
@@ -800,12 +812,11 @@ class BillingService:
                 )
                 return
 
-            Workspace.objects.filter(id=workspace.id).update(
-                subscription_status="past_due"
-            )
             logger.warning(
-                f"Updated payment status to past_due for customer {customer_id}"
+                f"Payment failed for customer {customer_id} on subscription "
+                f"{invoice_sub_id}; re-syncing status from Stripe"
             )
+            BillingService.sync_workspace_from_stripe(customer_id)
             BillingService._track_payment_failed(workspace, invoice)
 
     @staticmethod

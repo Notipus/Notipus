@@ -783,7 +783,15 @@ class TestPaymentEvents:
         from webhooks.services.billing import BillingService
 
         workspace = _paid_workspace()
-        BillingService.handle_payment_failed(_invoice(attempt_count=2))
+        with patch("webhooks.services.billing.StripeAPI") as mock_api_cls:
+            mock_api_cls.return_value.get_customer_subscriptions.return_value = [
+                {
+                    "id": "sub_main",
+                    "status": "past_due",
+                    "items": [{"plan_name": "pro"}],
+                }
+            ]
+            BillingService.handle_payment_failed(_invoice(attempt_count=2))
 
         workspace.refresh_from_db()
         assert workspace.subscription_status == "past_due"
