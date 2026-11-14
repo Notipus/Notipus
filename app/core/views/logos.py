@@ -12,6 +12,9 @@ from django.views.decorators.cache import cache_control
 
 logger = logging.getLogger(__name__)
 
+# Applied to every logo response; see CompanyLogoView.get.
+LOGO_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+
 
 @method_decorator(
     cache_control(
@@ -78,5 +81,12 @@ class CompanyLogoView(View):
         response["Content-Length"] = len(company.logo_data)
         response["ETag"] = f'"{etag}"'
         response["Last-Modified"] = http_date(company.updated_at.timestamp())
+        # Logos are third-party content served from our own origin, and SVG
+        # may carry script. Opened directly, a scripted SVG would run with
+        # the app's origin; this policy blocks scripts and other fetches
+        # and sandboxes the document. nosniff stops a mislabelled body
+        # being reinterpreted as HTML.
+        response["Content-Security-Policy"] = LOGO_CONTENT_SECURITY_POLICY
+        response["X-Content-Type-Options"] = "nosniff"
 
         return response
