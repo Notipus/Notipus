@@ -15,7 +15,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
-from core.models import Integration, Workspace
+from core.models import Integration, Workspace, WorkspaceMember
 from django.apps import apps as django_apps
 from django.http import JsonResponse
 from django.test import Client, override_settings
@@ -553,6 +553,7 @@ class TestShopifyOAuthCallbackSecret:
             email="oauth@example.com",
         )
         UserProfile.objects.create(user=user, workspace=workspace)
+        WorkspaceMember.objects.create(user=user, workspace=workspace, role="owner")
         return user
 
     def _start_callback(self, client: Client) -> None:

@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from core.models import Integration, UserProfile, Workspace
+from core.models import Integration, UserProfile, Workspace, WorkspaceMember
 from django.contrib.auth.models import User
 from django.test import Client, TestCase
 from django.urls import reverse
@@ -28,6 +28,9 @@ class NotificationSettingsViewsTest(TestCase):
             user=self.user,
             slack_user_id="U123456",
             workspace=self.workspace,
+        )
+        WorkspaceMember.objects.create(
+            user=self.user, workspace=self.workspace, role="owner"
         )
 
         # Notification settings are created automatically via signal
@@ -433,6 +436,9 @@ class StripeIntegrationViewsTest(TestCase):
             user=self.user,
             slack_user_id="U123456",
             workspace=self.workspace,
+        )
+        WorkspaceMember.objects.create(
+            user=self.user, workspace=self.workspace, role="owner"
         )
 
     def test_integrate_stripe_shows_configuration_page(self) -> None:

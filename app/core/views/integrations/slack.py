@@ -17,7 +17,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonRes
 from django.shortcuts import redirect
 from webhooks.services.destination_credentials import record_delivery
 
-from ...models import Integration, UserProfile, Workspace, WorkspaceMember
+from ...models import Integration, Workspace, WorkspaceMember
 from .base import (
     DEFAULT_API_TIMEOUT,
     require_admin_role,
@@ -60,14 +60,8 @@ def _get_admin_workspace(request: HttpRequest) -> Workspace | None:
         .first()
     )
     if member is None:
-        # UserProfile users are treated as owners for backward compatibility.
-        try:
-            profile_workspace: Workspace = UserProfile.objects.get(
-                user=request.user
-            ).workspace
-            return profile_workspace
-        except UserProfile.DoesNotExist:
-            return None
+        # No UserProfile fallback: a removed member keeps their profile.
+        return None
 
     if member.role not in ("owner", "admin"):
         return None
