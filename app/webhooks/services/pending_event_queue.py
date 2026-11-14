@@ -418,15 +418,16 @@ class PendingEventQueue:
                 f"{idempotency_key}"
             )
 
-            # Aggregate events into ONE notification
-            aggregated_event, aggregated_customer = self._aggregate_events(stored_items)
-
-            # Send notification - only delete events if successful
-            success = self._send_notification(
-                aggregated_event, aggregated_customer, provider_name, workspace
+            sent_items, failed_items = self._send_transactions(
+                stored_items, provider_name, workspace
             )
+            success = not failed_items
 
             attempts_key = f"pending_webhook_attempts:{workspace_id}:{idempotency_key}"
+            if not success and sent_items:
+                # Transactions that were delivered must not be resent with
+                # the ones that failed; only the failures stay queued.
+                self._remove_processed_items(key, sent_items)
             if success:
                 # Remove exactly the items that were sent; events appended
                 # by another worker mid-send stay queued for their own cycle.
@@ -448,7 +449,7 @@ class PendingEventQueue:
                     )
                     # Drop only what we tried to send; a mid-send append is
                     # a new group and gets a fresh attempt budget.
-                    remainder = self._remove_processed_items(key, stored_items)
+                    remainder = self._remove_processed_items(key, failed_items)
                     cache.delete(attempts_key)
                     if remainder:
                         self._schedule_processing(
@@ -462,6 +463,38 @@ class PendingEventQueue:
         finally:
             # Always release the lock
             self._release_lock(lock_key)
+
+    def _send_transactions(
+        self,
+        stored_items: list[dict[str, Any]],
+        provider_name: str,
+        workspace: Workspace | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Send one notification per transaction in a pending bucket.
+
+        The subscription and invoice events of one payment merge into one
+        notification; distinct invoices never do.
+
+        Args:
+            stored_items: Items in the pending bucket.
+            provider_name: Name of the provider.
+            workspace: Workspace model instance.
+
+        Returns:
+            Tuple of (items whose notification was delivered, items whose
+            notification failed).
+        """
+        sent_items: list[dict[str, Any]] = []
+        failed_items: list[dict[str, Any]] = []
+        for group in self._partition_transactions(stored_items):
+            aggregated_event, aggregated_customer = self._aggregate_events(group)
+            if self._send_notification(
+                aggregated_event, aggregated_customer, provider_name, workspace
+            ):
+                sent_items.extend(group)
+            else:
+                failed_items.extend(group)
+        return sent_items, failed_items
 
     def _remove_processed_items(
         self, key: str, processed_items: list[dict[str, Any]]
@@ -624,6 +657,105 @@ class PendingEventQueue:
         "attempt_count",
         "next_payment_attempt",
     )
+
+    # Event types whose object is an invoice: the external_id is the
+    # invoice id, and each distinct invoice is its own transaction.
+    INVOICE_EVENT_TYPES: ClassVar[frozenset[str]] = frozenset(
+        {
+            "payment_success",
+            "invoice_paid",
+            "payment_failure",
+            "payment_action_required",
+        }
+    )
+
+    def _transaction_ids(
+        self, event_data: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        """Return the (invoice id, subscription id) an event belongs to.
+
+        Args:
+            event_data: Stored event data.
+
+        Returns:
+            Tuple of invoice id (None for non-invoice events) and
+            subscription id (None when the event carries none).
+        """
+        metadata = event_data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        subscription_id = metadata.get("subscription_id") or None
+        invoice_id = None
+        if event_data.get("type") in self.INVOICE_EVENT_TYPES:
+            invoice_id = metadata.get("invoice_id") or event_data.get("external_id")
+        return (
+            str(invoice_id) if invoice_id else None,
+            str(subscription_id) if subscription_id else None,
+        )
+
+    def _partition_transactions(
+        self, stored_items: list[dict[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
+        """Split a pending bucket into one group per transaction.
+
+        Events without a Stripe idempotency key are bucketed per customer
+        in a 60-second window so a subscription event can pick up the
+        email from its invoice. That window must not merge separate
+        payments: two renewals for one customer ($49 and $999) would
+        otherwise produce one notification for the higher-priority event.
+
+        - Every distinct invoice is its own transaction (invoice.paid and
+          invoice.payment_succeeded for one invoice still merge).
+        - A subscription event joins the invoice of the same
+          subscription, or forms its own group when there is none.
+        - Events carrying neither id join the first group, which keeps
+          the old behaviour for payloads that cannot be told apart.
+
+        Args:
+            stored_items: Items in the pending bucket, in arrival order.
+
+        Returns:
+            Groups of items, each in arrival order. Never empty for a
+            non-empty input.
+        """
+        groups: list[list[int]] = []
+        by_invoice: dict[str, int] = {}
+        by_subscription: dict[str, int] = {}
+        deferred: list[int] = []
+
+        for index, item in enumerate(stored_items):
+            invoice_id, subscription_id = self._transaction_ids(item["event_data"])
+            if not invoice_id:
+                deferred.append(index)
+                continue
+            if invoice_id not in by_invoice:
+                by_invoice[invoice_id] = len(groups)
+                groups.append([])
+            group_index = by_invoice[invoice_id]
+            groups[group_index].append(index)
+            if subscription_id:
+                by_subscription.setdefault(subscription_id, group_index)
+
+        unkeyed: list[int] = []
+        for index in deferred:
+            _, subscription_id = self._transaction_ids(
+                stored_items[index]["event_data"]
+            )
+            if not subscription_id:
+                unkeyed.append(index)
+                continue
+            if subscription_id not in by_subscription:
+                by_subscription[subscription_id] = len(groups)
+                groups.append([])
+            groups[by_subscription[subscription_id]].append(index)
+
+        if unkeyed:
+            if groups:
+                groups[0].extend(unkeyed)
+            else:
+                groups.append(unkeyed)
+
+        return [[stored_items[i] for i in sorted(group)] for group in groups]
 
     def _aggregate_events(
         self, stored_items: list[dict[str, Any]]
