@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.core.cache import cache
 from plugins.destinations.slack import SlackDestinationPlugin
 from plugins.destinations.telegram import TelegramDestinationPlugin
 from plugins.sources.chargify import ChargifySourcePlugin
@@ -513,3 +514,133 @@ class TestBillingIntervalCount:
         assert "Recurring (Quarterly)" in text
         assert n.payment is not None
         assert n.payment.get_arr() == 1200.0
+
+
+class _FakeLock:
+    """Records acquire/release calls of a redis-py style lock."""
+
+    def __init__(self, client: "_FakeLockClient", acquirable: bool) -> None:
+        """Bind to the owning client."""
+        self.client = client
+        self.acquirable = acquirable
+
+    def acquire(self) -> bool:
+        """Take the lock (or fail when not acquirable)."""
+        self.client.events.append("acquire")
+        return self.acquirable
+
+    def release(self) -> None:
+        """Release the lock."""
+        self.client.events.append("release")
+
+
+class _FakeLockClient:
+    """Stand-in raw Redis client exposing only ``lock()``."""
+
+    def __init__(self, acquirable: bool = True) -> None:
+        """Start with no recorded events."""
+        self.acquirable = acquirable
+        self.events: list[str] = []
+        self.lock_names: list[str] = []
+
+    def lock(self, name: str, timeout: int, blocking_timeout: int) -> _FakeLock:
+        """Return a lock for ``name``."""
+        self.lock_names.append(name)
+        return _FakeLock(self, self.acquirable)
+
+
+_LOCMEM = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "notification-correctness-activity",
+    }
+}
+
+
+class TestActivityIndexAppend:
+    """The daily activity index is appended safely and not over-trimmed."""
+
+    @pytest.fixture(autouse=True)
+    def _locmem_cache(self, settings: Any) -> None:
+        """Use a real in-memory cache instead of the test DummyCache."""
+        settings.CACHES = _LOCMEM
+        cache.clear()
+
+    @staticmethod
+    def _store(service: DatabaseLookupService, count: int) -> None:
+        """Store ``count`` enriched payment records for one workspace."""
+        n = _build(
+            {"type": "payment_success", "provider": "stripe", "amount": 1.0},
+            {"email": "ann@example.com"},
+        )
+        for i in range(count):
+            event = {
+                "type": "payment_success",
+                "provider": "stripe",
+                "customer_id": f"cus_{i}",
+                "external_id": f"in_{i}",
+                "amount": 1.0,
+            }
+            assert service.store_enriched_record(event, n, workspace_id="ws-1")
+
+    def test_append_runs_under_redis_lock(self) -> None:
+        """With Redis, each read-modify-write is wrapped in a lock."""
+        client = _FakeLockClient()
+        service = DatabaseLookupService()
+        with patch(
+            "webhooks.services.database_lookup.get_raw_redis_client",
+            return_value=client,
+        ):
+            self._store(service, 2)
+
+        assert client.events == ["acquire", "release", "acquire", "release"]
+        assert all(name.endswith(":lock") for name in client.lock_names)
+        assert "webhook_activity:ws-1:" in client.lock_names[0]
+
+    def test_append_proceeds_when_lock_busy(self) -> None:
+        """A lock timeout must not drop the index entry."""
+        client = _FakeLockClient(acquirable=False)
+        service = DatabaseLookupService()
+        with patch(
+            "webhooks.services.database_lookup.get_raw_redis_client",
+            return_value=client,
+        ):
+            self._store(service, 1)
+
+        assert "release" not in client.events
+        assert len(service.get_recent_webhook_activity("ws-1", days=1)) == 1
+
+    def test_more_than_100_events_a_day_are_kept(self) -> None:
+        """The old 100/day cap deleted records; 150 events all survive."""
+        service = DatabaseLookupService()
+        self._store(service, 150)
+
+        records = service.get_recent_webhook_activity("ws-1", days=1, limit=200)
+
+        assert len(records) == 150
+
+    def test_overflow_beyond_cap_is_trimmed_and_deleted(self) -> None:
+        """Past the cap, the oldest keys leave the index and their records go."""
+        service = DatabaseLookupService()
+        with patch("webhooks.services.database_lookup.ACTIVITY_INDEX_MAX_PER_DAY", 5):
+            self._store(service, 7)
+
+        records = service.get_recent_webhook_activity("ws-1", days=1)
+
+        assert sorted(r["customer_id"] for r in records) == [
+            f"cus_{i}" for i in range(2, 7)
+        ]
+
+    def test_same_microsecond_records_do_not_collide(self) -> None:
+        """Two records stored at the same instant both survive."""
+        from django.utils import timezone
+
+        frozen = timezone.now()
+        service = DatabaseLookupService()
+        with patch("webhooks.services.database_lookup.timezone") as mock_tz:
+            mock_tz.now.return_value = frozen
+            self._store(service, 2)
+
+        records = service.get_recent_webhook_activity("ws-1", days=1)
+
+        assert {r["customer_id"] for r in records} == {"cus_0", "cus_1"}
