@@ -22,7 +22,8 @@ Per-provider signal sources (update this list when adding a detector):
 * first payment:
   Stripe = invoice billing_reason "subscription_create";
   Chargify = is_signup_payment metadata from signup_success revenue;
-  Shopify = customer orders_count.
+  Shopify = customer orders_count == 1, read post-payment like LTV
+  (see note) and cross-checked against total_spent when present.
 * lifetime spend (LTV, VIP, at-risk):
   Stripe = none (silent);
   Chargify = total_spent from total_revenue_in_cents (see note);
@@ -324,17 +325,34 @@ class InsightDetector:
             )
 
         orders_count = customer_data.get("orders_count")
-        if orders_count is None:
+        if orders_count is None or isinstance(orders_count, bool):
+            return None
+        try:
+            orders_count = int(orders_count)
+        except (TypeError, ValueError):
             return None
 
-        # First payment if count is 0 or 1 (including current)
-        if orders_count <= 1:
-            return InsightInfo(
-                icon=self.ICONS["first_payment"],
-                text="First payment from this customer",
-            )
+        # Shopify's customer aggregates lag the triggering order (see the
+        # module note and _detect_ltv_milestone), so read the snapshot the
+        # same conservative way as the LTV detector: as the POST-payment
+        # value. Only orders_count == 1 is a first order under that
+        # reading. A count of 0 proves the snapshot has not caught up with
+        # this order, so it says nothing reliable about prior orders - a
+        # delayed (missed) celebration beats a false one. When the
+        # snapshot also carries lifetime spend, it must equal this
+        # payment: a larger total means earlier orders, a smaller one
+        # means the snapshot is stale.
+        if orders_count != 1:
+            return None
+        ltv = _get_ltv(customer_data)
+        amount = _to_float(event_data.get("amount"))
+        if ltv is not None and abs(ltv - amount) > 0.005:
+            return None
 
-        return None
+        return InsightInfo(
+            icon=self.ICONS["first_payment"],
+            text="First payment from this customer",
+        )
 
     def _detect_trial_started(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]
