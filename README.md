@@ -627,6 +627,65 @@ The Brandfetch integration enriches company domains with brand information:
 - Caches results in the `Company` model to reduce API calls
 - Used to enhance notifications with company branding
 
+### Company Profiles & Industry Classification (LLM modules)
+
+To help sales prioritise customers against ICPs, every enriched company also
+gets an LLM-generated profile, built from Brandfetch's data:
+
+- **Company information**: display name, a short sales-ready description,
+  founding year, headcount band and headquarters. The LLM receives
+  Brandfetch's name, descriptions, industries, founding year, headcount,
+  location and company kind as input. Its description replaces Brandfetch's;
+  Brandfetch's factual fields (founding year, headcount, location) are kept
+  when present and the LLM fills the gaps.
+- **Industry classification**: a primary industry from a fixed taxonomy, a
+  sub-industry, business model (B2B, B2C, Marketplace, ...), target market
+  (Enterprise, Mid-market, SMB, ...), a few keywords, and a confidence level,
+  stored in `Company.brand_info["industry_classification"]`.
+
+Both are shown on Slack, Teams and Telegram notifications.
+
+LLM modules live in `app/plugins/enrichment/llm_*.py`. Each one implements a
+single `complete_json()` method; the prompt, schema, validation and privacy
+filtering are shared in `base_llm.py`, so a new provider is one short file.
+
+| Module | Enable with | Model override (default) |
+|--------|-------------|--------------------------|
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_ENRICHMENT_MODEL` (`gpt-5-mini`) |
+| Anthropic | `ANTHROPIC_API_KEY` | `ANTHROPIC_ENRICHMENT_MODEL` (`claude-opus-5-5`) |
+| Ollama | `OLLAMA_BASE_URL` (optional `OLLAMA_API_KEY`) | `OLLAMA_ENRICHMENT_MODEL` (`llama3.2`) |
+
+- When several modules are configured they are used **round-robin**, one call
+  per domain, failing over to the next module if one errors.
+- When Brandfetch has data for the domain, its name, description and industry
+  are passed to the model as grounding. Otherwise only the domain is sent.
+- **Privacy:** only the bare domain and public company metadata are sent.
+  Customer email addresses never reach these providers; values that are not a
+  plain domain are rejected and email-like text in the metadata is redacted.
+- **Caching:** company enrichment is kept **forever**. The `Company` record
+  is never refreshed automatically, and every provider response is also
+  cached in Redis with no expiry. LLM answers are keyed by a hash of their
+  exact input, so changed Brandfetch data or a new model still gets a fresh
+  answer. Empty responses are cached for 6 hours, so unknown domains are
+  retried later rather than on every webhook. Errors are not cached.
+  `refresh_enrichment()` and `classify_companies --force` bypass the cache.
+  Companies enriched before an LLM module was configured are profiled once,
+  automatically, from their stored Brandfetch data.
+- **Feedback:** notifications carry `👍 Industry right` / `👎 Wrong industry`
+  link buttons (Slack, Teams, Telegram; no Slack interactivity setup needed).
+  They open a page under `/feedback/industry/<signed token>/<up|down>/`. The
+  token names the company and the receiving workspace, so no login is
+  needed. Opening the page casts no vote (link prefetchers can't vote); the
+  vote is stored on submit, one per workspace per company, in
+  `ClassificationFeedback` (Django admin, filterable by provider and model).
+  A downvote can name the correct industry. That correction overrides the
+  LLM permanently and survives refreshes and backfills. Downvoted,
+  uncorrected classifications are marked `disputed` and can be re-run with
+  `classify_companies --disputed`.
+- Companies enriched before a module was configured can be backfilled from
+  the stored Brandfetch data: `python app/manage.py classify_companies`
+  (`--dry-run`, `--limit N`, `--force`).
+
 ### Rate Limiting & Circuit Breaker
 
 The webhook system includes robust rate limiting:
