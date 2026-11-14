@@ -1145,6 +1145,14 @@ class WebAuthnChallenge(models.Model):
         max_length=20, choices=CHALLENGE_TYPES
     )
 
+    # Account details a signup challenge was issued for. The signup
+    # complete step reads them from here rather than from the request body,
+    # so the account created is the one that passed the uniqueness check.
+    signup_username: models.CharField = models.CharField(
+        max_length=150, blank=True, default=""
+    )
+    signup_email: models.EmailField = models.EmailField(blank=True, default="")
+
     class Meta:
         app_label = "core"
         verbose_name = "WebAuthn Challenge"

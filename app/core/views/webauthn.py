@@ -17,7 +17,7 @@ from django.views.decorators.http import require_http_methods
 
 from .. import analytics
 from ..models import WebAuthnCredential
-from ..services.webauthn import WebAuthnService
+from ..services.webauthn import WebAuthnService, signup_identity_conflict
 from ..services.welcome_email import send_welcome_email
 
 logger = logging.getLogger(__name__)
@@ -248,11 +248,11 @@ def webauthn_signup_begin(request: HttpRequest) -> JsonResponse:
                 {"error": "Username and email are required"}, status=400
             )
 
-        # Check if username or email already exists
-        if User.objects.filter(username=username).exists():
+        # Check if username or email already exists (in any letter case)
+        conflict = signup_identity_conflict(username, email)
+        if conflict == "username":
             return JsonResponse({"error": "Username already exists"}, status=400)
-
-        if User.objects.filter(email=email).exists():
+        if conflict == "email":
             return JsonResponse({"error": "Email already exists"}, status=400)
 
         webauthn_service = WebAuthnService()
@@ -279,16 +279,15 @@ def webauthn_signup_complete(request: HttpRequest) -> JsonResponse:
     try:
         data: dict[str, Any] = json.loads(request.body)
         credential_data = data.get("credential")
-        username = data.get("username", "").strip()
-        email = data.get("email", "").strip()
 
-        if not credential_data or not username or not email:
+        if not credential_data:
             return JsonResponse({"error": "Missing required data"}, status=400)
 
+        # Username and email are bound to the challenge issued by the begin
+        # step; any values in this request body are ignored so they cannot
+        # swap in an address that never passed the uniqueness check.
         webauthn_service = WebAuthnService()
-        user = webauthn_service.complete_signup_registration(
-            credential_data, username, email
-        )
+        user = webauthn_service.complete_signup_registration(credential_data)
 
         if user:
             # Log the user in
