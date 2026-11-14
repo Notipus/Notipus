@@ -147,3 +147,25 @@ def test_partial_failure_keeps_only_undelivered_transaction(
 
     remaining = decrypt_cache_value(stateful_cache.data[PENDING])
     assert [item["event_data"]["external_id"] for item in remaining] == ["in_B"]
+
+
+def test_partial_failure_under_lock_contention_keeps_failed_transaction(
+    queue: PendingEventQueue, stateful_cache: MagicMock
+) -> None:
+    """Failing to take the append lock must not drop the failed invoice."""
+    stateful_cache.set(
+        PENDING,
+        [_invoice("in_A", "sub_A", 49.0), _invoice("in_B", "sub_B", 999.0)],
+    )
+
+    def send(event: dict[str, Any], *args: Any) -> bool:
+        return event["external_id"] == "in_A"
+
+    with (
+        patch.object(queue, "_send_notification", side_effect=send),
+        patch.object(queue, "_acquire_append_lock", return_value=None),
+    ):
+        queue._process_events(KEY, "ws_1", "stripe", None)
+
+    remaining = decrypt_cache_value(stateful_cache.data[PENDING])
+    assert [item["event_data"]["external_id"] for item in remaining] == ["in_B"]

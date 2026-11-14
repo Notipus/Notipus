@@ -526,37 +526,54 @@ class PendingEventQueue:
         )
         if token is None:
             # The finalize budget outlasts the lock TTL, so this means
-            # sustained contention, not one crashed holder. Fall back to
-            # the pre-lock behavior of deleting the whole key rather than
-            # leaving the group to be resent forever by the recovery sweep.
+            # sustained contention, not one crashed holder. Still remove
+            # only the processed items, without the lock: deleting the
+            # whole key would silently drop transactions that failed and
+            # are waiting for a retry. The cost is that an append landing
+            # in this exact window can be overwritten.
             logger.warning(
                 f"Could not acquire append lock to finalize {key}; "
-                f"deleting the pending list outright"
+                f"removing processed items without the lock"
             )
-            cache.delete(key)
-            return []
+            return self._rewrite_without(key, processed_items)
         try:
-            current = self._read_pending_items(key)
-            if current is None:
-                # The list turned undecryptable mid-send (key rotation in
-                # exactly that window); _read_pending_items already purged
-                # it and logged at error level.
-                return []
-            remainder = list(current)
-            for item in processed_items:
-                try:
-                    remainder.remove(item)
-                except ValueError:
-                    # Already gone (e.g. the list was rewritten after a
-                    # TTL expiry); nothing to remove for this item.
-                    pass
-            if remainder:
-                cache.set(key, encrypt_cache_value(remainder), timeout=self.TTL_SECONDS)
-            else:
-                cache.delete(key)
-            return remainder
+            return self._rewrite_without(key, processed_items)
         finally:
             self._release_append_lock(key, token)
+
+    def _rewrite_without(
+        self, key: str, processed_items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Rewrite the pending list minus one occurrence per processed item.
+
+        Callers hold the append lock where they can get it.
+
+        Args:
+            key: Cache key of the pending list.
+            processed_items: Items to remove.
+
+        Returns:
+            Items still queued, empty when the list is fully drained.
+        """
+        current = self._read_pending_items(key)
+        if current is None:
+            # The list turned undecryptable mid-send (key rotation in
+            # exactly that window); _read_pending_items already purged
+            # it and logged at error level.
+            return []
+        remainder = list(current)
+        for item in processed_items:
+            try:
+                remainder.remove(item)
+            except ValueError:
+                # Already gone (e.g. the list was rewritten after a
+                # TTL expiry); nothing to remove for this item.
+                pass
+        if remainder:
+            cache.set(key, encrypt_cache_value(remainder), timeout=self.TTL_SECONDS)
+        else:
+            cache.delete(key)
+        return remainder
 
     def _read_pending_items(self, key: str) -> list[dict[str, Any]] | None:
         """Read and decrypt the pending list, purging poisoned entries.
