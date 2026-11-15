@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import sentry_sdk
 from django.utils.functional import SimpleLazyObject
+from django_notipus.redis_connection import connection_class_for
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 
 if TYPE_CHECKING:
@@ -626,12 +628,7 @@ else:
 
 # Cache configuration for Redis
 if "REDIS_URL" in os.environ:
-    redis_config_dict = {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": os.environ["REDIS_URL"],
-        "KEY_PREFIX": "notipus",
-        "TIMEOUT": 300,  # Default timeout of 5 minutes
-    }
+    redis_location = os.environ["REDIS_URL"]
 else:
     REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
     REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
@@ -646,12 +643,54 @@ else:
     else:
         redis_location = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 
-    redis_config_dict = {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": redis_location,
-        "KEY_PREFIX": "notipus",
-        "TIMEOUT": 300,  # Default timeout of 5 minutes
-    }
+
+def _env_positive_float(name: str, default: float) -> float:
+    """Read a finite number > 0 from the environment, else the default.
+
+    Zero is rejected: a socket timeout of 0 means non-blocking, not
+    "no timeout", and would make every read fail.
+    """
+    try:
+        value = float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
+def _env_non_negative_int(name: str, default: int) -> int:
+    """Read an integer >= 0 from the environment, else the default."""
+    try:
+        value = int(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+# Options passed straight to redis-py's ConnectionPool. Without them each
+# pooled connection gets redis-py's defaults: no retry at all, and
+# acquiring a new connection from the pool is not covered by any retry,
+# so a single slow HELLO/AUTH handshake against managed Redis failed the
+# command ("Timeout reading from socket"). Retry only the connect step
+# (see redis_connection.py for why commands must not be retried) and
+# keep idle sockets alive so the network does not silently drop them.
+REDIS_CONNECTION_OPTIONS: dict[str, Any] = {
+    "socket_connect_timeout": _env_positive_float("REDIS_SOCKET_CONNECT_TIMEOUT", 5),
+    "socket_timeout": _env_positive_float("REDIS_SOCKET_TIMEOUT", 5),
+    "socket_keepalive": True,
+}
+_redis_connection_class = connection_class_for(
+    redis_location, _env_non_negative_int("REDIS_CONNECT_RETRIES", 1)
+)
+if _redis_connection_class is not None:
+    REDIS_CONNECTION_OPTIONS["connection_class"] = _redis_connection_class
+
+redis_config_dict = {
+    "BACKEND": "django.core.cache.backends.redis.RedisCache",
+    "LOCATION": redis_location,
+    "KEY_PREFIX": "notipus",
+    "TIMEOUT": 300,  # Default timeout of 5 minutes
+    "OPTIONS": REDIS_CONNECTION_OPTIONS,
+}
 
 CACHES = {"default": redis_config_dict}
 

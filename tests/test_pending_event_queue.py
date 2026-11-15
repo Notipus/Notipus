@@ -797,6 +797,27 @@ class TestPendingEventQueueProcessing:
                 ]
                 assert len(delete_calls) == 0
 
+    def test_timer_thread_survives_redis_timeout(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """A Redis timeout in the timer thread leaves events for recovery.
+
+        The exception used to escape the timer thread as an unhandled error.
+        """
+        from redis.exceptions import TimeoutError as RedisTimeoutError
+
+        with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+            mock_cache.add.side_effect = RedisTimeoutError(
+                "Timeout reading from socket"
+            )
+
+            with patch.object(queue, "_send_notification") as mock_send:
+                queue._process_events_in_thread("idem_123", "ws_456", "stripe", None)
+
+            mock_send.assert_not_called()
+            mock_cache.get.assert_not_called()
+            mock_cache.delete.assert_not_called()
+
     def test_process_events_removes_timer_reference(
         self, queue: PendingEventQueue
     ) -> None:
@@ -1943,17 +1964,28 @@ class TestThreadConnectionCleanup:
     def test_timer_thread_wrapper_closes_connections_on_error(
         self, queue: PendingEventQueue
     ) -> None:
-        """Connections are closed even when processing raises."""
+        """Connections are closed, and the error contained, when processing raises."""
         with patch.object(queue, "_process_events", side_effect=RuntimeError("boom")):
             with patch(
                 "webhooks.services.pending_event_queue.connections"
             ) as mock_connections:
-                with pytest.raises(RuntimeError):
-                    queue._process_events_in_thread(
-                        "idem_123", "ws_456", "stripe", None
-                    )
+                queue._process_events_in_thread("idem_123", "ws_456", "stripe", None)
 
         mock_connections.close_all.assert_called_once()
+
+    def test_timer_thread_logs_unexpected_errors_at_error_level(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Non-Redis failures are bugs and must stay visible in Sentry."""
+        with (
+            patch.object(queue, "_process_events", side_effect=KeyError("x")),
+            patch("webhooks.services.pending_event_queue.connections"),
+            patch("webhooks.services.pending_event_queue.logger") as mock_logger,
+        ):
+            queue._process_events_in_thread("idem_123", "ws_456", "stripe", None)
+
+        mock_logger.exception.assert_called_once()
+        mock_logger.warning.assert_not_called()
 
     def test_scheduled_timer_targets_thread_wrapper(
         self, queue: PendingEventQueue
