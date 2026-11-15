@@ -13,6 +13,7 @@ policy and add a separate retry around ``connect()`` only. Establishing
 a connection has no side effects on data, so retrying it is always safe.
 """
 
+import time
 from typing import Any, ClassVar
 
 from redis.backoff import ExponentialWithJitterBackoff
@@ -21,19 +22,38 @@ from redis.retry import Retry
 
 
 class _ConnectRetryMixin:
-    """Retry ``connect()`` (TCP connect + HELLO/AUTH handshake) on failure."""
+    """Retry ``connect()`` and the idle health-check PING on failure.
+
+    Both are free of data side effects: connecting runs only the TCP
+    connect and HELLO/AUTH handshake, and PING changes nothing. A failed
+    health check disconnects, so the retry reconnects and a socket that
+    went stale while idle is replaced instead of failing the command.
+    """
 
     connect_retries: ClassVar[int] = 2
 
-    def connect(self) -> None:
-        """Connect, retrying transient connection and timeout errors."""
-        # A fresh Retry per call: it is cheap and keeps no shared state
-        # between the threads that share a pool.
-        retry = Retry(
+    def _connect_retry(self) -> Retry:
+        """Build a fresh, bounded retry policy.
+
+        A new instance per call is cheap and shares no state between the
+        threads that use one pool.
+        """
+        return Retry(
             ExponentialWithJitterBackoff(base=0.1, cap=1.0), self.connect_retries
         )
+
+    def connect(self) -> None:
+        """Connect, retrying transient connection and timeout errors."""
         parent: Any = super()
-        retry.call_with_retry(parent.connect, self.disconnect)  # type: ignore[attr-defined]
+        self._connect_retry().call_with_retry(parent.connect, self.disconnect)  # type: ignore[attr-defined]
+
+    def check_health(self) -> None:
+        """Run the periodic PING health check, reconnecting if it fails."""
+        conn: Any = self
+        if conn.health_check_interval and time.monotonic() > conn.next_health_check:
+            self._connect_retry().call_with_retry(
+                conn._send_ping, conn._ping_failed, with_failure_count=True
+            )
 
 
 class ConnectRetryConnection(_ConnectRetryMixin, Connection):

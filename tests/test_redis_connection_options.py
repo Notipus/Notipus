@@ -111,3 +111,25 @@ def test_tls_urls_keep_a_tls_connection() -> None:
     client = RedisCacheClient([url], connection_class=connection_class_for(url, 2))
     pool = client.get_client(write=True).connection_pool
     assert isinstance(pool.make_connection(), SSLConnection)
+
+
+def test_failed_health_check_reconnects_instead_of_failing() -> None:
+    """A stale idle socket is replaced on the PING health check."""
+    conn = _client().get_client(write=True).connection_pool.make_connection()
+    conn.next_health_check = 0
+    calls = {"n": 0}
+
+    def flaky_ping() -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RedisTimeoutError("Timeout reading from socket")
+
+    with (
+        patch.object(conn, "_send_ping", flaky_ping),
+        patch.object(conn, "disconnect") as mock_disconnect,
+        patch("redis.retry.sleep"),
+    ):
+        conn.check_health()
+
+    assert calls["n"] == 2
+    mock_disconnect.assert_called_once()
