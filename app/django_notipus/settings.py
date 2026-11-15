@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -643,32 +644,45 @@ else:
         redis_location = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 
 
-def _env_number(name: str, default: float) -> float:
-    """Read a non-negative number from the environment, else the default."""
+def _env_positive_float(name: str, default: float) -> float:
+    """Read a finite number > 0 from the environment, else the default.
+
+    Zero is rejected: a socket timeout of 0 means non-blocking, not
+    "no timeout", and would make every read fail.
+    """
     try:
-        value = float(os.environ.get(name, "") or default)
+        value = float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
+def _env_non_negative_int(name: str, default: int) -> int:
+    """Read an integer >= 0 from the environment, else the default."""
+    try:
+        value = int(os.environ.get(name) or default)
     except ValueError:
         return default
     return value if value >= 0 else default
 
 
 # Options passed straight to redis-py's ConnectionPool. Without them each
-# pooled connection gets redis-py's defaults: a 5s socket timeout and no
-# retry at all, and acquiring a new connection from the pool is not
-# covered by any retry, so a single slow HELLO/AUTH handshake against
-# managed Redis failed the command ("Timeout reading from socket").
-# Retry only the connect step (see redis_connection.py for why commands
-# must not be retried), keep idle sockets alive, and health check
-# connections that sat idle so dead ones are replaced before use.
+# pooled connection gets redis-py's defaults: no retry at all, and
+# acquiring a new connection from the pool is not covered by any retry,
+# so a single slow HELLO/AUTH handshake against managed Redis failed the
+# command ("Timeout reading from socket"). Retry only the connect step
+# (see redis_connection.py for why commands must not be retried) and
+# keep idle sockets alive so the network does not silently drop them.
 REDIS_CONNECTION_OPTIONS: dict[str, Any] = {
-    "socket_connect_timeout": _env_number("REDIS_SOCKET_CONNECT_TIMEOUT", 5),
-    "socket_timeout": _env_number("REDIS_SOCKET_TIMEOUT", 5),
+    "socket_connect_timeout": _env_positive_float("REDIS_SOCKET_CONNECT_TIMEOUT", 5),
+    "socket_timeout": _env_positive_float("REDIS_SOCKET_TIMEOUT", 5),
     "socket_keepalive": True,
-    "health_check_interval": int(_env_number("REDIS_HEALTH_CHECK_INTERVAL", 30)),
-    "connection_class": connection_class_for(
-        redis_location, int(_env_number("REDIS_CONNECT_RETRIES", 2))
-    ),
 }
+_redis_connection_class = connection_class_for(
+    redis_location, _env_non_negative_int("REDIS_CONNECT_RETRIES", 1)
+)
+if _redis_connection_class is not None:
+    REDIS_CONNECTION_OPTIONS["connection_class"] = _redis_connection_class
 
 redis_config_dict = {
     "BACKEND": "django.core.cache.backends.redis.RedisCache",

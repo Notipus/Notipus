@@ -34,6 +34,7 @@ from core.models import Workspace
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connections
+from redis.exceptions import RedisError
 
 from .destination_credentials import collect_destinations, record_delivery
 from .redis_client import get_raw_redis_client
@@ -361,15 +362,20 @@ class PendingEventQueue:
             self._process_events(
                 idempotency_key, workspace_id, provider_name, workspace
             )
-        except Exception:
-            # Usually Redis being briefly unreachable. The events are still
-            # queued in Redis and the periodic recovery sweep retries them;
-            # letting the exception escape would only kill the timer thread
-            # and report it as unhandled.
+        except RedisError:
+            # Redis briefly unreachable. The events are still queued in
+            # Redis and the periodic recovery sweep retries them; letting
+            # the exception escape would only kill the timer thread and
+            # report it as unhandled.
             logger.warning(
-                f"Processing idempotency_key {idempotency_key} failed; "
+                f"Redis error processing idempotency_key {idempotency_key}; "
                 f"leaving events for the recovery sweep",
                 exc_info=True,
+            )
+        except Exception:
+            # Anything else is a bug: keep it visible at error level.
+            logger.exception(
+                f"Unexpected error processing idempotency_key {idempotency_key}"
             )
         finally:
             connections.close_all()

@@ -1973,6 +1973,20 @@ class TestThreadConnectionCleanup:
 
         mock_connections.close_all.assert_called_once()
 
+    def test_timer_thread_logs_unexpected_errors_at_error_level(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """Non-Redis failures are bugs and must stay visible in Sentry."""
+        with (
+            patch.object(queue, "_process_events", side_effect=KeyError("x")),
+            patch("webhooks.services.pending_event_queue.connections"),
+            patch("webhooks.services.pending_event_queue.logger") as mock_logger,
+        ):
+            queue._process_events_in_thread("idem_123", "ws_456", "stripe", None)
+
+        mock_logger.exception.assert_called_once()
+        mock_logger.warning.assert_not_called()
+
     def test_scheduled_timer_targets_thread_wrapper(
         self, queue: PendingEventQueue
     ) -> None:

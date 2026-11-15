@@ -9,51 +9,47 @@ would be counted twice, and a retried ``SET NX`` lock would find its own
 key and report the lock as held by someone else.
 
 The connection classes here keep the default "never retry commands"
-policy and add a separate retry around ``connect()`` only. Establishing
-a connection has no side effects on data, so retrying it is always safe.
+policy and add a separate, bounded retry around ``connect()`` only. The
+connect step (TCP connect plus HELLO/AUTH handshake) changes no data, so
+retrying it is always safe.
 """
 
-import time
 from typing import Any, ClassVar
 
 from redis.backoff import ExponentialWithJitterBackoff
 from redis.connection import Connection, SSLConnection
+from redis.exceptions import AuthenticationError, AuthorizationError
 from redis.retry import Retry
 
 
-class _ConnectRetryMixin:
-    """Retry ``connect()`` and the idle health-check PING on failure.
+def _is_transient(error: Exception) -> bool:
+    """Whether a connect failure is worth retrying.
 
-    Both are free of data side effects: connecting runs only the TCP
-    connect and HELLO/AUTH handshake, and PING changes nothing. A failed
-    health check disconnects, so the retry reconnects and a socket that
-    went stale while idle is replaced instead of failing the command.
+    Bad credentials and missing ACL permissions subclass ConnectionError
+    but will fail the same way every time; retrying them only adds AUTH
+    load and latency.
     """
+    return not isinstance(error, (AuthenticationError, AuthorizationError))
 
-    connect_retries: ClassVar[int] = 2
 
-    def _connect_retry(self) -> Retry:
-        """Build a fresh, bounded retry policy.
+class _ConnectRetryMixin:
+    """Retry ``connect()`` (TCP connect + HELLO/AUTH handshake) on failure."""
 
-        A new instance per call is cheap and shares no state between the
-        threads that use one pool.
-        """
-        return Retry(
-            ExponentialWithJitterBackoff(base=0.1, cap=1.0), self.connect_retries
-        )
+    connect_retries: ClassVar[int] = 1
 
     def connect(self) -> None:
         """Connect, retrying transient connection and timeout errors."""
+        # A fresh Retry per connect: cheap next to a network handshake,
+        # and it shares no state between the threads using one pool.
+        retry = Retry(
+            ExponentialWithJitterBackoff(base=0.1, cap=1.0), self.connect_retries
+        )
         parent: Any = super()
-        self._connect_retry().call_with_retry(parent.connect, self.disconnect)  # type: ignore[attr-defined]
-
-    def check_health(self) -> None:
-        """Run the periodic PING health check, reconnecting if it fails."""
-        conn: Any = self
-        if conn.health_check_interval and time.monotonic() > conn.next_health_check:
-            self._connect_retry().call_with_retry(
-                conn._send_ping, conn._ping_failed, with_failure_count=True
-            )
+        retry.call_with_retry(
+            parent.connect,
+            self.disconnect,  # type: ignore[attr-defined]
+            is_retryable=_is_transient,
+        )
 
 
 class ConnectRetryConnection(_ConnectRetryMixin, Connection):
@@ -64,23 +60,29 @@ class ConnectRetrySSLConnection(_ConnectRetryMixin, SSLConnection):
     """TLS connection whose connect step is retried."""
 
 
-def connection_class_for(url: str, connect_retries: int) -> type[Connection]:
+def connection_class_for(url: str, connect_retries: int) -> type[Connection] | None:
     """Pick the connection class matching the URL scheme.
 
     Passing ``connection_class`` to ``ConnectionPool.from_url`` overrides
     the class redis-py derives from the scheme, so a ``rediss://`` URL
     must get the TLS variant or it would silently connect in plaintext.
+    Other schemes (``unix://``) keep redis-py's own class.
 
     Args:
         url: Redis URL the cache connects to.
         connect_retries: Extra connect attempts after the first failure.
 
     Returns:
-        A connection class with ``connect_retries`` applied.
+        A connection class with ``connect_retries`` applied, or None when
+        redis-py's default class for the scheme should be used.
     """
-    base = (
-        ConnectRetrySSLConnection
-        if url.startswith("rediss://")
-        else ConnectRetryConnection
+    if url.startswith("rediss://"):
+        base: type[Connection] = ConnectRetrySSLConnection
+    elif url.startswith("redis://"):
+        base = ConnectRetryConnection
+    else:
+        return None
+    retries = max(0, connect_retries)
+    return type(
+        f"{base.__name__}Retries{retries}", (base,), {"connect_retries": retries}
     )
-    return type(base.__name__, (base,), {"connect_retries": max(0, connect_retries)})
