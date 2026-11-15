@@ -19,6 +19,10 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import sentry_sdk
 from django.utils.functional import SimpleLazyObject
+from redis.backoff import ExponentialWithJitterBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+from redis.retry import Retry as RedisRetry
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 
 if TYPE_CHECKING:
@@ -625,12 +629,36 @@ else:
     }
 
 # Cache configuration for Redis
+#
+# Options passed straight to redis-py's ConnectionPool. Without them each
+# pooled connection gets redis-py's defaults: a 5s socket timeout and NO
+# connect retry (Retry(NoBackoff(), 0)). The client-level command retry
+# does not cover acquiring a connection from the pool, so a single slow
+# HELLO/AUTH handshake against managed Redis (Upstash) surfaced as
+# "Timeout reading from socket" (NOTIPUS-3J/3K/3N). Retry the connect +
+# handshake with jittered backoff, keep idle sockets alive, and health
+# check connections that sat idle so dead ones are replaced before use.
+REDIS_CONNECTION_OPTIONS: dict[str, Any] = {
+    "socket_connect_timeout": float(
+        os.environ.get("REDIS_SOCKET_CONNECT_TIMEOUT", "5")
+    ),
+    "socket_timeout": float(os.environ.get("REDIS_SOCKET_TIMEOUT", "5")),
+    "socket_keepalive": True,
+    "health_check_interval": int(os.environ.get("REDIS_HEALTH_CHECK_INTERVAL", "30")),
+    "retry": RedisRetry(
+        ExponentialWithJitterBackoff(base=0.1, cap=1.0),
+        int(os.environ.get("REDIS_CONNECT_RETRIES", "3")),
+        supported_errors=(RedisConnectionError, RedisTimeoutError, TimeoutError),
+    ),
+}
+
 if "REDIS_URL" in os.environ:
     redis_config_dict = {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": os.environ["REDIS_URL"],
         "KEY_PREFIX": "notipus",
         "TIMEOUT": 300,  # Default timeout of 5 minutes
+        "OPTIONS": REDIS_CONNECTION_OPTIONS,
     }
 else:
     REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
@@ -651,6 +679,7 @@ else:
         "LOCATION": redis_location,
         "KEY_PREFIX": "notipus",
         "TIMEOUT": 300,  # Default timeout of 5 minutes
+        "OPTIONS": REDIS_CONNECTION_OPTIONS,
     }
 
 CACHES = {"default": redis_config_dict}

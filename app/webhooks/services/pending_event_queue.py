@@ -392,7 +392,19 @@ class PendingEventQueue:
 
         # Try to acquire distributed lock
         lock_key = f"processing_lock:{workspace_id}:{idempotency_key}"
-        if not self._acquire_lock(lock_key):
+        try:
+            acquired = self._acquire_lock(lock_key)
+        except Exception as e:
+            # Redis unreachable (e.g. connect handshake timeout). The events
+            # stay queued in Redis and the periodic recovery sweep retries
+            # them; an exception here would only kill the timer thread and
+            # surface as an unhandled error (NOTIPUS-3J).
+            logger.warning(
+                f"Could not acquire processing lock for idempotency_key "
+                f"{idempotency_key} ({e}); leaving events for recovery sweep"
+            )
+            return
+        if not acquired:
             logger.info(
                 f"Another process is handling idempotency_key {idempotency_key}, "
                 f"skipping"

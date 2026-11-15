@@ -797,6 +797,27 @@ class TestPendingEventQueueProcessing:
                 ]
                 assert len(delete_calls) == 0
 
+    def test_process_events_survives_redis_timeout_on_lock(
+        self, queue: PendingEventQueue
+    ) -> None:
+        """A Redis timeout acquiring the lock leaves events for recovery.
+
+        Regression for NOTIPUS-3J: the exception escaped the timer thread.
+        """
+        from redis.exceptions import TimeoutError as RedisTimeoutError
+
+        with patch("webhooks.services.pending_event_queue.cache") as mock_cache:
+            mock_cache.add.side_effect = RedisTimeoutError(
+                "Timeout reading from socket"
+            )
+
+            with patch.object(queue, "_send_notification") as mock_send:
+                queue._process_events("idem_123", "ws_456", "stripe", None)
+
+            mock_send.assert_not_called()
+            mock_cache.get.assert_not_called()
+            mock_cache.delete.assert_not_called()
+
     def test_process_events_removes_timer_reference(
         self, queue: PendingEventQueue
     ) -> None:
