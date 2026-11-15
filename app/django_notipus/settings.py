@@ -19,10 +19,7 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlsplit
 
 import sentry_sdk
 from django.utils.functional import SimpleLazyObject
-from redis.backoff import ExponentialWithJitterBackoff
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import TimeoutError as RedisTimeoutError
-from redis.retry import Retry as RedisRetry
+from django_notipus.redis_connection import connection_class_for
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, DEFAULT_PII_DENYLIST, EventScrubber
 
 if TYPE_CHECKING:
@@ -629,37 +626,8 @@ else:
     }
 
 # Cache configuration for Redis
-#
-# Options passed straight to redis-py's ConnectionPool. Without them each
-# pooled connection gets redis-py's defaults: a 5s socket timeout and NO
-# connect retry (Retry(NoBackoff(), 0)). The client-level command retry
-# does not cover acquiring a connection from the pool, so a single slow
-# HELLO/AUTH handshake against managed Redis (Upstash) surfaced as
-# "Timeout reading from socket" (NOTIPUS-3J/3K/3N). Retry the connect +
-# handshake with jittered backoff, keep idle sockets alive, and health
-# check connections that sat idle so dead ones are replaced before use.
-REDIS_CONNECTION_OPTIONS: dict[str, Any] = {
-    "socket_connect_timeout": float(
-        os.environ.get("REDIS_SOCKET_CONNECT_TIMEOUT", "5")
-    ),
-    "socket_timeout": float(os.environ.get("REDIS_SOCKET_TIMEOUT", "5")),
-    "socket_keepalive": True,
-    "health_check_interval": int(os.environ.get("REDIS_HEALTH_CHECK_INTERVAL", "30")),
-    "retry": RedisRetry(
-        ExponentialWithJitterBackoff(base=0.1, cap=1.0),
-        int(os.environ.get("REDIS_CONNECT_RETRIES", "3")),
-        supported_errors=(RedisConnectionError, RedisTimeoutError, TimeoutError),
-    ),
-}
-
 if "REDIS_URL" in os.environ:
-    redis_config_dict = {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": os.environ["REDIS_URL"],
-        "KEY_PREFIX": "notipus",
-        "TIMEOUT": 300,  # Default timeout of 5 minutes
-        "OPTIONS": REDIS_CONNECTION_OPTIONS,
-    }
+    redis_location = os.environ["REDIS_URL"]
 else:
     REDIS_HOST = os.environ.get("REDIS_HOST", "127.0.0.1")
     REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
@@ -674,13 +642,41 @@ else:
     else:
         redis_location = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}"
 
-    redis_config_dict = {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": redis_location,
-        "KEY_PREFIX": "notipus",
-        "TIMEOUT": 300,  # Default timeout of 5 minutes
-        "OPTIONS": REDIS_CONNECTION_OPTIONS,
-    }
+
+def _env_number(name: str, default: float) -> float:
+    """Read a non-negative number from the environment, else the default."""
+    try:
+        value = float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
+# Options passed straight to redis-py's ConnectionPool. Without them each
+# pooled connection gets redis-py's defaults: a 5s socket timeout and no
+# retry at all, and acquiring a new connection from the pool is not
+# covered by any retry, so a single slow HELLO/AUTH handshake against
+# managed Redis failed the command ("Timeout reading from socket").
+# Retry only the connect step (see redis_connection.py for why commands
+# must not be retried), keep idle sockets alive, and health check
+# connections that sat idle so dead ones are replaced before use.
+REDIS_CONNECTION_OPTIONS: dict[str, Any] = {
+    "socket_connect_timeout": _env_number("REDIS_SOCKET_CONNECT_TIMEOUT", 5),
+    "socket_timeout": _env_number("REDIS_SOCKET_TIMEOUT", 5),
+    "socket_keepalive": True,
+    "health_check_interval": int(_env_number("REDIS_HEALTH_CHECK_INTERVAL", 30)),
+    "connection_class": connection_class_for(
+        redis_location, int(_env_number("REDIS_CONNECT_RETRIES", 2))
+    ),
+}
+
+redis_config_dict = {
+    "BACKEND": "django.core.cache.backends.redis.RedisCache",
+    "LOCATION": redis_location,
+    "KEY_PREFIX": "notipus",
+    "TIMEOUT": 300,  # Default timeout of 5 minutes
+    "OPTIONS": REDIS_CONNECTION_OPTIONS,
+}
 
 CACHES = {"default": redis_config_dict}
 

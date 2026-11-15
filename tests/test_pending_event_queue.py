@@ -797,12 +797,12 @@ class TestPendingEventQueueProcessing:
                 ]
                 assert len(delete_calls) == 0
 
-    def test_process_events_survives_redis_timeout_on_lock(
+    def test_timer_thread_survives_redis_timeout(
         self, queue: PendingEventQueue
     ) -> None:
-        """A Redis timeout acquiring the lock leaves events for recovery.
+        """A Redis timeout in the timer thread leaves events for recovery.
 
-        Regression for NOTIPUS-3J: the exception escaped the timer thread.
+        The exception used to escape the timer thread as an unhandled error.
         """
         from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -812,7 +812,7 @@ class TestPendingEventQueueProcessing:
             )
 
             with patch.object(queue, "_send_notification") as mock_send:
-                queue._process_events("idem_123", "ws_456", "stripe", None)
+                queue._process_events_in_thread("idem_123", "ws_456", "stripe", None)
 
             mock_send.assert_not_called()
             mock_cache.get.assert_not_called()
@@ -1964,15 +1964,12 @@ class TestThreadConnectionCleanup:
     def test_timer_thread_wrapper_closes_connections_on_error(
         self, queue: PendingEventQueue
     ) -> None:
-        """Connections are closed even when processing raises."""
+        """Connections are closed, and the error contained, when processing raises."""
         with patch.object(queue, "_process_events", side_effect=RuntimeError("boom")):
             with patch(
                 "webhooks.services.pending_event_queue.connections"
             ) as mock_connections:
-                with pytest.raises(RuntimeError):
-                    queue._process_events_in_thread(
-                        "idem_123", "ws_456", "stripe", None
-                    )
+                queue._process_events_in_thread("idem_123", "ws_456", "stripe", None)
 
         mock_connections.close_all.assert_called_once()
 
