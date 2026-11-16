@@ -13,7 +13,7 @@ dependencies = [
     "uvloop>=0.23.0; sys_platform != 'win32' and platform_python_implementation == 'CPython'",
     "httptools>=0.9.0",
     "websockets>=17.2",
-    "stripe>=15.5.0,<17.0.0",
+    "stripe>=15.5.0,<18.0.0",
     "shopifyapi>=12.7.0,<13.0.0",
     "django-allauth>=65.19.1,<66.0.0",
     "webauthn>=3.0.0,<4.0.0",
