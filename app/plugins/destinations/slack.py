@@ -96,6 +96,7 @@ EMAIL_TAG_BADGES: dict[str, str] = {
     "healthcare": ":hospital: Healthcare",
     "free": ":mailbox: Free email",
     "disposable": ":wastebasket: Disposable email",
+    "payment_service": ":bank: Paid via payment service",
 }
 
 # Company descriptions are enrichment boilerplate; anything longer than

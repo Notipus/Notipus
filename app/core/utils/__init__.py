@@ -7,6 +7,7 @@ from .email_domain import (
     is_enrichable_domain,
     is_free_email_provider,
     is_hosted_email_domain,
+    is_payment_service_email,
 )
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "is_enrichable_domain",
     "is_free_email_provider",
     "is_hosted_email_domain",
+    "is_payment_service_email",
     "is_timestamp_fresh",
 ]

@@ -30,7 +30,11 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from core.models import TransactionEvent
-from core.utils.email_domain import extract_domain, is_enrichable_domain
+from core.utils.email_domain import (
+    extract_domain,
+    is_enrichable_domain,
+    is_payment_service_email,
+)
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
@@ -149,6 +153,29 @@ def classify_segment(
         if orders_count > 1:
             return SEGMENT_EXISTING
     return SEGMENT_UNKNOWN
+
+
+def _identity_from_email(email: str) -> tuple[str, bool]:
+    """Classify a customer email as (company domain, is_consumer).
+
+    Args:
+        email: The customer's email, possibly empty.
+
+    Returns:
+        The company domain to enrich and report under (``""`` when none
+        is known) and whether the customer is a private person.
+    """
+    domain = extract_domain(email) if email else None
+    if not domain:
+        return "", False
+    if is_enrichable_domain(email):
+        return domain, False
+    if is_payment_service_email(email):
+        # A bill-pay service (bill.com, ...) paid for a business: the buyer
+        # is a company we can't identify, not the service and not a person.
+        return "", False
+    # Free, disposable or hosted mailbox: a person, not a company.
+    return "", True
 
 
 def _customer_email(event_data: dict[str, Any], customer_data: dict[str, Any]) -> str:
@@ -294,14 +321,7 @@ def _record_event(
 
     customer_id = str(event_data.get("customer_id") or "")
     email = _customer_email(event_data, customer_data)
-    domain = ""
-    is_consumer = False
-    if email and extract_domain(email):
-        if is_enrichable_domain(email):
-            domain = extract_domain(email) or ""
-        else:
-            # Free, disposable or hosted mailbox: a person, not a company.
-            is_consumer = True
+    domain, is_consumer = _identity_from_email(email)
 
     metadata = event_data.get("metadata") or {}
     attempt_count = _to_attempt_count(metadata.get("attempt_count"))

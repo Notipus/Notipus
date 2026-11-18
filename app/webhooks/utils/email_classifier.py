@@ -1,7 +1,7 @@
 """Classify customer email addresses by domain type.
 
 Tags an email's domain as government, education, military, healthcare,
-free-provider, and/or disposable so notifications can badge the address
+free-provider, disposable and/or payment-service so notifications can badge the address
 (e.g. ``jane@stanford.edu -> Education``).
 
 Design notes:
@@ -16,7 +16,9 @@ Design notes:
       match ``bund.de``.
     - Free-provider domains come from ``free_email_domains``;
       disposable domains from the ``disposable-email-domains`` package.
-      Disposable wins over free (a domain is never double-tagged).
+      payment-service domains (Bill.com, Tipalti, ...) from
+      ``payment_service_domains``. Only one provider tag is ever applied:
+      disposable beats payment service beats free.
     - Pure domain logic: no network calls, subaddressing is irrelevant.
 """
 
@@ -25,6 +27,7 @@ from enum import StrEnum
 from disposable_email_domains import blocklist
 
 from .free_email_domains import FREE_EMAIL_DOMAINS
+from .payment_service_domains import is_payment_service_domain
 
 
 class EmailTag(StrEnum):
@@ -36,6 +39,7 @@ class EmailTag(StrEnum):
     HEALTHCARE = "healthcare"
     FREE = "free"
     DISPOSABLE = "disposable"
+    PAYMENT_SERVICE = "payment_service"
 
 
 # Curated suffix table: exact domain suffixes (1-3 labels) mapped to a
@@ -186,7 +190,7 @@ def classify_email(email: str | None) -> list[EmailTag]:
     Returns:
         Zero or more tags: at most one institutional tag (government,
         education, military, healthcare) followed by at most one
-        provider tag (disposable beats free).
+        provider tag (disposable beats payment service beats free).
     """
     domain = _extract_domain(email)
     if not domain:
@@ -200,6 +204,8 @@ def classify_email(email: str | None) -> list[EmailTag]:
 
     if domain in blocklist:
         tags.append(EmailTag.DISPOSABLE)
+    elif is_payment_service_domain(domain):
+        tags.append(EmailTag.PAYMENT_SERVICE)
     elif domain in FREE_EMAIL_DOMAINS:
         tags.append(EmailTag.FREE)
 
