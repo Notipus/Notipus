@@ -694,6 +694,31 @@ redis_config_dict = {
 
 CACHES = {"default": redis_config_dict}
 
+# Celery: background and scheduled jobs (see django_notipus/celery.py).
+# Shares the cache's Redis. Scheduled jobs are idempotent, so a task lost
+# to Redis eviction is simply redone on the next beat.
+CELERY_BROKER_URL = redis_location
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TIMEZONE = "UTC"
+if redis_location.startswith("rediss://"):
+    import ssl
+
+    CELERY_BROKER_USE_SSL = {"ssl_cert_reqs": ssl.CERT_REQUIRED}
+CELERY_BEAT_SCHEDULE = {
+    # Each workspace's digest is due from 09:00 in its own timezone, so
+    # check often; send_digest sends each period once.
+    "send-due-sales-digests": {
+        "task": "core.tasks.send_due_sales_digests",
+        "schedule": 15 * 60,
+    },
+    # Enforces the 35-day ledger retention the privacy policy states.
+    "purge-sales-ledger": {
+        "task": "core.tasks.purge_sales_ledger",
+        "schedule": 6 * 60 * 60,
+    },
+}
+
 # Security Headers and HTTPS Configuration
 if not DEBUG:
     # Force HTTPS in production

@@ -164,6 +164,17 @@ services:
       <<: *healthcheck-defaults
       test: ["CMD", "/app/.venv/bin/python", "manage.py", "check"]
 
+  # Background and scheduled jobs (sales digests, ledger retention). Run
+  # exactly one: -B embeds the beat scheduler, which must not run twice.
+  worker:
+    <<: *django-service
+    container_name: notipus_worker
+    command: ["/app/.venv/bin/celery", "-A", "django_notipus", "worker", "-B", "--loglevel=INFO", "--concurrency=2", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      <<: *app-dependencies
+      migration:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:
     driver: local

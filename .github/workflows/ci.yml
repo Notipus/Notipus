@@ -271,3 +271,11 @@ jobs:
         run: flyctl deploy --image registry.fly.io/notipus:${{ github.sha }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      # The worker embeds Celery beat (-B), which must never run twice or
+      # every scheduled job fires once per machine. Pin it to one machine
+      # on every deploy instead of trusting flyctl's default count.
+      - name: Pin Celery worker to one machine
+        run: flyctl scale count worker=1 --yes
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

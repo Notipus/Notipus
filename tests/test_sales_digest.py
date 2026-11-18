@@ -342,3 +342,51 @@ class TestSalesStatsPage:
         )
         workspace.refresh_from_db()
         assert workspace.timezone == "Europe/Stockholm"
+
+
+@pytest.mark.django_db
+class TestCeleryTasks:
+    """The scheduled jobs are wired to Celery beat."""
+
+    def test_beat_schedule_names_real_tasks(self) -> None:
+        """Every beat entry points at a registered task."""
+        from django.conf import settings
+        from django_notipus.celery import app
+
+        app.loader.import_default_modules()
+        for entry in settings.CELERY_BEAT_SCHEDULE.values():
+            assert entry["task"] in app.tasks
+
+    def test_due_digest_task_sends(self, workspace: Workspace) -> None:
+        """The task sends due digests and skips when another run holds the lock.
+
+        Args:
+            workspace: Workspace fixture (opted in to the weekly digest).
+        """
+        from core.tasks import send_due_sales_digests
+        from django.core.cache import cache
+
+        with (
+            patch("core.services.sales_digest.timezone.now", return_value=MONDAY),
+            patch(
+                "core.services.sales_digest.send_digest", return_value="sent"
+            ) as send,
+            patch("django.core.cache.cache.add", return_value=True),
+            patch("django.core.cache.cache.delete"),
+        ):
+            result = send_due_sales_digests()
+        assert result == {f"{workspace.uuid}:week": "sent"}
+        send.assert_called_once_with(workspace, "week")
+
+        with patch.object(cache, "add", return_value=False):
+            assert send_due_sales_digests() == {}
+
+    def test_purge_task(self, workspace: Workspace) -> None:
+        """The purge task reports what it deleted.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        from core.tasks import purge_sales_ledger
+
+        assert purge_sales_ledger() == {"events": 0, "snapshots": 0}
