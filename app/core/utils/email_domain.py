@@ -11,6 +11,7 @@ from email.utils import parseaddr
 from typing import Any
 from urllib.parse import urlparse
 
+from core.utils.domain import normalize_company_domain
 from disposable_email_domains import blocklist
 from webhooks.utils.free_email_domains import FREE_EMAIL_DOMAINS
 
@@ -125,7 +126,8 @@ def extract_domain(email: str) -> str | None:
         email: Email address.
 
     Returns:
-        Lowercase domain or None if invalid.
+        Lowercase domain with any leading ``www.`` removed, or None if
+        invalid.
     """
     # Sanitize first
     sanitized = sanitize_email_input(email)
@@ -142,7 +144,8 @@ def extract_domain(email: str) -> str | None:
         if not addr or "@" not in addr:
             return None
 
-        domain = addr.split("@")[1].lower().strip()
+        # Canonical company form: "jane@www.acme.com" belongs to acme.com
+        domain: str = normalize_company_domain(addr.split("@")[1])
 
         # Convert IDN to ASCII (punycode)
         try:
