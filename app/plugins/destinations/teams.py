@@ -29,6 +29,7 @@ from plugins.destinations.base import BaseDestinationPlugin
 from plugins.destinations.utm import ATTRIBUTION_LABEL, attribution_url, tag_url
 from webhooks.models.rich_notification import (
     CustomerInfo,
+    DetailSection,
     PaymentInfo,
     RichNotification,
 )
@@ -245,6 +246,9 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
         if facts:
             body.append({"type": "FactSet", "facts": facts})
 
+        for section in n.detail_sections:
+            body.extend(self._detail_section(section))
+
         # Attribution footer, last in the body so it never displaces event
         # content. The label is our own constant, so it needs no escaping.
         body.append(
@@ -309,6 +313,51 @@ class TeamsDestinationPlugin(BaseDestinationPlugin):
         if n.customer:
             facts.extend(self._customer_facts(n.customer))
         return facts
+
+    @staticmethod
+    def _detail_section(section: DetailSection) -> list[dict[str, Any]]:
+        """Adaptive Card elements for one generic detail section.
+
+        Escaped like every other field: section text and values can carry
+        provider-controlled data.
+
+        Args:
+            section: The detail section.
+
+        Returns:
+            A bold title, a FactSet of its fields, and its free text.
+        """
+        elements: list[dict[str, Any]] = [
+            {
+                "type": "TextBlock",
+                "text": _escape_md(section.title),
+                "weight": "Bolder",
+                "wrap": True,
+                "spacing": "Medium",
+            }
+        ]
+        if section.fields:
+            elements.append(
+                {
+                    "type": "FactSet",
+                    "facts": [
+                        {"title": _escape_md(f.label), "value": _escape_md(f.value)}
+                        for f in section.fields
+                    ],
+                }
+            )
+        if section.text:
+            elements.append(
+                {
+                    "type": "TextBlock",
+                    "text": "\n\n".join(
+                        _escape_md(line) for line in section.text.splitlines()
+                    ),
+                    "wrap": True,
+                    "spacing": "Small",
+                }
+            )
+        return elements
 
     @staticmethod
     def _payment_facts(payment: PaymentInfo) -> list[dict[str, str]]:
