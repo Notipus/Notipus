@@ -5,6 +5,7 @@ This module handles the main dashboard and workspace settings.
 
 import logging
 from typing import Any, cast
+from zoneinfo import available_timezones
 
 from django.contrib import messages
 from django.contrib.auth import get_user_model
@@ -297,9 +298,15 @@ def workspace_settings(request: HttpRequest) -> HttpResponse | HttpResponseRedir
     if request.method == "POST":
         workspace.name = request.POST.get("name", workspace.name)
         workspace.shop_domain = request.POST.get("shop_domain", workspace.shop_domain)
+        tz_name = request.POST.get("timezone", workspace.timezone)
+        if tz_name in available_timezones():
+            workspace.timezone = tz_name
+        # Checkboxes: absent from the POST when unticked.
+        workspace.sales_digest_weekly = bool(request.POST.get("sales_digest_weekly"))
+        workspace.sales_digest_monthly = bool(request.POST.get("sales_digest_monthly"))
         workspace.save()
         messages.success(request, "Workspace settings updated!")
         return redirect("core:workspace_settings")
 
-    context = {"workspace": workspace}
+    context = {"workspace": workspace, "timezones": sorted(available_timezones())}
     return render(request, "core/workspace_settings.html.j2", context)

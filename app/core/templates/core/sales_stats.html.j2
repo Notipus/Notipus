@@ -1,0 +1,313 @@
+{% extends "core/base.html.j2" %}
+
+{% block title %}
+    Sales snapshot - {{ workspace.name }}
+{% endblock title %}
+
+{% block content %}
+    <c-page width="wide"
+            title="Sales snapshot"
+            subtitle="{{ period.label }}{% if is_current %} · so far{% endif %}{% if has_previous %} · vs previous {{ noun }}{% endif %}">
+        <c-slot name="actions">
+            <nav class="inline-flex items-center gap-1 rounded-pill border border-border bg-surface p-1"
+                 aria-label="Period">
+                <a href="?period={{ PERIOD_WEEK }}"
+                   class="rounded-pill px-4 py-1.5 text-body font-semibold {% if period_kind == PERIOD_WEEK %}bg-action text-content-inverse{% else %}text-content-muted{% endif %}"
+                   {% if period_kind == PERIOD_WEEK %}aria-current="page"{% endif %}>Week</a>
+                <a href="?period={{ PERIOD_MONTH }}"
+                   class="rounded-pill px-4 py-1.5 text-body font-semibold {% if period_kind == PERIOD_MONTH %}bg-action text-content-inverse{% else %}text-content-muted{% endif %}"
+                   {% if period_kind == PERIOD_MONTH %}aria-current="page"{% endif %}>Month</a>
+            </nav>
+            <c-button href="?period={{ period_kind }}&start={{ previous_start }}"
+                      variant="secondary"
+                      size="sm"
+                      icon="chevron-left">
+                Previous
+            </c-button>
+            {% if next_start %}
+                <c-button href="?period={{ period_kind }}&start={{ next_start }}"
+                          variant="secondary"
+                          size="sm"
+                          icon="chevron-right">
+                    Next
+                </c-button>
+            {% endif %}
+        </c-slot>
+
+        {% if partial %}
+            <c-alert tone="warning" title="Only part of this period is still available">
+                Transaction details are kept for 35 days. Older periods show the totals stored when they closed.
+            </c-alert>
+        {% endif %}
+
+        {% if not snapshot or not snapshot.has_data %}
+            <c-card>
+                <c-empty-state icon="chart-bar"
+                               title="No sales recorded for {{ period.label }}"
+                               description="Payments, refunds, failed payments and cancellations from Stripe, Chargify and Shopify show up here as they arrive.">
+                    <c-slot name="actions">
+                        <c-button href="{% url 'core:integrations' %}" icon="plug">Check your integrations</c-button>
+                    </c-slot>
+                </c-empty-state>
+            </c-card>
+        {% else %}
+            <c-card title="Summary" icon="chart-bar">
+                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+                    <c-stat label="Revenue"
+                            value="{{ snapshot.revenue }}"
+                            footnote="{% if snapshot.revenue_change %}{{ snapshot.revenue_change.text }} vs previous {{ noun }}{% else %}{{ snapshot.customers }} paying customer{{ snapshot.customers|pluralize }}{% endif %}" />
+                    <c-stat label="New customers"
+                            value="{{ snapshot.new_customers }}"
+                            unit="· {{ snapshot.new_revenue }}"
+                            footnote="{% if snapshot.new_customers_diff %}{{ snapshot.new_customers_diff|stringformat:'+d' }} vs previous {{ noun }}{% endif %}" />
+                    <c-stat label="Existing customers"
+                            value="{{ snapshot.existing_customers }}"
+                            unit="· {{ snapshot.existing_revenue }}"
+                            footnote="{% if snapshot.existing_change %}{{ snapshot.existing_change.text }} vs previous {{ noun }}{% endif %}" />
+                    <c-stat label="Churned · refunds"
+                            value="{{ snapshot.cancellations }}"
+                            unit="· {{ snapshot.refunds }}"
+                            tone="{% if snapshot.cancellations %}danger{% else %}default{% endif %}"
+                            footnote="{{ snapshot.trials_started }} trial{{ snapshot.trials_started|pluralize }} started" />
+                </div>
+                {% if snapshot.unknown_customers %}
+                    <p class="mt-5 text-body text-content-subtle">
+                        {{ snapshot.unknown_customers }} customer{{ snapshot.unknown_customers|pluralize }} ({{ snapshot.unknown_revenue }}) can't be classified as new or existing: the payment provider didn't send that information.
+                    </p>
+                {% endif %}
+            </c-card>
+
+            {% if snapshot.industries %}
+                <c-card title="Customers by industry"
+                        description="Revenue after refunds. Shares and averages are in {{ snapshot.primary }}."
+                        icon="building"
+                        flush>
+                    <c-table caption="Customers and revenue by industry">
+                        <c-slot name="head">
+                            <c-table.column>
+                                Industry
+                            </c-table.column>
+                            <c-table.column align="right">
+                                Customers
+                            </c-table.column>
+                            <c-table.column align="right">
+                                New / existing
+                            </c-table.column>
+                            <c-table.column align="right">
+                                Revenue
+                            </c-table.column>
+                            <c-table.column>
+                                Share
+                            </c-table.column>
+                            <c-table.column align="right">
+                                Avg / customer
+                            </c-table.column>
+                            <c-table.column align="right">
+                                Change
+                            </c-table.column>
+                        </c-slot>
+                        {% for row in snapshot.industries %}
+                            <tr {% if row.industry == industry %}class="bg-brand-surface"{% endif %}>
+                                <c-table.cell>
+                                    <a class="font-medium text-brand-text hover:underline"
+                                       href="?period={{ period_kind }}&start={{ period.start|date:'Y-m-d' }}&industry={{ row.industry|urlencode }}#customers">{{ row.industry }}</a>
+                                </c-table.cell>
+                                <c-table.cell align="right">
+                                    {{ row.customers }}
+                                </c-table.cell>
+                                <c-table.cell align="right" muted="1">
+                                    {{ row.new_customers }} / {{ row.existing_customers }}
+                                </c-table.cell>
+                                <c-table.cell align="right">
+                                    {{ row.revenue }}
+                                </c-table.cell>
+                                <c-table.cell class="w-40">
+                                    <div class="flex items-center gap-2">
+                                        <c-progress :value="row.share" size="sm" label="Share of revenue" />
+                                        <span class="w-10 text-right text-caption text-content-muted">{{ row.share|floatformat:0 }}%</span>
+                                    </div>
+                                </c-table.cell>
+                                <c-table.cell align="right">
+                                    {{ row.avg }}
+                                </c-table.cell>
+                                <c-table.cell align="right">
+                                    {% if row.change %}
+                                        <c-badge tone="{{ row.change.tone }}">
+                                            {{ row.change.text }}
+                                        </c-badge>
+                                    {% else %}
+                                        <span class="text-content-subtle">—</span>
+                                    {% endif %}
+                                </c-table.cell>
+                            </tr>
+                        {% endfor %}
+                    </c-table>
+                </c-card>
+            {% endif %}
+
+            {% if snapshot.selected %}
+                <c-card title="{{ snapshot.selected.industry }}"
+                        description="Customers who paid in {{ period.label }}"
+                        icon="users"
+                        flush
+                        id="customers">
+                    <c-slot name="actions">
+                        <c-button href="?period={{ period_kind }}&start={{ period.start|date:'Y-m-d' }}"
+                                  variant="secondary"
+                                  size="sm">
+                            Close
+                        </c-button>
+                    </c-slot>
+                    <c-table caption="Customers in {{ snapshot.selected.industry }}">
+                        <c-slot name="head">
+                            <c-table.column>
+                                Customer
+                            </c-table.column>
+                            <c-table.column>
+                                Type
+                            </c-table.column>
+                            <c-table.column align="right">
+                                Revenue
+                            </c-table.column>
+                        </c-slot>
+                        {% for person in snapshot.selected.people %}
+                            <tr>
+                                <c-table.cell>
+                                    {{ person.name|default:"Unnamed customer" }}
+                                </c-table.cell>
+                                <c-table.cell>
+                                    {% if person.segment == "new" %}
+                                        <c-badge tone="brand">
+                                            New
+                                        </c-badge>
+                                    {% elif person.segment == "existing" %}
+                                        <c-badge tone="info">
+                                            Existing
+                                        </c-badge>
+                                    {% else %}
+                                        <c-badge>
+                                            Unclassified
+                                        </c-badge>
+                                    {% endif %}
+                                </c-table.cell>
+                                <c-table.cell align="right">
+                                    {{ person.revenue }}
+                                </c-table.cell>
+                            </tr>
+                        {% endfor %}
+                    </c-table>
+                </c-card>
+            {% endif %}
+
+            <div class="grid grid-cols-1 gap-6 lg:grid-cols-5">
+                {% if snapshot.industries %}
+                    <c-card title="Customers by revenue band"
+                            description="Customers billed this {{ noun }}, by how much each paid. Bands are scaled for non-USD currencies."
+                            icon="layout-grid"
+                            class="lg:col-span-3"
+                            flush>
+                        <c-table caption="Customers by industry and revenue band">
+                            <c-slot name="head">
+                                <c-table.column>
+                                    Industry
+                                </c-table.column>
+                                {% for band in snapshot.bands %}
+                                    <c-table.column align="right">
+                                        {{ band }}
+                                    </c-table.column>
+                                {% endfor %}
+                            </c-slot>
+                            {% for row in snapshot.industries %}
+                                <tr>
+                                    <c-table.cell>
+                                        {{ row.industry }}
+                                    </c-table.cell>
+                                    {% for count in row.bands %}
+                                        <c-table.cell align="right"
+                                                      muted="{% if not count %}1{% endif %}">{{ count }}</c-table.cell>
+                                    {% endfor %}
+                                </tr>
+                            {% endfor %}
+                        </c-table>
+                    </c-card>
+                {% endif %}
+
+                <c-card title="Payment recovery"
+                        description="Failed payments this {{ noun }} and what happened next."
+                        icon="refresh"
+                        class="lg:col-span-2">
+                    {% if snapshot.recovery.rate is not None %}
+                        <c-stat label="Recovery rate"
+                                value="{{ snapshot.recovery.rate|floatformat:0 }}%" />
+                        <c-progress :value="snapshot.recovery.rate"
+                                    tone="success"
+                                    label="Recovery rate"
+                                    class="mt-2 mb-5" />
+                    {% endif %}
+                    <dl class="flex flex-col gap-2 text-body">
+                        <div class="flex justify-between gap-3">
+                            <dt class="text-success-text">Recovered ({{ snapshot.recovery.recovered }})</dt>
+                            <dd class="text-content">
+                                {{ snapshot.recovery.recovered_amount }}
+                            </dd>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                            <dt class="text-warning-text">At risk ({{ snapshot.recovery.at_risk }})</dt>
+                            <dd class="text-content">
+                                {{ snapshot.recovery.at_risk_amount }}
+                            </dd>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                            <dt class="text-danger-text">Lost ({{ snapshot.recovery.lost }})</dt>
+                            <dd class="text-content">
+                                {{ snapshot.recovery.lost_amount }}
+                            </dd>
+                        </div>
+                        {% if snapshot.recovery.median_days is not None %}
+                            <div class="flex justify-between gap-3">
+                                <dt class="text-content-muted">Median time to recover</dt>
+                                <dd class="text-content">
+                                    {{ snapshot.recovery.median_days }} days
+                                </dd>
+                            </div>
+                        {% endif %}
+                    </dl>
+                    {% if snapshot.recovery.attention %}
+                        <div class="mt-5 border-t border-border pt-4">
+                            <p class="mb-2 text-body font-semibold text-content">Needs attention</p>
+                            <ul class="flex flex-col gap-2 text-body">
+                                {% for item in snapshot.recovery.attention %}
+                                    <li class="text-content">
+                                        {{ item.name|default:"Unnamed customer" }} · {{ item.amount }} ·
+                                        {{ item.failures }} failed attempt{{ item.failures|pluralize }}
+                                        {% if item.next_attempt_at %}
+                                            · <span class="text-content-muted">retry {{ item.next_attempt_at|date:"M j" }}</span>
+                                        {% endif %}
+                                    </li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    {% endif %}
+                </c-card>
+            </div>
+
+            {% if snapshot.highlights %}
+                <c-card title="Highlights" icon="bulb">
+                    <ul class="flex list-disc flex-col gap-2 pl-5 text-body text-content">
+                        {% for highlight in snapshot.highlights %}<li>{{ highlight }}</li>{% endfor %}
+                    </ul>
+                </c-card>
+            {% endif %}
+        {% endif %}
+
+        <p class="text-body text-content-subtle">
+            Weeks run Monday to Sunday in {{ tz_name }}.
+            {% if workspace.sales_digest_weekly or workspace.sales_digest_monthly %}
+                A digest is posted to your notification channels.
+            {% else %}
+                Get this snapshot in your notification channels every week or month from <a class="text-brand-text hover:underline"
+                                                                                            href="{% url 'core:workspace_settings' %}">workspace settings</a>.
+            {% endif %}
+        </p>
+    </c-page>
+{% endblock content %}
