@@ -297,3 +297,73 @@ class TestChargifyRenewalFlag:
         )
         assert renewal["metadata"]["is_renewal"] is True
         assert "is_renewal" not in payment["metadata"]
+
+
+@pytest.mark.django_db
+class TestShopifyPrivacyRequests:
+    """Shopify's mandatory privacy webhooks cover the sales ledger."""
+
+    @staticmethod
+    def _shopify_sale(workspace: Workspace, order: str, customer: str, email: str):
+        """Record a Shopify sale for a customer.
+
+        Args:
+            workspace: Workspace fixture.
+            order: Order id.
+            customer: Shopify customer id.
+            email: Customer email.
+
+        Returns:
+            The stored row.
+        """
+        return record_event(
+            workspace,
+            {
+                "type": "payment_success",
+                "provider": "shopify",
+                "customer_id": customer,
+                "external_id": order,
+                "amount": 40,
+                "currency": "USD",
+                "metadata": {},
+            },
+            {"email": email, "orders_count": 1},
+        )
+
+    def test_data_request_and_customer_redact(self, workspace: Workspace) -> None:
+        """A customer's rows are exported, then erased; others survive.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        from webhooks.services.shopify_compliance import (
+            collect_customer_data,
+            redact_customer,
+        )
+
+        self._shopify_sale(workspace, "1", "111", "ann@corp.example")
+        self._shopify_sale(workspace, "2", "222", "bob@corp.example")
+
+        exported = collect_customer_data(workspace, "111", None)["sales_ledger"]
+        assert [row["details"]["email"] for row in exported] == ["ann@corp.example"]
+
+        result = redact_customer(workspace, None, "ANN@corp.example")
+        assert result["ledger"] == 1
+        remaining = TransactionEvent.objects.get()
+        assert remaining.details["email"] == "bob@corp.example"
+
+    def test_shop_redact_keeps_other_providers(self, workspace: Workspace) -> None:
+        """shop/redact erases Shopify rows only.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        from webhooks.services.shopify_compliance import redact_shop
+
+        self._shopify_sale(workspace, "1", "111", "ann@corp.example")
+        record_event(workspace, _stripe_invoice(), {"email": "x@corp.example"})
+
+        assert redact_shop(workspace)["ledger"] == 1
+        assert list(TransactionEvent.objects.values_list("provider", flat=True)) == [
+            "stripe"
+        ]

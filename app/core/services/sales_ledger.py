@@ -346,3 +346,62 @@ def purge_expired(now: datetime | None = None) -> int:
     cutoff = (now or timezone.now()) - timedelta(days=RETENTION_DAYS)
     deleted, _ = TransactionEvent.objects.filter(occurred_at__lt=cutoff).delete()
     return int(deleted)
+
+
+def customer_events(
+    workspace: Workspace,
+    provider: str,
+    customer_id: str | None,
+    email: str | None,
+) -> list[TransactionEvent]:
+    """Return a customer's ledger rows, for data-subject requests.
+
+    Matches on the keyed customer reference and on the decrypted
+    ``details`` (provider customer id or email), so guest checkouts keyed
+    by email are found too.
+
+    Args:
+        workspace: The workspace to search.
+        provider: Source provider, e.g. ``"shopify"``.
+        customer_id: Provider customer id, if known.
+        email: Customer email, if known.
+
+    Returns:
+        The matching rows.
+    """
+    refs = {
+        keyed_hash(workspace.pk, provider, value)
+        for value in (customer_id, (email or "").strip().lower())
+        if value
+    }
+    wanted_id = str(customer_id or "")
+    wanted_email = (email or "").strip().lower()
+    matches: list[TransactionEvent] = []
+    for row in TransactionEvent.objects.filter(workspace=workspace, provider=provider):
+        details = row.details or {}
+        if (
+            row.customer_ref in refs
+            or (wanted_id and str(details.get("customer_id", "")) == wanted_id)
+            or (wanted_email and str(details.get("email", "")).lower() == wanted_email)
+        ):
+            matches.append(row)
+    return matches
+
+
+def export_row(row: TransactionEvent) -> dict[str, Any]:
+    """Return a ledger row as plain data for a data-access export.
+
+    Args:
+        row: The ledger row.
+
+    Returns:
+        Its kind, amount, date and decrypted customer details.
+    """
+    return {
+        "kind": row.kind,
+        "segment": row.segment,
+        "amount": str(row.amount),
+        "currency": row.currency,
+        "occurred_at": row.occurred_at.isoformat(),
+        "details": row.details or {},
+    }

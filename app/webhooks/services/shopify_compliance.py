@@ -23,7 +23,11 @@ What Notipus holds, and how each part is handled:
 * ``Company`` rows are deliberately untouched: they hold public brand
   data fetched by domain, are shared across workspaces by design, and
   contain no personal data (see the model docstring).
-* Raw captured webhook bodies expire on their own 7-day TTL.
+* Sales ledger rows (``TransactionEvent``, encrypted customer details,
+  35-day retention) are returned for data requests and deleted on
+  redaction: per customer on ``customers/redact``, every Shopify row on
+  ``shop/redact``. ``SalesSnapshot`` aggregates hold no personal data
+  and are kept.
 """
 
 from __future__ import annotations
@@ -36,9 +40,10 @@ from operator import or_
 from typing import Any
 
 from core.encrypted_cache import decrypt_cache_value
-from core.models import Integration, Person, Workspace
+from core.models import Integration, Person, TransactionEvent, Workspace
 from core.services.mail import send_email
 from core.services.recipients import admin_emails
+from core.services.sales_ledger import customer_events, export_row
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
@@ -179,12 +184,18 @@ def collect_customer_data(
                 }
             )
 
+    ledger = [
+        export_row(row)
+        for row in customer_events(workspace, "shopify", customer_id, email)
+    ]
+
     return {
         "workspace": workspace.name,
         "customer_id": customer_id,
         "email": email,
         "notification_records": records,
         "enriched_people": people,
+        "sales_ledger": ledger,
         "notes": (
             "Company brand data is public, fetched by domain and shared "
             "across workspaces; it holds no personal data and is not "
@@ -217,7 +228,9 @@ def fulfil_data_request(
         Counts of what was found, plus whether the mail was accepted.
     """
     collected = collect_customer_data(workspace, customer_id, email)
-    record_count = len(collected["notification_records"])
+    record_count = len(collected["notification_records"]) + len(
+        collected["sales_ledger"]
+    )
     people_count = len(collected["enriched_people"])
 
     recipients = admin_emails(workspace)
@@ -318,13 +331,24 @@ def redact_customer(
             workspace=workspace, email__iexact=email
         ).delete()
 
+    ledger_ids = [
+        row.pk for row in customer_events(workspace, "shopify", customer_id, email)
+    ]
+    deleted_ledger, _ = TransactionEvent.objects.filter(pk__in=ledger_ids).delete()
+
     logger.info(
-        "Shopify customers/redact for workspace %s: %d records, %d people deleted",
+        "Shopify customers/redact for workspace %s: %d records, %d people, "
+        "%d ledger rows deleted",
         workspace.uuid,
         deleted_records,
         deleted_people,
+        deleted_ledger,
     )
-    return {"records": deleted_records, "people": deleted_people}
+    return {
+        "records": deleted_records,
+        "people": deleted_people,
+        "ledger": deleted_ledger,
+    }
 
 
 def _record_emails(record: dict[str, Any]) -> set[str]:
@@ -455,21 +479,26 @@ def redact_shop(workspace: Workspace) -> dict[str, int]:
             cache.delete(activity_key)
 
     deleted_people = _redact_shop_people(workspace, shop_emails)
+    deleted_ledger, _ = TransactionEvent.objects.filter(
+        workspace=workspace, provider="shopify"
+    ).delete()
 
     deactivated = workspace.integrations.filter(
         integration_type="shopify", is_active=True
     ).update(is_active=False)
 
     logger.info(
-        "Shopify shop/redact for workspace %s: %d records, %d people deleted, "
-        "%d integrations deactivated",
+        "Shopify shop/redact for workspace %s: %d records, %d people, "
+        "%d ledger rows deleted, %d integrations deactivated",
         workspace.uuid,
         deleted_records,
         deleted_people,
+        deleted_ledger,
         deactivated,
     )
     return {
         "records": deleted_records,
         "people": deleted_people,
+        "ledger": deleted_ledger,
         "integrations": deactivated,
     }
