@@ -367,3 +367,164 @@ class TestShopifyPrivacyRequests:
         assert list(TransactionEvent.objects.values_list("provider", flat=True)) == [
             "stripe"
         ]
+
+
+def _chargify(event_type: str, *, txn: str, amount: float = 49.0) -> dict[str, Any]:
+    """Build a parsed Chargify event on subscription sub_9.
+
+    Args:
+        event_type: Normalized event type.
+        txn: Transaction id (Chargify opens a new one per retry).
+        amount: Amount in major units.
+
+    Returns:
+        Parsed event data.
+    """
+    return {
+        "type": event_type,
+        "provider": "chargify",
+        "customer_id": "cust_9",
+        "amount": amount,
+        "currency": "USD",
+        "metadata": {
+            "subscription_id": "sub_9",
+            "transaction_id": txn,
+            "failure_reason": "Card declined",
+        },
+    }
+
+
+@pytest.mark.django_db
+class TestLedgerHistoryInsights:
+    """The ledger feeds history the webhook payload can't carry."""
+
+    @staticmethod
+    def _detect(event: dict[str, Any]) -> str | None:
+        """Run the insight detector on an event.
+
+        Args:
+            event: Parsed event data (with ledger history attached).
+
+        Returns:
+            The insight text, or None.
+        """
+        from webhooks.services.insight_detector import InsightDetector
+
+        insight = InsightDetector().detect(event, {})
+        return insight.text if insight else None
+
+    def test_bounced_twice_then_paid(self, workspace: Workspace) -> None:
+        """A success after two declines says it recovered.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        record_event(workspace, _chargify("payment_failure", txn="t1"), {})
+        record_event(workspace, _chargify("payment_failure", txn="t2"), {})
+        TransactionEvent.objects.update(occurred_at=timezone.now() - timedelta(days=3))
+        sale = _chargify("payment_success", txn="t3")
+        record_event(workspace, sale, {})
+
+        history = sale["metadata"]["ledger_history"]
+        assert history["recovered_failures"] == 2
+        assert self._detect(sale) == (
+            "Recovered after 2 failed attempts · 3 days after the first decline"
+        )
+
+    def test_failures_settled_by_an_earlier_sale_do_not_count(
+        self, workspace: Workspace
+    ) -> None:
+        """Last month's recovered decline doesn't make this payment "recovered".
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        record_event(workspace, _chargify("payment_failure", txn="t1"), {})
+        record_event(workspace, _chargify("payment_success", txn="t2"), {})
+        sale = _chargify("payment_success", txn="t3")
+        record_event(workspace, sale, {})
+        assert "recovered_failures" not in sale["metadata"]["ledger_history"]
+        assert self._detect(sale) is None
+
+    def test_chargify_retry_count_comes_from_the_ledger(
+        self, workspace: Workspace
+    ) -> None:
+        """Chargify sends no attempt count; the ledger counts the retries.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        first = _chargify("payment_failure", txn="t1")
+        record_event(workspace, first, {})
+        assert self._detect(first) == "Card declined"
+
+        second = _chargify("payment_failure", txn="t2")
+        record_event(workspace, second, {})
+        assert second["metadata"]["ledger_history"]["chain_failures"] == 2
+        assert self._detect(second) == "Retry #1 · Card declined"
+
+    def test_cancellation_after_unpaid_failures(self, workspace: Workspace) -> None:
+        """Cancelling with unpaid failures reads as involuntary churn.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        record_event(workspace, _chargify("payment_failure", txn="t1"), {})
+        record_event(workspace, _chargify("payment_failure", txn="t2"), {})
+        cancel = {
+            "type": "subscription_canceled",
+            "provider": "chargify",
+            "customer_id": "cust_9",
+            "external_id": "sub_9",
+            "metadata": {"subscription_id": "sub_9"},
+        }
+        record_event(workspace, cancel, {})
+        assert self._detect(cancel) == (
+            "Likely involuntary churn · 2 failed payments never settled ($49.00)"
+        )
+
+    def test_voluntary_cancellation_is_not_flagged(self, workspace: Workspace) -> None:
+        """No failures on record: no churn claim.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        cancel = {
+            "type": "subscription_canceled",
+            "provider": "chargify",
+            "customer_id": "cust_9",
+            "external_id": "sub_9",
+            "metadata": {},
+        }
+        record_event(workspace, cancel, {})
+        assert self._detect(cancel) is None
+
+    def test_prior_sale_proves_existing_customer(self, workspace: Workspace) -> None:
+        """A payment with no provider signal is existing if we saw them pay.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        bare = {
+            "type": "payment_success",
+            "provider": "shopify",
+            "customer_id": "c1",
+            "amount": 20,
+            "metadata": {},
+        }
+        first = record_event(workspace, {**bare, "external_id": "o1"}, {})
+        second = record_event(workspace, {**bare, "external_id": "o2"}, {})
+        assert first is not None and second is not None
+        assert first.segment == "unknown"
+        assert second.segment == "existing"
+
+    def test_history_never_counts_the_event_itself(self, workspace: Workspace) -> None:
+        """A redelivered failure is not its own previous attempt.
+
+        Args:
+            workspace: Workspace fixture.
+        """
+        record_event(workspace, _chargify("payment_failure", txn="t1"), {})
+        again = _chargify("payment_failure", txn="t1")
+        record_event(workspace, again, {})
+        assert again["metadata"]["ledger_history"]["chain_failures"] == 1

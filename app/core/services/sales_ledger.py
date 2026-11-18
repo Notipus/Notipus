@@ -305,18 +305,36 @@ def _record_event(
         "failure_reason": str(metadata.get("failure_reason") or ""),
     }
 
+    customer_ref = keyed_hash(workspace.pk, provider, customer_ref_source)
+    charge_ref = keyed_hash(workspace.pk, provider, _charge_source(event_data))
+
+    # What we have already seen of this customer and this payment. Read
+    # before the insert so the event never counts itself, and handed to
+    # the notification (InsightDetector) through the event's metadata.
+    history = ledger_history(
+        workspace, provider, kind, customer_ref, charge_ref, exclude_key=dedupe_key
+    )
+    if history:
+        event_data.setdefault("metadata", {})[LEDGER_HISTORY_KEY] = history
+
+    segment = classify_segment(event_data, customer_data, kind)
+    if segment == SEGMENT_UNKNOWN and history.get("prior_sales"):
+        # We saw this customer pay before: proof they are existing, even
+        # when the provider's payload says nothing about history.
+        segment = SEGMENT_EXISTING
+
     row = TransactionEvent(
         workspace=workspace,
         provider=provider,
         kind=kind,
-        segment=classify_segment(event_data, customer_data, kind),
+        segment=segment,
         occurred_at=timezone.now(),
         amount=amount,
         currency=str(event_data.get("currency") or "USD").upper()[:3],
         company_domain=domain[:255],
         is_consumer=is_consumer,
-        customer_ref=keyed_hash(workspace.pk, provider, customer_ref_source),
-        charge_ref=keyed_hash(workspace.pk, provider, _charge_source(event_data)),
+        customer_ref=customer_ref,
+        charge_ref=charge_ref,
         dedupe_key=dedupe_key,
         attempt_count=attempt_count,
         next_attempt_at=_to_datetime(metadata.get("next_payment_attempt")),
@@ -330,6 +348,112 @@ def _record_event(
         # invoice.payment_succeeded / invoice.paid).
         return None
     return row
+
+
+LEDGER_HISTORY_KEY = "ledger_history"
+
+
+def _failures_since_last_sale(base: Any, charge_ref: str) -> Any:
+    """Return the chain's failures that no later sale has settled.
+
+    Chargify and Shopify chains are whole subscriptions, so a failure
+    from an earlier, already-paid cycle must not count against this one.
+    """
+    failures = base.filter(kind=KIND_FAILURE, charge_ref=charge_ref)
+    last_sale = (
+        base.filter(kind=KIND_SALE, charge_ref=charge_ref)
+        .order_by("-occurred_at")
+        .values_list("occurred_at", flat=True)
+        .first()
+    )
+    if last_sale is not None:
+        failures = failures.filter(occurred_at__gt=last_sale)
+    return failures
+
+
+def ledger_history(
+    workspace: Workspace,
+    provider: str,
+    kind: str,
+    customer_ref: str,
+    charge_ref: str,
+    *,
+    exclude_key: str = "",
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Summarize what the ledger already knows about an event's context.
+
+    Webhook payloads carry no cross-event history (Stripe sends no
+    lifetime spend, Chargify no attempt count), but the ledger has seen
+    the last 35 days. Everything here is something we observed, so it is
+    safe to state as fact in a notification.
+
+    Args:
+        workspace: The workspace.
+        provider: Source provider.
+        kind: Ledger kind of the incoming event.
+        customer_ref: Keyed customer reference.
+        charge_ref: Keyed charge-chain reference.
+        exclude_key: Dedupe key of the incoming event (never counts itself).
+        now: Reference time.
+
+    Returns:
+        Only the keys that apply:
+        ``prior_sales`` - earlier sales from this customer;
+        ``recovered_failures`` / ``recovered_hours`` - a sale that settles
+        earlier failed attempts on the same payment;
+        ``chain_failures`` - for a failure, how many attempts on this
+        payment have now failed, including this one;
+        ``unpaid_failures`` / ``unpaid_amount`` / ``unpaid_currency`` -
+        for a cancellation, failed payments the customer never settled.
+    """
+    from datetime import timedelta
+
+    now = now or timezone.now()
+    base = TransactionEvent.objects.filter(
+        workspace=workspace,
+        provider=provider,
+        occurred_at__gte=now - timedelta(days=RETENTION_DAYS),
+    ).exclude(dedupe_key=exclude_key)
+
+    history: dict[str, Any] = {}
+    prior_sales = base.filter(kind=KIND_SALE, customer_ref=customer_ref).count()
+    if prior_sales:
+        history["prior_sales"] = prior_sales
+
+    if kind == KIND_SALE:
+        failures = _failures_since_last_sale(base, charge_ref)
+        count = failures.count()
+        if count:
+            first = failures.order_by("occurred_at").values_list(
+                "occurred_at", flat=True
+            )[0]
+            history["recovered_failures"] = count
+            history["recovered_hours"] = round((now - first).total_seconds() / 3600, 1)
+    elif kind == KIND_FAILURE:
+        history["chain_failures"] = (
+            _failures_since_last_sale(base, charge_ref).count() + 1
+        )
+    elif kind == KIND_CANCELLATION:
+        unpaid = []
+        failures = base.filter(kind=KIND_FAILURE, customer_ref=customer_ref)
+        for failure in failures.only("charge_ref", "occurred_at", "amount", "currency"):
+            settled = base.filter(
+                kind=KIND_SALE,
+                charge_ref=failure.charge_ref,
+                occurred_at__gt=failure.occurred_at,
+            ).exists()
+            if not settled:
+                unpaid.append(failure)
+        if unpaid:
+            # One payment retried three times is one unpaid payment.
+            by_chain = {f.charge_ref: f for f in unpaid}
+            history["unpaid_failures"] = len(unpaid)
+            history["unpaid_amount"] = str(
+                sum((f.amount for f in by_chain.values()), Decimal("0"))
+            )
+            history["unpaid_currency"] = next(iter(by_chain.values())).currency
+    return history
 
 
 def purge_expired(now: datetime | None = None) -> int:
