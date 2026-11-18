@@ -34,6 +34,7 @@ from core.models import Company, SalesSnapshot, TransactionEvent, Workspace
 from django.db.models import Min
 from django.utils import timezone
 from webhooks.utils.currency import format_money, usd_threshold_in
+from webhooks.utils.payment_service_domains import is_payment_service_domain
 
 from .sales_ledger import (
     KIND_CANCELLATION,
@@ -287,6 +288,11 @@ def _customer_identity(workspace: Workspace) -> dict[str, tuple[str, bool]]:
         .values_list("customer_ref", "company_domain", "is_consumer")
     )
     for customer_ref, domain, is_consumer in rows:
+        if is_payment_service_domain(domain):
+            # Rows recorded before payment services were recognised carry
+            # the intermediary's domain (bill.com); it says nothing about
+            # who the customer is.
+            continue
         identity[customer_ref] = (domain, is_consumer)
     return identity
 
@@ -379,6 +385,8 @@ class _IndustryResolver:
             The industry, or the consumer / unknown bucket.
         """
         domain, is_consumer = row.company_domain, row.is_consumer
+        if is_payment_service_domain(domain):
+            domain = ""
         if not domain and not is_consumer:
             domain, is_consumer = self.identity.get(row.customer_ref, ("", False))
         if is_consumer:

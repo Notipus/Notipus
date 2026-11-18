@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from disposable_email_domains import blocklist
 from webhooks.utils.free_email_domains import FREE_EMAIL_DOMAINS
+from webhooks.utils.payment_service_domains import is_payment_service_domain
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,24 @@ def is_disposable_email(domain: str) -> bool:
     return domain.lower() in blocklist
 
 
+def is_payment_service_email(email: str) -> bool:
+    """Check if an email belongs to a payment service paying for a customer.
+
+    Bill-pay and AP automation platforms (Bill.com, Tipalti, ...) pay
+    invoices on a business's behalf, so their address identifies the
+    intermediary rather than the buyer. Such a payer is a business whose
+    company is unknown, not a consumer.
+
+    Args:
+        email: Email address to check.
+
+    Returns:
+        True if the email's domain is a known payment service.
+    """
+    domain = extract_domain(email)
+    return bool(domain) and is_payment_service_domain(domain)
+
+
 def is_enrichable_domain(email: str) -> bool:
     """Determine if an email domain is worth enriching.
 
@@ -221,6 +240,8 @@ def is_enrichable_domain(email: str) -> bool:
     3. Extracts domain
     4. Checks not a free provider
     5. Checks not a disposable domain
+    6. Checks not a hosted mailbox domain
+    7. Checks not a payment service paying on the customer's behalf
 
     Args:
         email: Email address to check.
@@ -247,6 +268,11 @@ def is_enrichable_domain(email: str) -> bool:
     # Check if hosted email domain (e.g., onmicrosoft.com)
     if is_hosted_email_domain(domain):
         logger.debug(f"Hosted email domain, skipping enrichment: {domain}")
+        return False
+
+    # Check if a payment service paying for the customer (e.g., bill.com)
+    if is_payment_service_domain(domain):
+        logger.debug(f"Payment service domain, skipping enrichment: {domain}")
         return False
 
     return True
