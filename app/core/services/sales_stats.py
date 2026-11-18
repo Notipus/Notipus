@@ -27,10 +27,11 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from core.models import Company, SalesSnapshot, TransactionEvent
+from core.models import Company, SalesSnapshot, TransactionEvent, Workspace
+from django.db.models import Min
 from django.utils import timezone
 from webhooks.utils.currency import format_money, usd_threshold_in
 
@@ -45,9 +46,6 @@ from .sales_ledger import (
     SEGMENT_NEW,
     SEGMENT_UNKNOWN,
 )
-
-if TYPE_CHECKING:
-    from core.models import Workspace
 
 PERIOD_WEEK = SalesSnapshot.PERIOD_WEEK
 PERIOD_MONTH = SalesSnapshot.PERIOD_MONTH
@@ -428,8 +426,12 @@ class _Totals:
         elif row.kind == KIND_REFUND:
             self.refund_count += 1
             _add(self.refunds, row.currency, row.amount)
-            if row.customer_ref in self.customers:
-                _add(self.customers[row.customer_ref].refunds, row.currency, row.amount)
+            customer = self.customers.setdefault(
+                row.customer_ref, _Customer(industry, {}, {}, set())
+            )
+            _add(customer.refunds, row.currency, row.amount)
+            if self.include_people and not customer.name:
+                customer.name = _display_name(row.details, industry)
         elif row.kind == KIND_CANCELLATION:
             self.cancellations += 1
         elif row.kind == KIND_TRIAL_STARTED:
@@ -460,14 +462,14 @@ class _Totals:
 
     def as_dict(self) -> dict[str, Any]:
         """Return the JSON-safe ``totals`` block of a snapshot."""
-        segments = Counter(c.segment for c in self.customers.values())
+        segments = Counter(c.segment for c in self.customers.values() if c.sales)
         new, existing, unknown = (
             SEGMENT_NEW,
             SEGMENT_EXISTING,
             SEGMENT_UNKNOWN,
         )
         return {
-            "customers": len(self.customers),
+            "customers": sum(bool(c.sales) for c in self.customers.values()),
             "revenue": _serialize_money(self.net()),
             "gross": _serialize_money(self.gross()),
             "new_customers": segments[new],
@@ -502,19 +504,21 @@ def _add_customer_to_industry(
     entry: dict[str, Any], customer: _Customer, primary: str, include_people: bool
 ) -> None:
     """Fold one customer's period into their industry's accumulator."""
-    entry["customers"] += 1
-    entry[f"{customer.segment}_customers"] += 1
+    if customer.sales:
+        entry["customers"] += 1
+        entry[f"{customer.segment}_customers"] += 1
     customer_net = customer.net()
     for cur, amount in customer_net.items():
         _add(entry["revenue"], cur, amount)
         if customer.segment != SEGMENT_UNKNOWN:
             _add(entry[f"{customer.segment}_revenue"], cur, amount)
-    main_cur, main_amount = max(
-        customer.sales.items(), key=lambda item: (item[1], item[0])
-    )
-    band = _band_index(main_amount, main_cur)
-    if band is not None:
-        entry["bands"][band] += 1
+    if customer.sales:
+        main_cur, main_amount = max(
+            customer.sales.items(), key=lambda item: (item[1], item[0])
+        )
+        band = _band_index(main_amount, main_cur)
+        if band is not None:
+            entry["bands"][band] += 1
     if include_people:
         entry["people"].append(
             {
@@ -553,6 +557,8 @@ def _industry_rows(totals: _Totals) -> list[dict[str, Any]]:
             else 0.0,
             "avg_per_customer": str(
                 (primary_revenue / entry["customers"]).quantize(Decimal("0.01"))
+                if entry["customers"]
+                else _ZERO
             ),
             "bands": entry["bands"],
         }
@@ -708,6 +714,30 @@ def _attention_item(chain: list[TransactionEvent]) -> dict[str, Any]:
     }
 
 
+def _recovery_episodes(
+    chain: list[TransactionEvent], payments: list[datetime]
+) -> list[list[TransactionEvent]]:
+    """Split subscription failures whenever a successful payment settles an episode."""
+    episodes: list[list[TransactionEvent]] = []
+    current: list[TransactionEvent] = []
+    payments = sorted(payments)
+    payment_index = 0
+    for failure in chain:
+        while (
+            payment_index < len(payments)
+            and payments[payment_index] <= failure.occurred_at
+        ):
+            paid_at = payments[payment_index]
+            if current and paid_at > current[0].occurred_at:
+                episodes.append(current)
+                current = []
+            payment_index += 1
+        current.append(failure)
+    if current:
+        episodes.append(current)
+    return episodes
+
+
 def _compute_recovery(
     workspace: Workspace,
     period: Period,
@@ -757,7 +787,14 @@ def _compute_recovery(
     attention: list[dict[str, Any]] = []
     if chains:
         outcomes = _Outcomes.load(workspace, failures[0].occurred_at)
-        for chain in chains.values():
+        episodes = [
+            episode
+            for chain in chains.values()
+            for episode in _recovery_episodes(
+                chain, outcomes.sales_by_chain.get(chain[0].charge_ref, [])
+            )
+        ]
+        for chain in episodes:
             status, hours = outcomes.status(chain, now)
             counts[status] += 1
             _add(amounts[status], chain[0].currency, max(f.amount for f in chain))
@@ -928,6 +965,12 @@ def store_snapshot(
     Returns:
         The stored SalesSnapshot (created or refreshed).
     """
+    if not ledger_covers(period, now):
+        stored = SalesSnapshot.objects.filter(
+            workspace=workspace, period=period.kind, start=period.start
+        ).first()
+        if stored is not None:
+            return stored
     data = compute_snapshot(workspace, period, now=now)
     snapshot, _ = SalesSnapshot.objects.update_or_create(
         workspace=workspace,
@@ -953,3 +996,35 @@ def purge_old_snapshots(now: datetime | None = None) -> int:
     cutoff = (now or timezone.now()).date() - timedelta(days=SNAPSHOT_RETENTION_DAYS)
     deleted, _ = SalesSnapshot.objects.filter(end__lt=cutoff).delete()
     return int(deleted)
+
+
+def archive_closed_periods(
+    workspaces: Any = None, *, now: datetime | None = None
+) -> int:
+    """Preserve closed weeks/months independently of digest delivery preferences.
+
+    Called by the hourly digest job and before daily purging. Refresh only
+    periods still fully covered by retention; never replace archived totals
+    with a partial ledger. Late-arriving events/corrections refresh those
+    periods while the underlying rows remain available.
+    """
+    now = now or timezone.now()
+    workspaces = Workspace.objects.all() if workspaces is None else workspaces
+    archived = 0
+    for workspace in workspaces:
+        first = TransactionEvent.objects.filter(workspace=workspace).aggregate(
+            first=Min("occurred_at")
+        )["first"]
+        if first is None:
+            continue
+        tz = workspace_tz(workspace)
+        first = max(first, now - timedelta(days=RETENTION_DAYS))
+        for kind in PERIODS:
+            period = period_containing(kind, first.astimezone(tz).date(), tz)
+            current = current_period(kind, tz, now)
+            while period.start < current.start:
+                if ledger_covers(period, now):
+                    store_snapshot(workspace, period, now)
+                    archived += 1
+                period = period.following()
+    return archived

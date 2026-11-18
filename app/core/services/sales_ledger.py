@@ -34,6 +34,7 @@ from core.utils.email_domain import extract_domain, is_enrichable_domain
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.crypto import salted_hmac
+from django.utils.dateparse import parse_datetime
 
 if TYPE_CHECKING:
     from core.models import Workspace
@@ -190,6 +191,7 @@ def _event_source_id(event_data: dict[str, Any]) -> str:
         metadata.get("transaction_id"),
         event_data.get("external_id"),
         event_data.get("event_id"),
+        event_data.get("content_hash"),
     ):
         if value:
             return str(value)
@@ -223,6 +225,27 @@ def _to_datetime(value: Any) -> datetime | None:
         return datetime.fromtimestamp(value, tz=UTC)
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def event_occurred_at(event_data: dict[str, Any]) -> datetime:
+    """Read a provider occurrence time, using receipt time only as a fallback.
+
+    Stripe's object creation time is not a payment/event timestamp. Its parser
+    supplies the outer event's signed timestamp as ``occurred_at`` instead.
+    Naive timestamps cannot establish an instant and are not guessed as UTC.
+    """
+    value = event_data.get("occurred_at")
+    if value is None and event_data.get("provider") != "stripe":
+        value = event_data.get("created_at")
+    parsed = _to_datetime(value)
+    if parsed is None and isinstance(value, str):
+        try:
+            parsed = parse_datetime(value)
+        except (ValueError, OverflowError):
+            parsed = None
+    if parsed is not None and timezone.is_aware(parsed):
+        return parsed
+    return timezone.now()
 
 
 def record_event(
@@ -308,11 +331,19 @@ def _record_event(
     customer_ref = keyed_hash(workspace.pk, provider, customer_ref_source)
     charge_ref = keyed_hash(workspace.pk, provider, _charge_source(event_data))
 
+    occurred_at = event_occurred_at(event_data)
+
     # What we have already seen of this customer and this payment. Read
     # before the insert so the event never counts itself, and handed to
     # the notification (InsightDetector) through the event's metadata.
     history = ledger_history(
-        workspace, provider, kind, customer_ref, charge_ref, exclude_key=dedupe_key
+        workspace,
+        provider,
+        kind,
+        customer_ref,
+        charge_ref,
+        exclude_key=dedupe_key,
+        now=occurred_at,
     )
     if history:
         event_data.setdefault("metadata", {})[LEDGER_HISTORY_KEY] = history
@@ -328,7 +359,7 @@ def _record_event(
         provider=provider,
         kind=kind,
         segment=segment,
-        occurred_at=timezone.now(),
+        occurred_at=occurred_at,
         amount=amount,
         currency=str(event_data.get("currency") or "USD").upper()[:3],
         company_domain=domain[:255],
@@ -414,6 +445,7 @@ def ledger_history(
         workspace=workspace,
         provider=provider,
         occurred_at__gte=now - timedelta(days=RETENTION_DAYS),
+        occurred_at__lte=now,
     ).exclude(dedupe_key=exclude_key)
 
     history: dict[str, Any] = {}
@@ -467,7 +499,11 @@ def purge_expired(now: datetime | None = None) -> int:
     """
     from datetime import timedelta
 
-    cutoff = (now or timezone.now()) - timedelta(days=RETENTION_DAYS)
+    from .sales_stats import archive_closed_periods
+
+    now = now or timezone.now()
+    archive_closed_periods(now=now)
+    cutoff = now - timedelta(days=RETENTION_DAYS)
     deleted, _ = TransactionEvent.objects.filter(occurred_at__lt=cutoff).delete()
     return int(deleted)
 

@@ -1366,7 +1366,8 @@ class TransactionEvent(models.Model):
 class SalesSnapshot(models.Model):
     """A closed week or month of sales statistics, without personal data.
 
-    Written when a period closes (by ``send_sales_digest``). Lets the
+    Archived by the hourly digest job and before ledger purging, even when
+    delivery is disabled. Lets the
     dashboard and the digest compare against periods whose raw
     :class:`TransactionEvent` rows have already been purged. ``data`` holds
     only aggregates - totals per industry, segment and currency, and
@@ -1388,6 +1389,8 @@ class SalesSnapshot(models.Model):
     end: models.DateField = models.DateField()
     data: models.JSONField = models.JSONField(default=dict)
     digest_sent_at: models.DateTimeField = models.DateTimeField(null=True, blank=True)
+    # Plugin names only, no credentials or personal data. Allows partial retries.
+    digest_delivered_to: models.JSONField = models.JSONField(default=list)
     created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
     updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
 

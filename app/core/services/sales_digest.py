@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from core.models import SalesSnapshot
 from django.conf import settings
+from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
 from webhooks.models.rich_notification import (
@@ -241,6 +242,7 @@ def last_closed_period(
     return current_period(kind, workspace_tz(workspace), now).previous()
 
 
+@transaction.atomic
 def send_digest(
     workspace: Workspace,
     kind: str,
@@ -262,8 +264,6 @@ def send_digest(
         One of ``"sent"``, ``"already_sent"``, ``"no_destinations"``,
         ``"failed"`` or ``"dry_run"``.
     """
-    from plugins import PluginRegistry, PluginType
-    from plugins.destinations.base import BaseDestinationPlugin
     from webhooks.services.destination_credentials import collect_destinations
 
     now = now or timezone.now()
@@ -284,6 +284,17 @@ def send_digest(
         return "dry_run"
 
     stored = store_snapshot(workspace, period, now)
+    # update_or_create takes a row lock until this transaction finishes.
+    # Re-check after locking in case an overlapping job already delivered it.
+    stored = SalesSnapshot.objects.select_for_update().get(pk=stored.pk)
+    if stored.digest_sent_at and not force:
+        return "already_sent"
+    if force:
+        stored.digest_delivered_to = []
+        stored.digest_sent_at = None
+        stored.save(
+            update_fields=["digest_delivered_to", "digest_sent_at", "updated_at"]
+        )
     previous, _ = stored_or_computed(workspace, period.previous(), now)
     notification = build_digest(workspace, stored.data, previous)
 
@@ -291,28 +302,50 @@ def send_digest(
     if not destinations:
         return "no_destinations"
 
+    if not _deliver_digest(stored, notification, destinations):
+        return "failed"
+    stored.digest_sent_at = now
+    stored.save(update_fields=["digest_sent_at", "updated_at"])
+    return "sent"
+
+
+def _deliver_digest(
+    stored: SalesSnapshot,
+    notification: RichNotification,
+    destinations: list[tuple[str, dict[str, Any]]],
+) -> bool:
+    """Persist each successful destination so later runs retry only failures."""
+    from plugins import PluginRegistry, PluginType
+    from plugins.destinations.base import BaseDestinationPlugin
+
+    kind = stored.period
+    workspace = stored.workspace
     registry = PluginRegistry.instance()
-    delivered = 0
+    delivered = set(stored.digest_delivered_to)
+    failed = False
     for name, credentials in destinations:
+        if name in delivered:
+            continue
         plugin = registry.get(PluginType.DESTINATION, name)
         if plugin is None or not isinstance(plugin, BaseDestinationPlugin):
             logger.error("Digest destination plugin %s not available", name)
+            failed = True
             continue
         try:
-            plugin.send(plugin.format(notification), credentials)
-            delivered += 1
+            if not plugin.send(plugin.format(notification), credentials):
+                raise RuntimeError("Destination did not acknowledge delivery")
+            delivered.add(name)
+            stored.digest_delivered_to = sorted(delivered)
+            stored.save(update_fields=["digest_delivered_to", "updated_at"])
         except Exception:
+            failed = True
             logger.exception(
                 "Failed to deliver %s sales digest to %s for workspace %s",
                 kind,
                 name,
                 workspace.uuid,
             )
-    if not delivered:
-        return "failed"
-    stored.digest_sent_at = now
-    stored.save(update_fields=["digest_sent_at", "updated_at"])
-    return "sent"
+    return not failed
 
 
 def due_digests(

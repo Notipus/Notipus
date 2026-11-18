@@ -12,7 +12,7 @@ from typing import Any
 
 from core.models import Workspace
 from core.services.sales_digest import due_digests, send_digest
-from core.services.sales_stats import PERIODS
+from core.services.sales_stats import PERIODS, archive_closed_periods
 from django.core.management.base import BaseCommand, CommandParser
 
 
@@ -57,6 +57,9 @@ class Command(BaseCommand):
         workspaces = Workspace.objects.all()
         if options["workspace"]:
             workspaces = workspaces.filter(uuid=options["workspace"])
+
+        if not options["dry_run"]:
+            archive_closed_periods(workspaces)
 
         if options["workspace"] and options["period"]:
             pairs = [(workspace, options["period"]) for workspace in workspaces]

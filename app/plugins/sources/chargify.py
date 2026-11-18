@@ -539,6 +539,12 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         # hash), while distinct events differ in signed fields (embedded
         # webhook id, transaction id, subscription state/timestamps).
         event["content_hash"] = signed_content_hash(request)
+        # Never use the mutable delivery timestamp header as business time.
+        event["occurred_at"] = (
+            data.get("payload[timestamp]")
+            or data.get("timestamp")
+            or data.get("payload[transaction][created_at]")
+        )
         return event
 
     def _parse_shopify_order_ref(self, memo: str) -> str | None:

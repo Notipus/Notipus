@@ -1226,9 +1226,12 @@ class StripeSourcePlugin(BaseSourcePlugin):
                 self._cache_customer_email(customer_id, customer_email)
 
             # Build and return event data
-            return self._build_stripe_event_data(
+            parsed = self._build_stripe_event_data(
                 event_type, customer_id, data_dict, amount, idempotency_key, event_id
             )
+            # Invoice.created dates the invoice, not a retry or its payment.
+            parsed["occurred_at"] = getattr(event, "created", None)
+            return parsed
 
         except (KeyError, ValueError, AttributeError) as e:
             raise InvalidDataError("Missing required fields") from e
