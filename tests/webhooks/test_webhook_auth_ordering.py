@@ -1,9 +1,8 @@
 """Tests for webhook authentication ordering (issue #75).
 
 Signature validation must run before any side effects: rate limiting
-(quota billing), payload logging, and Redis storage. Unauthenticated
-requests must not consume workspace quota, must not persist payloads,
-and must never leak signature values into logs.
+(quota billing). Unauthenticated requests must not consume workspace
+quota and must never leak signature values into logs.
 """
 
 import json
@@ -16,7 +15,6 @@ import pytest
 from core.models import Integration, Workspace
 from django.test import Client
 from webhooks.services.rate_limiter import rate_limiter
-from webhooks.services.webhook_storage import webhook_storage_service
 
 
 @pytest.fixture
@@ -58,20 +56,16 @@ class TestWebhookAuthOrdering:
         settings: Any,
     ) -> None:
         """An empty, unsigned POST must not bill quota or persist a payload."""
-        settings.LOG_WEBHOOKS = True
-
         url = f"/webhook/customer/{workspace.uuid}/stripe/"
         with (
             patch.object(rate_limiter, "enforce_rate_limit") as mock_enforce,
             patch.object(rate_limiter, "increment_usage") as mock_increment,
-            patch.object(webhook_storage_service, "store_webhook") as mock_store,
         ):
             response = client.post(url, data="", content_type="application/json")
 
         assert response.status_code == 400
         mock_enforce.assert_not_called()
         mock_increment.assert_not_called()
-        mock_store.assert_not_called()
 
     def test_invalid_stripe_signature_value_not_logged(
         self,
@@ -82,7 +76,6 @@ class TestWebhookAuthOrdering:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """An invalid Stripe-Signature value must never appear in logs."""
-        settings.LOG_WEBHOOKS = True
         settings.DISABLE_BILLING = False
 
         signature_canary = "t=1234567890,v1=SIGLEAKCANARYDEADBEEF"
@@ -170,8 +163,6 @@ class TestWebhookAuthOrdering:
         settings: Any,
     ) -> None:
         """A workspace at its hard cap is not logged, stored or charged."""
-        settings.LOG_WEBHOOKS = True
-
         mock_provider = mock_provider_class.return_value
         mock_provider.validate_webhook.return_value = True
         mock_provider.parse_webhook.return_value = None  # Test webhook
@@ -191,7 +182,6 @@ class TestWebhookAuthOrdering:
             ),
             patch.object(rate_limiter, "get_hard_limit", return_value=150),
             patch.object(rate_limiter, "increment_usage") as mock_increment,
-            patch.object(webhook_storage_service, "store_webhook") as mock_store,
         ):
             response = client.post(
                 url,
@@ -200,35 +190,4 @@ class TestWebhookAuthOrdering:
             )
 
         assert response.status_code == 429
-        mock_store.assert_not_called()
         mock_increment.assert_not_called()
-
-    @patch("plugins.sources.stripe.StripeSourcePlugin")
-    def test_valid_webhook_is_stored_after_validation(
-        self,
-        mock_provider_class: Any,
-        client: Client,
-        workspace: Workspace,
-        stripe_integration: Integration,
-        settings: Any,
-    ) -> None:
-        """A validated webhook is still logged/stored when LOG_WEBHOOKS=True."""
-        settings.LOG_WEBHOOKS = True
-
-        mock_provider = mock_provider_class.return_value
-        mock_provider.validate_webhook.return_value = True
-        mock_provider.parse_webhook.return_value = None  # Test webhook
-
-        url = f"/webhook/customer/{workspace.uuid}/stripe/"
-        with patch.object(webhook_storage_service, "store_webhook") as mock_store:
-            response = client.post(
-                url,
-                data=json.dumps({"type": "test"}),
-                content_type="application/json",
-            )
-
-        assert response.status_code == 200
-        mock_store.assert_called_once()
-        store_args = mock_store.call_args[0]
-        assert store_args[1] == "stripe"
-        assert store_args[2] == str(workspace.uuid)

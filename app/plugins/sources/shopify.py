@@ -723,10 +723,9 @@ class ShopifySourcePlugin(BaseSourcePlugin):
     ) -> dict[str, Any] | None:
         """Build the normalized event for an already-parsed payload.
 
-        Shared by the live webhook path and by tooling that re-processes
-        stored bodies (replay_shopify_webhooks), so both read payloads
-        identically. The caller owns ``content_hash``: only it knows the
-        raw signed bytes.
+        Kept separate from request handling so a payload can be parsed
+        without an HttpRequest. The caller owns ``content_hash``: only it
+        knows the raw signed bytes.
 
         Also primes ``get_customer_data`` with this payload.
 

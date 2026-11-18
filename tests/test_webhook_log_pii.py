@@ -1,18 +1,13 @@
 """Customer PII must not reach plaintext logs.
 
-The pending-event queue logged customer emails at INFO and WARNING, and
-LOG_WEBHOOKS put the whole raw body into the log record. Raw bodies are
-kept only in the encrypted Redis copy.
+The pending-event queue logged customer emails at INFO and WARNING.
 """
 
-import json
 import logging
 from typing import Any
 
 import pytest
-from django.test import RequestFactory
 from webhooks.services.pending_event_queue import PendingEventQueue
-from webhooks.webhook_router import _log_webhook_payload
 
 EMAIL = "pii-canary@example.com"
 
@@ -67,21 +62,4 @@ def test_missing_email_warning_does_not_list_emails(
         )
 
     assert "No customer email found" in caplog.text
-    assert EMAIL not in _log_text(caplog)
-
-
-def test_log_webhooks_does_not_put_body_in_log_record(
-    caplog: pytest.LogCaptureFixture, settings: Any
-) -> None:
-    """With LOG_WEBHOOKS on, the body stays out of the log record."""
-    settings.LOG_WEBHOOKS = True
-    request = RequestFactory().post(
-        "/webhook/",
-        data=json.dumps({"customer": {"email": EMAIL}}),
-        content_type="application/json",
-    )
-    with caplog.at_level(logging.INFO, logger="webhooks.webhook_router"):
-        _log_webhook_payload(request, "shopify", "ws-1")
-
-    assert "WEBHOOK_LOG" in caplog.text
     assert EMAIL not in _log_text(caplog)
