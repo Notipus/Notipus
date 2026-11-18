@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, cast
 from urllib.parse import urlparse
 
 from core.models import Integration, Workspace
+from core.services.sales_ledger import record_event as record_sales_event
 from django.conf import settings
 from django.http import Http404, HttpRequest, JsonResponse
 from django.shortcuts import get_object_or_404
@@ -469,6 +470,12 @@ def _dispatch_event(
     """
     event_type = event_data.get("type", "")
     idempotency_key = event_data.get("idempotency_key")
+
+    # Sales ledger: recorded per event, before the pending queue merges
+    # related Stripe events into one notification, so a declined attempt
+    # and its later success both reach the recovery statistics. Never
+    # raises (see record_event).
+    record_sales_event(workspace, event_data, customer_data)
 
     # Providers with complete data in one webhook - process immediately
     if provider_name in _IMMEDIATE_PROCESSING_PROVIDERS:

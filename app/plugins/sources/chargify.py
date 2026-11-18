@@ -433,10 +433,10 @@ class ChargifySourcePlugin(BaseSourcePlugin):
         """
         if event_type in ("payment_success", "renewal_success"):
             # Renewal success is treated as payment success
-            return self._parse_payment_success(data)
+            return self._mark_renewal(event_type, self._parse_payment_success(data))
         elif event_type in ("payment_failure", "renewal_failure"):
             # Renewal failure is treated as payment failure
-            return self._parse_payment_failure(data)
+            return self._mark_renewal(event_type, self._parse_payment_failure(data))
         elif event_type in (
             "subscription_state_change",
             "subscription_product_change",
@@ -867,6 +867,25 @@ class ChargifySourcePlugin(BaseSourcePlugin):
             },
             "customer_data": customer_data,
         }
+
+    @staticmethod
+    def _mark_renewal(event_type: str, event: dict[str, Any]) -> dict[str, Any]:
+        """Flag renewal_success / renewal_failure events as renewals.
+
+        Both map onto the generic payment types, which loses the one fact
+        the sales snapshot needs: a renewal is, by definition, an existing
+        customer. ``is_renewal`` keeps it (see core.services.sales_ledger).
+
+        Args:
+            event_type: The Chargify event name.
+            event: The parsed event.
+
+        Returns:
+            The same event, with ``metadata["is_renewal"]`` for renewals.
+        """
+        if event_type.startswith("renewal_"):
+            event.setdefault("metadata", {})["is_renewal"] = True
+        return event
 
     def _parse_signup_success(self, data: dict[str, Any]) -> dict[str, Any]:
         """Parse signup_success webhook data.

@@ -126,6 +126,15 @@ class Workspace(models.Model):
         max_length=64, blank=True, default=""
     )
 
+    # IANA zone the sales snapshot uses for week/month boundaries and for
+    # deciding when the digest is due (Monday / the 1st, 09:00 local).
+    timezone: models.CharField = models.CharField(max_length=64, default="UTC")
+    # Opt-in: a weekly / monthly sales snapshot posted to every enabled
+    # notification destination. Off by default so a deploy never starts
+    # posting into channels nobody asked it to.
+    sales_digest_weekly: models.BooleanField = models.BooleanField(default=False)
+    sales_digest_monthly: models.BooleanField = models.BooleanField(default=False)
+
     class Meta:
         app_label = "core"
         db_table = "core_organization"  # Keep existing table name
@@ -1245,3 +1254,156 @@ class WebAuthnChallenge(models.Model):
         """
         user_str = self.user.username if self.user else "Anonymous"
         return f"{self.challenge_type} challenge for {user_str}"
+
+
+class TransactionEvent(models.Model):
+    """One billing event in the short-lived sales ledger.
+
+    The weekly and monthly sales snapshot is computed from these rows. They
+    are deliberately short-lived: ``purge_sales_ledger`` deletes rows older
+    than ``core.services.sales_ledger.RETENTION_DAYS`` (35 days, a full
+    calendar month plus a few days for a late digest run). Closed periods
+    survive as PII-free :class:`SalesSnapshot` aggregates instead.
+
+    Columns used for grouping are plaintext and carry no personal data:
+    customer and charge identifiers are keyed hashes (HMAC with
+    ``SECRET_KEY``), and ``company_domain`` is a business domain (free and
+    disposable mailbox domains are never stored; those customers get
+    ``is_consumer``). Everything that identifies a person - name, email,
+    provider ids - lives in ``details``, encrypted at rest with
+    ``FIELD_ENCRYPTION_KEYS`` like every other PII field.
+
+    Industry is NOT stored: it is read from the shared ``Company`` row by
+    ``company_domain`` when a snapshot is computed, so re-classifications
+    and human corrections also fix past numbers.
+    """
+
+    KIND_SALE: ClassVar[str] = "sale"
+    KIND_FAILURE: ClassVar[str] = "failure"
+    KIND_REFUND: ClassVar[str] = "refund"
+    KIND_CANCELLATION: ClassVar[str] = "cancellation"
+    KIND_TRIAL_STARTED: ClassVar[str] = "trial_started"
+    KIND_CHOICES: ClassVar[tuple[tuple[str, str], ...]] = (
+        (KIND_SALE, "Sale"),
+        (KIND_FAILURE, "Payment failure"),
+        (KIND_REFUND, "Refund"),
+        (KIND_CANCELLATION, "Cancellation"),
+        (KIND_TRIAL_STARTED, "Trial started"),
+    )
+
+    SEGMENT_NEW: ClassVar[str] = "new"
+    SEGMENT_EXISTING: ClassVar[str] = "existing"
+    SEGMENT_UNKNOWN: ClassVar[str] = "unknown"
+    SEGMENT_CHOICES: ClassVar[tuple[tuple[str, str], ...]] = (
+        (SEGMENT_NEW, "New customer"),
+        (SEGMENT_EXISTING, "Existing customer"),
+        (SEGMENT_UNKNOWN, "Unclassified"),
+    )
+
+    workspace: Any = models.ForeignKey(
+        Workspace, on_delete=models.CASCADE, related_name="transaction_events"
+    )
+    provider: models.CharField = models.CharField(max_length=20)
+    kind: models.CharField = models.CharField(max_length=20, choices=KIND_CHOICES)
+    segment: models.CharField = models.CharField(
+        max_length=10, choices=SEGMENT_CHOICES, default=SEGMENT_UNKNOWN
+    )
+    occurred_at: models.DateTimeField = models.DateTimeField(default=timezone.now)
+    # Major units (dollars, not cents), in ``currency``.
+    amount: models.DecimalField = models.DecimalField(
+        max_digits=16, decimal_places=3, default=Decimal("0")
+    )
+    currency: models.CharField = models.CharField(max_length=3, default="USD")
+    company_domain: models.CharField = models.CharField(
+        max_length=255, blank=True, default=""
+    )
+    is_consumer: models.BooleanField = models.BooleanField(default=False)
+    customer_ref: models.CharField = models.CharField(max_length=64)
+    # Links a payment's failures, retries and final success (invoice for
+    # Stripe, subscription/contract for Chargify and Shopify).
+    charge_ref: models.CharField = models.CharField(
+        max_length=64, blank=True, default=""
+    )
+    # Keeps a redelivered or double-reported event (Stripe sends both
+    # invoice.payment_succeeded and invoice.paid) from counting twice.
+    dedupe_key: models.CharField = models.CharField(max_length=64)
+    attempt_count: models.PositiveSmallIntegerField = models.PositiveSmallIntegerField(
+        null=True, blank=True
+    )
+    next_attempt_at: models.DateTimeField = models.DateTimeField(null=True, blank=True)
+    details: models.TextField = EncryptedJSONField(blank=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "core"
+        constraints: ClassVar[list[Any]] = [
+            models.UniqueConstraint(
+                fields=["workspace", "dedupe_key"],
+                name="core_txn_event_dedupe_uniq",
+            ),
+        ]
+        indexes: ClassVar[list[models.Index]] = [
+            models.Index(
+                fields=["workspace", "occurred_at"], name="core_txn_ws_occurred_idx"
+            ),
+            models.Index(
+                fields=["workspace", "charge_ref"], name="core_txn_ws_charge_idx"
+            ),
+            models.Index(fields=["occurred_at"], name="core_txn_occurred_idx"),
+        ]
+
+    def __str__(self) -> str:
+        """Return a non-identifying description of the event.
+
+        Returns:
+            Kind, amount and date - never customer details.
+        """
+        return (
+            f"{self.kind} {self.amount} {self.currency} @ {self.occurred_at:%Y-%m-%d}"
+        )
+
+
+class SalesSnapshot(models.Model):
+    """A closed week or month of sales statistics, without personal data.
+
+    Written when a period closes (by ``send_sales_digest``). Lets the
+    dashboard and the digest compare against periods whose raw
+    :class:`TransactionEvent` rows have already been purged. ``data`` holds
+    only aggregates - totals per industry, segment and currency, and
+    recovery counts - never names, emails or per-customer rows.
+    """
+
+    PERIOD_WEEK: ClassVar[str] = "week"
+    PERIOD_MONTH: ClassVar[str] = "month"
+    PERIOD_CHOICES: ClassVar[tuple[tuple[str, str], ...]] = (
+        (PERIOD_WEEK, "Week"),
+        (PERIOD_MONTH, "Month"),
+    )
+
+    workspace: Any = models.ForeignKey(
+        Workspace, on_delete=models.CASCADE, related_name="sales_snapshots"
+    )
+    period: models.CharField = models.CharField(max_length=5, choices=PERIOD_CHOICES)
+    start: models.DateField = models.DateField()
+    end: models.DateField = models.DateField()
+    data: models.JSONField = models.JSONField(default=dict)
+    digest_sent_at: models.DateTimeField = models.DateTimeField(null=True, blank=True)
+    created_at: models.DateTimeField = models.DateTimeField(auto_now_add=True)
+    updated_at: models.DateTimeField = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "core"
+        constraints: ClassVar[list[Any]] = [
+            models.UniqueConstraint(
+                fields=["workspace", "period", "start"],
+                name="core_sales_snapshot_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        """Return the period this snapshot covers.
+
+        Returns:
+            Period kind and start date.
+        """
+        return f"{self.period} from {self.start:%Y-%m-%d}"
