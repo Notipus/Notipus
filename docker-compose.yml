@@ -43,8 +43,6 @@ x-common-variables: &common-variables
   # Peers whose X-Forwarded-* headers uvicorn trusts. The image defaults to
   # "*" for Fly.io (see Dockerfile); here only a proxy on the same host is.
   FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
-  # Capture raw webhook bodies (7-day Redis retention) for debugging.
-  LOG_WEBHOOKS: ${LOG_WEBHOOKS:-False}
   # Public URL of this instance. Providers build their webhook callbacks
   # from it, so when testing through a tunnel set it to the tunnel host.
   BASE_URL: ${BASE_URL:-http://localhost:8000}

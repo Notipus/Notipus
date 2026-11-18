@@ -399,6 +399,7 @@ class StripeProviderTest(TestCase):
         # Set request to None (no idempotency key)
         mock_event.request = None
         mock_event.id = "evt_123"
+        mock_event.created = 1234567900
         mock_construct_event.return_value = mock_event
 
         request = self._create_mock_request(
@@ -416,6 +417,7 @@ class StripeProviderTest(TestCase):
             "event_id": "evt_123",
             "status": "succeeded",
             "created_at": 1234567890,
+            "occurred_at": 1234567900,
             "currency": "USD",
             "amount": 20.00,
             "metadata": {},

@@ -25,6 +25,8 @@ lights up the right nav item without the view or the template being told to.
                 {% if user.is_authenticated %}
                     <c-nav-link href="{% url 'core:dashboard' %}"
                                 current="{% if request.path == '/dashboard/' %}1{% endif %}">Dashboard</c-nav-link>
+                    <c-nav-link href="{% url 'core:sales_stats' %}"
+                                current="{% if '/stats/' in request.path %}1{% endif %}">Sales</c-nav-link>
                     <c-nav-link href="{% url 'core:integrations' %}"
                                 current="{% if '/integrat' in request.path %}1{% endif %}">Integrations</c-nav-link>
                     {% if billing_enabled %}
@@ -76,6 +78,10 @@ lights up the right nav item without the view or the template being told to.
                             icon="home"
                             mobile
                             current="{% if request.path == '/dashboard/' %}1{% endif %}">Dashboard</c-nav-link>
+                <c-nav-link href="{% url 'core:sales_stats' %}"
+                            icon="chart-bar"
+                            mobile
+                            current="{% if '/stats/' in request.path %}1{% endif %}">Sales</c-nav-link>
                 <c-nav-link href="{% url 'core:integrations' %}"
                             icon="plug"
                             mobile

@@ -45,6 +45,15 @@ Per-provider signal sources (update this list when adding a detector):
   Stripe = invoices only, cached (encrypted) for subscription events;
   Chargify and Shopify = customer.email.
 
+* our own sales ledger (core.services.sales_ledger), all providers:
+  the last 35 days of events we observed, attached to the event as
+  metadata["ledger_history"] before the notification is built. It
+  proves a payment recovered after failed attempts, how many attempts
+  on a payment have failed (Chargify and Shopify send no attempt
+  count), and that a cancelling customer left failed payments unpaid.
+  Absence of history is not evidence: the ledger only covers 35 days
+  and starts empty, so every ledger detector stays silent without it.
+
 Note on lifetime-spend semantics (issue #110): neither Shopify nor
 Chargify documents whether the lifetime-spend snapshot embedded in a
 payment webhook already includes the payment being reported, and
@@ -66,6 +75,7 @@ PendingEventQueue._aggregate_events or it is silently discarded.
 import calendar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.core.cache import cache
@@ -153,6 +163,13 @@ class MilestoneConfig:
     at_risk_ltv_threshold: float = 1000
 
 
+def _ledger_history(event_data: dict[str, Any]) -> dict[str, Any]:
+    """Return the sales-ledger history attached to an event, if any."""
+    metadata = event_data.get("metadata") or {}
+    history = metadata.get("ledger_history")
+    return history if isinstance(history, dict) else {}
+
+
 def _event_currency(event_data: dict[str, Any]) -> str:
     """Return the event's currency code, defaulting to USD."""
     return str(event_data.get("currency") or "USD")
@@ -178,6 +195,8 @@ class InsightDetector:
         "failed_attempt": "warning",
         "at_risk": "warning",
         "large_payment": "money",
+        "payment_recovered": "celebration",
+        "involuntary_churn": "warning",
     }
 
     def __init__(self, config: MilestoneConfig | None = None) -> None:
@@ -205,6 +224,8 @@ class InsightDetector:
         # Priority order for milestone detection
         detectors = [
             self._detect_initial_payment_failure,
+            self._detect_payment_recovered,
+            self._detect_involuntary_churn,
             self._detect_trial_started,
             self._detect_trial_ending,
             self._detect_trial_converted,
@@ -819,6 +840,15 @@ class InsightDetector:
                     text=f"Next retry {next_date}",
                 )
 
+        # No provider attempt count (Chargify, Shopify): count the failed
+        # attempts on this payment the ledger has seen, this one included.
+        chain_failures = _ledger_history(event_data).get("chain_failures") or 0
+        if attempt_count is None and chain_failures >= 2:
+            text = f"Retry #{chain_failures - 1}"
+            if failure_reason:
+                text += f" · {failure_reason}"
+            return InsightInfo(icon=self.ICONS["failed_attempt"], text=text)
+
         if failure_reason:
             return InsightInfo(
                 icon=self.ICONS["failed_attempt"],
@@ -826,6 +856,85 @@ class InsightDetector:
             )
 
         return None
+
+    def _detect_payment_recovered(
+        self, event_data: dict[str, Any], customer_data: dict[str, Any]
+    ) -> InsightInfo | None:
+        """Detect a payment that went through after failed attempts.
+
+        The card that bounced twice and then worked: customer success
+        wants to know the dunning is over, not see one more "payment
+        received". Proven by the ledger, which saw the failures on the
+        same invoice (Stripe) or subscription (Chargify, Shopify).
+
+        Args:
+            event_data: Event data dictionary.
+            customer_data: Customer data dictionary (unused).
+
+        Returns:
+            InsightInfo for a recovered payment or None.
+        """
+        _ = customer_data  # unused
+        if event_data.get("type") not in (
+            "payment_success",
+            "invoice_paid",
+            "subscription_renewed",
+        ):
+            return None
+        history = _ledger_history(event_data)
+        failures = history.get("recovered_failures") or 0
+        if failures < 1:
+            return None
+        attempts = "attempt" if failures == 1 else "attempts"
+        text = f"Recovered after {failures} failed {attempts}"
+        hours = history.get("recovered_hours")
+        if isinstance(hours, (int, float)) and hours > 0:
+            if hours < 24:
+                text += f" · {max(1, round(hours))}h after the first decline"
+            else:
+                days = round(hours / 24)
+                text += (
+                    f" · {days} day{'s' if days != 1 else ''} after the first decline"
+                )
+        return InsightInfo(icon=self.ICONS["payment_recovered"], text=text)
+
+    def _detect_involuntary_churn(
+        self, event_data: dict[str, Any], customer_data: dict[str, Any]
+    ) -> InsightInfo | None:
+        """Detect a cancellation that follows payments that never settled.
+
+        A customer who cancels with failed payments outstanding most
+        likely churned because their card stopped working, not because
+        they chose to leave - a save that is often one email away.
+
+        Args:
+            event_data: Event data dictionary.
+            customer_data: Customer data dictionary (unused).
+
+        Returns:
+            InsightInfo flagging likely involuntary churn or None.
+        """
+        _ = customer_data  # unused
+        if event_data.get("type") not in (
+            "subscription_canceled",
+            "subscription_deleted",
+            "customer_churned",
+        ):
+            return None
+        history = _ledger_history(event_data)
+        failures = history.get("unpaid_failures") or 0
+        if failures < 1:
+            return None
+        attempts = "payment" if failures == 1 else "payments"
+        text = f"Likely involuntary churn · {failures} failed {attempts} never settled"
+        try:
+            amount = Decimal(str(history.get("unpaid_amount") or "0"))
+        except InvalidOperation:
+            amount = Decimal("0")
+        if amount > 0:
+            currency = str(history.get("unpaid_currency") or "USD")
+            text += f" ({format_money(amount, currency)})"
+        return InsightInfo(icon=self.ICONS["involuntary_churn"], text=text)
 
     def _detect_large_payment(
         self, event_data: dict[str, Any], customer_data: dict[str, Any]

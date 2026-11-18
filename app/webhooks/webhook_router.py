@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, cast
 from urllib.parse import urlparse
 
 from core.models import Integration, Workspace
+from core.services.sales_ledger import record_event as record_sales_event
 from django.conf import settings
 from django.http import Http404, HttpRequest, JsonResponse
 from django.shortcuts import get_object_or_404
@@ -15,7 +16,6 @@ from .services.destination_credentials import collect_destinations, record_deliv
 from .services.event_consolidation import event_consolidation_service
 from .services.pending_event_queue import pending_event_queue
 from .services.rate_limiter import RateLimitException, rate_limiter
-from .services.webhook_storage import webhook_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,60 +39,6 @@ _IMMEDIATE_PROCESSING_PROVIDERS: frozenset[str] = frozenset(
         "customer_chargify",
     }
 )
-
-
-def _log_webhook_payload(
-    request: HttpRequest, provider_name: str, workspace_uuid: Optional[str] = None
-) -> None:
-    """
-    Record the raw webhook payload for analysis when LOG_WEBHOOKS is enabled.
-
-    The log line carries only metadata (provider, path, safe headers, body
-    size). The body itself is customer PII (emails, names, addresses) and
-    goes only to the encrypted, TTL-bound Redis copy written by
-    webhook_storage_service - never into plaintext log records.
-    """
-    if not settings.LOG_WEBHOOKS:
-        return
-
-    try:
-        # Extract relevant headers (excluding sensitive auth headers)
-        relevant_headers = {
-            "Content-Type": request.headers.get("Content-Type"),
-            "Content-Length": request.headers.get("Content-Length"),
-            "User-Agent": request.headers.get("User-Agent"),
-            "X-Forwarded-For": request.headers.get("X-Forwarded-For"),
-        }
-
-        # Add provider-specific signature headers for reference
-        signature_headers = [
-            "X-Shopify-Hmac-SHA256",
-            "Stripe-Signature",
-            "X-Chargify-Webhook-Signature-Hmac-Sha-256",
-        ]
-        for header in signature_headers:
-            if header in request.headers:
-                # Log presence of signature but not the value for security
-                relevant_headers[header] = "[PRESENT]"
-
-        logger.info(
-            f"WEBHOOK_LOG [{provider_name}] "
-            f"workspace={workspace_uuid or 'global'} "
-            f"method={request.method} path={request.path}",
-            extra={
-                "webhook_provider": provider_name,
-                "workspace_uuid": workspace_uuid,
-                "headers": relevant_headers,
-                "body_size": len(request.body),
-            },
-        )
-
-        # Store raw webhook in Redis for debugging (7-day retention)
-        webhook_storage_service.store_webhook(request, provider_name, workspace_uuid)
-
-    except Exception as e:
-        # Don't let logging errors break webhook processing
-        logger.warning(f"Failed to log webhook payload: {e}")
 
 
 def create_success_response(message: str) -> dict:
@@ -470,6 +416,12 @@ def _dispatch_event(
     event_type = event_data.get("type", "")
     idempotency_key = event_data.get("idempotency_key")
 
+    # Sales ledger: recorded per event, before the pending queue merges
+    # related Stripe events into one notification, so a declined attempt
+    # and its later success both reach the recovery statistics. Never
+    # raises (see record_event).
+    record_sales_event(workspace, event_data, customer_data)
+
     # Providers with complete data in one webhook - process immediately
     if provider_name in _IMMEDIATE_PROCESSING_PROVIDERS:
         return _process_immediately(event_data, customer_data, provider_name, workspace)
@@ -682,14 +634,6 @@ def _process_webhook(
         capped = _reject_if_hard_capped(workspace)
         if capped is not None:
             return capped
-
-        # Log/store raw webhook payload only for authenticated,
-        # non-rate-limited requests
-        _log_webhook_payload(
-            request,
-            log_provider_name or provider_name,
-            str(workspace.uuid) if workspace else None,
-        )
 
         # Parse webhook (returns None for test webhooks)
         event_data = cast("Dict[str, Any] | None", provider.parse_webhook(request))

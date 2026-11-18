@@ -26,6 +26,7 @@ urlpatterns = [
     # Landing and dashboard
     path("", views.landing, name="landing"),
     path("dashboard/", views.dashboard, name="dashboard"),
+    path("stats/", views.sales_stats, name="sales_stats"),
     # Plan selection flow
     path("select-plan/", views.select_plan, name="select_plan"),
     path("plan/selected/", views.plan_selected, name="plan_selected"),

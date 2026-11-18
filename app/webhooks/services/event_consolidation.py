@@ -50,10 +50,10 @@ class EventConsolidationService:
     # Multiplier of 6 means 30 minutes for dedup vs 5 minutes for consolidation
     DEDUP_WINDOW_MULTIPLIER: ClassVar[int] = 6
 
-    # How long a "delivered" marker outlives the dedup marker. Replay
-    # (replay_shopify_webhooks) looks back over the raw webhook store,
-    # which keeps payloads for 7 days, so the marker has to cover at
-    # least that or replay re-sends what was already delivered.
+    # How long a "delivered" marker outlives the dedup marker. Providers
+    # retry failed deliveries for days (Shopify up to 48 hours, Stripe up
+    # to 3 days), so the marker has to outlast every retry schedule or a
+    # late redelivery re-sends what was already delivered.
     DELIVERED_MARKER_TTL_SECONDS: ClassVar[int] = 60 * 60 * 24 * 8
 
     # Events that suppress other events when processed first

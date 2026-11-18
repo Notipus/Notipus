@@ -24,6 +24,23 @@
                          value="{{ workspace.shop_domain|default_if_none:'' }}"
                          placeholder="yourbusiness.com"
                          help="Your main website. Optional." />
+                <c-select name="timezone"
+                          label="Timezone"
+                          help="Sets where weeks and months start in the sales snapshot, and when its digest is posted.">
+                    {% for tz in timezones %}
+                        <option value="{{ tz }}" {% if tz == workspace.timezone %}selected{% endif %}>{{ tz }}</option>
+                    {% endfor %}
+                </c-select>
+                <c-checkbox name="sales_digest_weekly"
+                            value="1"
+                            label="Weekly sales digest"
+                            help="Every Monday at 09:00: last week's revenue, new vs existing customers by industry, and payment recovery."
+                            checked="{% if workspace.sales_digest_weekly %}1{% endif %}" />
+                <c-checkbox name="sales_digest_monthly"
+                            value="1"
+                            label="Monthly sales digest"
+                            help="On the 1st at 09:00, for the month that just ended."
+                            checked="{% if workspace.sales_digest_monthly %}1{% endif %}" />
                 <c-slot name="actions">
                     <c-button type="submit">
                         Save changes

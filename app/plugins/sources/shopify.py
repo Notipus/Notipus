@@ -723,10 +723,9 @@ class ShopifySourcePlugin(BaseSourcePlugin):
     ) -> dict[str, Any] | None:
         """Build the normalized event for an already-parsed payload.
 
-        Shared by the live webhook path and by tooling that re-processes
-        stored bodies (replay_shopify_webhooks), so both read payloads
-        identically. The caller owns ``content_hash``: only it knows the
-        raw signed bytes.
+        Kept separate from request handling so a payload can be parsed
+        without an HttpRequest. The caller owns ``content_hash``: only it
+        knows the raw signed bytes.
 
         Also primes ``get_customer_data`` with this payload.
 
@@ -782,6 +781,12 @@ class ShopifySourcePlugin(BaseSourcePlugin):
             # for guest checkouts without an email)
             customer_id = self._extract_shopify_customer_id(data, topic)
             event = self._build_shopify_event_data(event_type, customer_id, data, topic)
+
+        # Use the resource update/processing time in the signed body, rather
+        # than delivery time or the original order/subscription creation date.
+        event["occurred_at"] = (
+            data.get("updated_at") or data.get("processed_at") or data.get("created_at")
+        )
 
         # Flag test-gateway orders so a notification can say so. They are
         # real orders and are processed like any other; the merchant just

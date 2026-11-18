@@ -73,6 +73,7 @@ from .settings import (
     get_notification_settings,
     update_notification_settings,
 )
+from .stats import sales_stats
 from .ui_library import (
     ui_library,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "slack_auth_callback",
     # Dashboard
     "dashboard",
+    "sales_stats",
     "create_workspace",
     "workspace_settings",
     # Integrations
