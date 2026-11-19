@@ -13,6 +13,7 @@ from core.models import Company
 from core.services.classification_feedback import carry_over_feedback
 from core.services.logo_storage import get_logo_storage_service
 from core.utils import is_timestamp_fresh
+from core.utils.domain import normalize_company_domain
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
@@ -217,6 +218,9 @@ class DomainEnrichmentService:
         Returns:
             Company instance with enrichment data, or None on failure.
         """
+        # Company rows are stored normalized (no leading "www."), so look
+        # them up by the same key or get_or_create misses and then fails.
+        domain = normalize_company_domain(domain or "")
         if not domain:
             logger.warning("Empty domain provided for enrichment")
             return None
@@ -658,6 +662,7 @@ class DomainEnrichmentService:
         Returns:
             Updated Company instance, or None on failure.
         """
+        domain = normalize_company_domain(domain or "")
         if not domain:
             return None
 
