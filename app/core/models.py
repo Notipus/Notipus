@@ -11,6 +11,7 @@ from decimal import Decimal
 from typing import Any, ClassVar, cast
 
 from core.fields import EncryptedJSONField, EncryptedTextField
+from core.utils.domain import normalize_company_domain
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
@@ -618,8 +619,9 @@ class GlobalBillingIntegration(models.Model):
 def validate_domain(value: str) -> str:
     """Validate domain format and return cleaned domain.
 
-    Removes protocol prefixes and validates the domain format
-    against a standard domain name pattern.
+    Normalizes the value with ``normalize_company_domain`` (scheme, path
+    and a leading ``www.`` removed) and validates the result against a
+    standard domain name pattern.
 
     Args:
         value: Raw domain input string.
@@ -630,10 +632,8 @@ def validate_domain(value: str) -> str:
     Raises:
         ValidationError: If domain format is invalid.
     """
-    # Remove protocol if present and clean
-    domain = (
-        value.replace("https://", "").replace("http://", "").replace("www.", "").lower()
-    )
+    # Strip scheme, path and a leading "www." so this matches lookup keys
+    domain: str = normalize_company_domain(value)
 
     # Validate format - must have at least one dot for TLD
     domain_pattern = re.compile(
