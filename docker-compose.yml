@@ -96,7 +96,7 @@ x-healthcheck-defaults: &healthcheck-defaults
 
 services:
   db:
-    image: postgres:18
+    image: postgres:19
     container_name: notipus_db
     environment:
       POSTGRES_DB: ${DB_NAME:-notipus_dev}
